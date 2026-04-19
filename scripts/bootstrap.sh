@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# One-click install of AutoSkills on a new machine. See bootstrap.ps1.
+# Usage: bootstrap.sh [--dry-run] [--force] [--help]
+
+set -euo pipefail
+
+DRY_RUN=0
+FORCE=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --force)   FORCE=1 ;;
+    --help|-h) sed -n '2,4p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUTOSKILLS_HOME="$(cd "$SCRIPT_DIR/.." && pwd)"
+USER_HOME="${HOME}"
+MANIFEST="$AUTOSKILLS_HOME/mcp-manifest.json"
+MCP_DIR="$AUTOSKILLS_HOME/mcp/project-manager"
+
+echo "=========================================="
+echo "  AutoSkills Bootstrap"
+echo "=========================================="
+echo "AUTOSKILLS_HOME = $AUTOSKILLS_HOME"
+echo "USER_HOME       = $USER_HOME"
+echo "manifest        = $MANIFEST"
+echo "mcp source dir  = $MCP_DIR"
+[[ $DRY_RUN -eq 1 ]] && echo "MODE            = DRY-RUN (no writes / no CLI calls)"
+echo
+
+invoke() {
+  local desc="$1"; shift
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] $desc"
+  else
+    echo "[action]  $desc"
+    "$@"
+  fi
+}
+
+# --- Step 1: backup ---
+echo "--- Step 1/5: backup current state ---"
+if [[ $DRY_RUN -eq 1 ]]; then
+  bash "$SCRIPT_DIR/backup-global-workflow.sh" --dry-run
+else
+  bash "$SCRIPT_DIR/backup-global-workflow.sh"
+fi
+
+# --- Step 2: sync skills ---
+echo
+echo "--- Step 2/5: sync skills to 3 CLIs ---"
+if [[ $DRY_RUN -eq 1 ]]; then
+  bash "$SCRIPT_DIR/sync-skills.sh" --dry-run
+else
+  bash "$SCRIPT_DIR/sync-skills.sh"
+fi
+
+# --- Step 3: build MCP server ---
+echo
+echo "--- Step 3/5: build project-manager MCP server ---"
+if [[ ! -d "$MCP_DIR" ]]; then
+  echo "MCP project dir not found: $MCP_DIR" >&2
+  exit 1
+fi
+
+invoke "npm install in $MCP_DIR" bash -c "cd '$MCP_DIR' && npm install"
+invoke "npm run build in $MCP_DIR" bash -c "cd '$MCP_DIR' && npm run build"
+if [[ $DRY_RUN -eq 0 && ! -f "$MCP_DIR/dist/index.js" ]]; then
+  echo "Build did not produce dist/index.js" >&2
+  exit 3
+fi
+
+# --- Step 4: register MCP with 3 CLIs per manifest ---
+echo
+echo "--- Step 4/5: register MCP server with 3 CLIs per mcp-manifest.json ---"
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "Manifest not found: $MANIFEST" >&2
+  exit 1
+fi
+
+# Parse JSON via python3 (portable on any bootstrap box; node is also available)
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 required to parse manifest" >&2
+  exit 4
+fi
+
+MCP_COMMAND="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print(m['servers']['project-manager']['command'])")"
+MCP_ARGS_RAW="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print('\n'.join(m['servers']['project-manager']['args_template']))")"
+TRUST_GEMINI="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print(str(m['servers']['project-manager']['trust']['gemini']).lower())")"
+
+# Expand ${AUTOSKILLS_HOME}
+MCP_ARGS=()
+while IFS= read -r line; do
+  MCP_ARGS+=("${line//\$\{AUTOSKILLS_HOME\}/$AUTOSKILLS_HOME}")
+done <<< "$MCP_ARGS_RAW"
+
+echo "resolved command: $MCP_COMMAND ${MCP_ARGS[*]}"
+
+# codex
+if command -v codex >/dev/null 2>&1; then
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] codex mcp add project-manager"
+  else
+    echo "[action]  codex mcp add project-manager"
+    (codex mcp remove project-manager 2>/dev/null) || true
+    codex mcp add project-manager -- "$MCP_COMMAND" "${MCP_ARGS[@]}"
+  fi
+else
+  echo "[info]    codex CLI not found, skipping codex registration"
+fi
+
+# claude (user scope)
+if command -v claude >/dev/null 2>&1; then
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] claude mcp add project-manager -s user"
+  else
+    echo "[action]  claude mcp add project-manager -s user"
+    (claude mcp remove project-manager -s user 2>/dev/null) || true
+    claude mcp add project-manager -s user -- "$MCP_COMMAND" "${MCP_ARGS[@]}"
+  fi
+else
+  echo "[info]    claude CLI not found, skipping claude registration"
+fi
+
+# gemini (settings.json edit)
+GEMINI_SETTINGS="$USER_HOME/.gemini/settings.json"
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "[dry-run] gemini mcp register (edit $GEMINI_SETTINGS, trust=$TRUST_GEMINI)"
+else
+  echo "[action]  gemini mcp register (edit $GEMINI_SETTINGS, trust=$TRUST_GEMINI)"
+  mkdir -p "$USER_HOME/.gemini"
+  python3 - <<PYEOF
+import json, os
+path = r"$GEMINI_SETTINGS"
+data = {}
+if os.path.isfile(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+        except Exception:
+            data = {}
+data.setdefault('mcpServers', {})
+data['mcpServers']['project-manager'] = {
+    'command': r"""$MCP_COMMAND""",
+    'args': ${MCP_ARGS_JSON:-$(python3 -c "import json,sys; print(json.dumps(['${MCP_ARGS[@]}']))")},
+    'trust': ${TRUST_GEMINI}
+}
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+PYEOF
+fi
+
+# --- Step 5: verify ---
+echo
+echo "--- Step 5/5: verify MCP visible to all 3 CLIs ---"
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "[dry-run] codex mcp get / claude mcp get / gemini settings.json"
+else
+  if command -v codex >/dev/null 2>&1; then
+    echo "[verify]  codex mcp get project-manager:"
+    codex mcp get project-manager 2>&1 | sed 's/^/    /'
+  fi
+  if command -v claude >/dev/null 2>&1; then
+    echo "[verify]  claude mcp get project-manager -s user:"
+    claude mcp get project-manager -s user 2>&1 | sed 's/^/    /'
+  fi
+  echo "[verify]  gemini settings.json mcpServers.project-manager:"
+  if [[ -f "$GEMINI_SETTINGS" ]]; then
+    python3 -c "import json; d=json.load(open(r'$GEMINI_SETTINGS',encoding='utf-8')); pm=d.get('mcpServers',{}).get('project-manager'); print('    command =', pm.get('command')) if pm else print('    MISSING'); print('    args    =', ' '.join(pm.get('args',[]))) if pm else None; print('    trust   =', pm.get('trust')) if pm else None"
+  fi
+fi
+
+echo
+echo "=========================================="
+echo "  Bootstrap complete."
+echo "=========================================="
