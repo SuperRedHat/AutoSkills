@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "servers": {
+    "project-manager": {
+      "command": "node",
+      "args_template": [
+        "${AUTOSKILLS_HOME}/mcp/project-manager/dist/index.js"
+      ],
+      "env": {},
+      "trust": {
+        "codex": false,
+        "claude": false,
+        "gemini": true
+      }
+    }
+  }
+}
