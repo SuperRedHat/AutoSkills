@@ -65,3 +65,20 @@ council delegate --role reviewer --objective "审查最近完成任务的代码�
 - 有 CouncilFlow 时，不要在未获得 `local_execution` 前就把 reviewer 工作留在主控本地
 - 引用讨论结论时，优先摘取 `initial_position`、`current_controller_position`、`min_rounds` 等显式字段，而不是把外部模型原文直接当最终判断
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON 并调用 `project-manager` MCP `add_log(type="workflow_failure", ...)`，再停止当前 workflow
+
+
+## 动态角色路由（0.1.3+）
+
+如果项目 `.council/config.yaml` 配置了动态角色路由（`roles.<role>` 为 list
+形式而非简写 string），`council delegate` 返回的 target model 由 CouncilFlow
+的路由引擎（`role_router.resolve`）按顺序匹配 `when` 表达式决定；skill 层
+**不干预** 路由决策。
+
+一旦拿到 `council delegate` 返回：
+
+- `status = local_execution` → 按现有流程在当前主控本地执行
+- `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
+- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
+  Report Protocol` 停止 workflow 并上报
+
+动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。

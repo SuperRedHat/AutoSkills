@@ -80,3 +80,20 @@ council discuss "关于 XX 的实现方案应该怎么选？" --controller-posit
 
 回答完毕后提示：
 > "回答完毕。你可以继续提问，或使用 /project-next 回到开发流程。"
+
+
+## 动态角色路由（0.1.3+）
+
+如果项目 `.council/config.yaml` 配置了动态角色路由（`roles.<role>` 为 list
+形式而非简写 string），`council delegate` 返回的 target model 由 CouncilFlow
+的路由引擎（`role_router.resolve`）按顺序匹配 `when` 表达式决定；skill 层
+**不干预** 路由决策。
+
+一旦拿到 `council delegate` 返回：
+
+- `status = local_execution` → 按现有流程在当前主控本地执行
+- `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
+- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
+  Report Protocol` 停止 workflow 并上报
+
+动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。
