@@ -21,12 +21,18 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
    - 只有在 `council` 明确缺失或不可调用时，才允许显式降级到主控本地拆解
 5. 再进入 `synthesizer` 阶段。
    - 如果 `council` 可用，必须先按项目配置调用：
-     `council delegate --role synthesizer --objective "综合 planner 产物并整理为最终任务清单" --task-summary "任务清单综合整理" --required-artifact planner_result="<planner 的 result artifact>"`
+     `council delegate --role synthesizer --objective "综合 planner 产物并整理为最终任务清单（仅产出 markdown / JSON 草案，不要调用 save_prd/create_tasks/add_log 等 MCP 写入工具；host 主控会在拿到 result.md 后负责落盘）" --task-summary "任务清单综合整理（artifact-first，0.1.5+）" --required-artifact planner_result="<planner 的 result artifact>"`
    - 不传 `--model`，让 CouncilFlow 从项目级 `roles.synthesizer` 读取目标模型
    - 只有在返回 `status = local_execution` 时，当前主控才允许本地整理最终待确认的任务列表
-   - 如果返回 `status = delegated`，则先读取 `.council/delegations/...` 产物，再进入用户确认
+   - 如果返回 `status = delegated`，则先读取 `.council/delegations/<id>/result.md` 产物，再进入用户确认；**不要**假设 sidecar 已经通过 MCP 写入任务清单
    - 如果返回错误、缺少 handoff/result artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
    - 只有在 `council` 明确缺失或不可调用时，才允许显式降级到主控本地综合
+
+### Synthesizer artifact-first 契约（0.1.5+）
+
+- **sidecar synthesizer 只产 artifact**：`.council/delegations/<id>/result.md`（markdown + 任务清单 JSON），不直接调 `save_prd` / `create_tasks` / `add_log`
+- **host 主控负责落盘**：读 result.md → 用户确认 → 调 MCP `save_prd`（如需更新 PRD）+ `create_tasks`（写入任务） + `add_log`
+- **原因**：`.claude/state/*` 在 `PROTECTED_WORKFLOW_PATHS` 里；sidecar 若通过 MCP 触及该路径，会被 orchestrator guardrail 回滚并报 `guardrail_violation`
 
 ### 第三步：任务清单
 6. 每个任务必须包含：
@@ -57,7 +63,11 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
    - 高风险视觉任务：`milestone_manual`
    - 阶段收口任务：`manual`
 8. 展示任务列表并等待用户确认。
-9. 用户确认后调用 `create_tasks`、`update_project_info`、`add_log`。
+9. 用户确认后，**host 主控**（不是 sidecar）调用 MCP：
+   - 如果 synthesizer 走了 `status=delegated`：先读 `.council/delegations/<id>/result.md`，在它的基础上整理最终任务清单 JSON，再调 `create_tasks`
+   - 如果 synthesizer 走了 `status=local_execution`：直接用主控本地整理好的清单调 `create_tasks`
+   - 调 `update_project_info` 更新状态（通常为 `planned`）
+   - 调 `add_log` 记录"任务清单已确认并保存"
 
 ## 多模型协作（可选）
 
@@ -103,20 +113,3 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON 并调用 `project-manager` MCP `add_log(type="workflow_failure", ...)`，再停止当前 workflow
 
 
-
-
-## 动态角色路由（0.1.3+）
-
-如果项目 `.council/config.yaml` 配置了动态角色路由（`roles.<role>` 为 list
-形式而非简写 string），`council delegate` 返回的 target model 由 CouncilFlow
-的路由引擎（`role_router.resolve`）按顺序匹配 `when` 表达式决定；skill 层
-**不干预** 路由决策。
-
-一旦拿到 `council delegate` 返回：
-
-- `status = local_execution` → 按现有流程在当前主控本地执行
-- `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
-- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
-  Report Protocol` 停止 workflow 并上报
-
-动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。
