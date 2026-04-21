@@ -37,6 +37,12 @@ description: 系统架构设计。当用户说"开始设计"、"架构设计"、
 - 如果项目下缺少 `.council/config.yaml`，CouncilFlow 会在首次调用时自动创建项目本地配置模板。
 - 一旦决定进入 discuss，就**必须先调用 CouncilFlow**
 - 如果 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
+- **shell 超时恢复协议（0.1.6+，硬前置）**：如果 `council discuss` 自身的 shell 调用出现 timeout 或返回非零，**不要**直接判失败——CouncilFlow 子进程一般还在跑，summary.md 会落盘。必须按下面两段式恢复：
+  1. 用 `council status --json --project-root <root>` 取 `data.state.last_discussion_id`
+  2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
+  3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
+  4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许按失败上报协议宣告 workflow 失败
+- 推荐用 `council status --json` 而不是解析 stderr
 
 ### 第三步：进入显式阶段机
 把 `project-design` 视为：

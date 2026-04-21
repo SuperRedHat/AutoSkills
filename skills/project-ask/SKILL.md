@@ -33,6 +33,12 @@ council discuss "关于 XX 的实现方案应该怎么选？" --controller-posit
 - 如果项目下缺少 `.council/config.yaml`，CouncilFlow 会在首次调用时自动创建项目本地配置模板
 - 如果你决定进入 discuss，就**必须先调用 CouncilFlow**
 - 若 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止多模型流程并如实告知用户当前无法完成这轮多模型咨询**
+- **shell 超时恢复协议（0.1.6+，硬前置）**：如果 `council discuss` 自身的 shell 调用出现 timeout 或返回非零，**不要**直接判失败——CouncilFlow 子进程一般还在跑，summary.md 会落盘。必须按下面两段式恢复：
+  1. 用 `council status --json --project-root <root>` 取 `data.state.last_discussion_id`
+  2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
+  3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
+  4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许告知用户多模型流程失败
+- 推荐用 `council status --json` 而不是解析 stderr
 
 读取结论时：
 - 优先使用命令返回 JSON 中的 `data.summary_path`
@@ -80,20 +86,3 @@ council discuss "关于 XX 的实现方案应该怎么选？" --controller-posit
 
 回答完毕后提示：
 > "回答完毕。你可以继续提问，或使用 /project-next 回到开发流程。"
-
-
-## 动态角色路由（0.1.3+）
-
-如果项目 `.council/config.yaml` 配置了动态角色路由（`roles.<role>` 为 list
-形式而非简写 string），`council delegate` 返回的 target model 由 CouncilFlow
-的路由引擎（`role_router.resolve`）按顺序匹配 `when` 表达式决定；skill 层
-**不干预** 路由决策。
-
-一旦拿到 `council delegate` 返回：
-
-- `status = local_execution` → 按现有流程在当前主控本地执行
-- `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
-- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
-  Report Protocol` 停止 workflow 并上报
-
-动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。
