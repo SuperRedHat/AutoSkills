@@ -34,11 +34,11 @@ council discuss "关于 XX 的实现方案应该怎么选？" --controller-posit
 - 如果你决定进入 discuss，就**必须先调用 CouncilFlow**
 - 若 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止多模型流程并如实告知用户当前无法完成这轮多模型咨询**
 - **shell 超时恢复协议（0.1.6+，硬前置）**：如果 `council discuss` 自身的 shell 调用出现 timeout 或返回非零，**不要**直接判失败——CouncilFlow 子进程一般还在跑，summary.md 会落盘。必须按下面两段式恢复：
-  1. 用 `council status --json --project-root <root>` 取 `data.state.last_discussion_id`
+  1. 用 `council status --project-root <root>` 取 `data.state.last_discussion_id`
   2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
   3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
   4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许告知用户多模型流程失败
-- 推荐用 `council status --json` 而不是解析 stderr
+- 推荐用 `council status` 而不是解析 stderr
 
 读取结论时：
 - 优先使用命令返回 JSON 中的 `data.summary_path`
