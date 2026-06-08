@@ -13,7 +13,7 @@ description: 独立多模型讨论入口。当用户说"讨论一下"、"多模�
 ### 第零步：初始化项目上下文（关键）
 1. 确定当前项目根目录的绝对路径。
 2. 在调用任何其他 project-manager MCP 工具前，先执行 `set_project_dir`。
-3. 若当前项目已经初始化，可调用 `get_project_context` 获取 PRD 摘要、架构摘要、任务状态和最近日志，作为讨论 framing 的输入。
+3. 若当前项目已经初始化，可调用 `get_project_context` 获取 PRD 摘要、架构摘要、任务状态和最近日志，作为讨论 framing 的输入。（Phase 0.2+ 该返回还含 `current_focus` 与双完成率 `metrics` 等只读 hint；这些只用于 framing，正式任务关闭仍由 host 调 `close_task`，讨论本身不改状态。）
 
 ### 第一步：明确讨论问题与参与模型
 1. 把用户的问题整理成一句可执行、可讨论的 `question`。

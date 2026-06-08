@@ -119,6 +119,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-005 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:27:17.048Z",
+      "type": "task_status_change",
+      "task_id": "PM-006",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-006 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:27:23.710Z",
+      "type": "task_status_change",
+      "task_id": "PM-006",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-006 in_progress → auto_verified: 读侧技能注记：project-resume 加守卫(current_focus 非 null 才渲染\"当前焦点\"段，is_stale 标注可能已过期)+ 双完成率(raw/active)展示 + next_task=null 时用 next_task_blocked_reason 区分原因 + 说明 get_project_context 新增 in_progress_tasks/metrics 字段与 context_mode=ops 用法。project-discuss 第零步注明 get_project_context 含 current_focus/metrics 只读 hint、关闭仍走 close_task。project-design step91 注明 add_log 可带 kind/event_type。project-design 读 get_prd 不消费新字段，无需 guard。docs 改动；29/29 测试仍绿。"
+    },
+    {
+      "timestamp": "2026-06-08T12:27:27.344Z",
+      "type": "task_status_change",
+      "task_id": "PM-006",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-006 auto_verified → done"
     }
   ]
 }
