@@ -473,6 +473,52 @@ server.tool(
   }
 );
 
+// ==================== Current Focus (ops) ====================
+
+server.tool(
+  "get_current_focus",
+  "获取当前焦点快照(ops)：返回 focus.json 结构化对象(含服务端计算的 is_stale)，无则返回 null。",
+  {},
+  async () => {
+    const focus = state.getCurrentFocus();
+    return {
+      content: [
+        { type: "text" as const, text: focus ? JSON.stringify(focus, null, 2) : "null" },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "set_current_focus",
+  "设置当前焦点快照(ops)：单槽 pinned 指针，写入 .claude/state/focus.json；updated_at 由服务端盖章；并记一条 focus_update 日志。",
+  {
+    summary: z.string().describe("当前在做/在等什么的一句话"),
+    last_event: z.string().nullable().optional().describe("上一个关键事件"),
+    next_trigger: z.string().nullable().optional().describe("下一个触发条件"),
+    waiting_on: z.array(z.string()).optional().describe("在等待的实体/人/任务"),
+    related_task_ids: z.array(z.string()).optional().describe("关联任务 ID"),
+    related_entities: z
+      .record(z.any())
+      .optional()
+      .describe("关联实体(proposal-id/合同号等)"),
+    source: z.string().nullable().optional().describe("来源(如 manual / workflow 名)"),
+    stale_after: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("过期时间 ISO；超过则 is_stale=true"),
+  },
+  async (input) => {
+    const focus = state.setCurrentFocus(input);
+    return {
+      content: [
+        { type: "text" as const, text: `Current focus updated at ${focus.updated_at}.` },
+      ],
+    };
+  }
+);
+
 // ==================== Diagnostics ====================
 
 server.tool(

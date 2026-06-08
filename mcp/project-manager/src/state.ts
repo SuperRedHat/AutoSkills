@@ -393,6 +393,42 @@ export class StateManager {
     return { ...focus, is_stale };
   }
 
+  setCurrentFocus(input: {
+    summary: string;
+    last_event?: string | null;
+    next_trigger?: string | null;
+    waiting_on?: string[];
+    related_task_ids?: string[];
+    related_entities?: Record<string, unknown>;
+    source?: string | null;
+    stale_after?: string | null;
+  }): CurrentFocus {
+    const focus: CurrentFocus = {
+      schema_version: 1,
+      summary: input.summary,
+      last_event: input.last_event ?? null,
+      next_trigger: input.next_trigger ?? null,
+      waiting_on: input.waiting_on ?? [],
+      related_task_ids: input.related_task_ids ?? [],
+      related_entities: input.related_entities ?? {},
+      source: input.source ?? null,
+      updated_at: new Date().toISOString(),
+      stale_after: input.stale_after ?? null,
+    };
+    this.writeJSON("focus.json", focus);
+    // Focus changes are an auditable ops event in the existing log stream
+    // (no separate journal store). Phase 1 will add the structured `kind` field.
+    this.addLog({
+      timestamp: focus.updated_at,
+      type: "focus_update",
+      task_id: null,
+      from_status: null,
+      to_status: null,
+      message: `focus: ${focus.summary}`,
+    });
+    return focus;
+  }
+
   private computeProgressMetrics(tasks: Task[]): ProgressMetrics {
     const total_all = tasks.length;
     // `s` is typed as string (not the status union) so that referencing the

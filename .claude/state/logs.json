@@ -71,6 +71,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-003 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:20:50.715Z",
+      "type": "task_status_change",
+      "task_id": "PM-004",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-004 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:21:36.920Z",
+      "type": "task_status_change",
+      "task_id": "PM-004",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-004 in_progress → auto_verified: current_focus 写入路径 + MCP 工具完成:setCurrentFocus(单槽写 focus.json,服务端盖 updated_at,schema_version=1,缺省 waiting_on=[]/entities={},并记一条 focus_update 日志);get_current_focus/set_current_focus 两个工具(set 参数照 james-monitor-state 形状:summary/last_event/next_trigger/waiting_on/related_task_ids/related_entities/source/stale_after)。读侧 getCurrentFocus(is_stale 计算)PM-003 已落。测试 5 例:null 态、round-trip+缺省、is_stale(过去/未来)、结构化字段持久、getProjectContext 透出 + focus_update 日志。tsc 干净;23/23 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T12:21:39.492Z",
+      "type": "task_status_change",
+      "task_id": "PM-004",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-004 auto_verified → done"
     }
   ]
 }
