@@ -301,15 +301,34 @@ export class StateManager {
     const data = this.getTasks();
     if (!data) return null;
 
-    const doneTasks = new Set(
-      data.tasks.filter((t) => t.status === "done").map((t) => t.id)
-    );
+    const byId = new Map(data.tasks.map((t) => [t.id, t]));
+
+    // A dependency is satisfied iff it is `done`, OR it is `superseded` and its
+    // replacement chain terminates in a `done` task (defensive backstop —
+    // close_task already rewrites dependents, but hand-edited/legacy data may
+    // still point at a superseded id). A `cancelled` dep is NOT satisfied, so
+    // its dependents are correctly held back (and surfaced via close_task's
+    // ops_event + next_task_blocked_reason) rather than silently run.
+    const depSatisfied = (depId: string): boolean => {
+      const seen = new Set<string>();
+      let cur: string | null | undefined = depId;
+      while (cur && !seen.has(cur)) {
+        seen.add(cur);
+        const dt = byId.get(cur);
+        if (!dt) return false;
+        if (dt.status === "done") return true;
+        if (dt.status === "superseded" && dt.replacement_task_id) {
+          cur = dt.replacement_task_id;
+          continue;
+        }
+        return false;
+      }
+      return false;
+    };
 
     return (
       data.tasks.find(
-        (t) =>
-          t.status === "todo" &&
-          t.dependencies.every((dep) => doneTasks.has(dep))
+        (t) => t.status === "todo" && t.dependencies.every(depSatisfied)
       ) || null
     );
   }
@@ -437,11 +456,25 @@ export class StateManager {
     task.updated_at = new Date().toISOString();
     task.closed_at = task.updated_at;
     task.close_reason = reason;
-    if (closeStatus === "superseded") task.replacement_task_id = replacementTaskId ?? null;
 
     const affected_dependents = data.tasks
-      .filter((t) => t.dependencies.includes(id))
+      .filter((t) => t.id !== id && t.dependencies.includes(id))
       .map((t) => t.id);
+    const rewired: string[] = [];
+
+    if (closeStatus === "superseded") {
+      task.replacement_task_id = replacementTaskId ?? null;
+      // Rewrite dependents to point at the replacement so the DAG stays runnable
+      // (the work moved; dependents should now wait on the replacement, not the husk).
+      for (const t of data.tasks) {
+        if (t.id !== id && t.dependencies.includes(id)) {
+          t.dependencies = t.dependencies.map((d) =>
+            d === id ? (replacementTaskId as string) : d
+          );
+          rewired.push(t.id);
+        }
+      }
+    }
 
     this.saveTasks(data);
     this.updateProjectProgress();
@@ -458,12 +491,31 @@ export class StateManager {
         reason,
         ...(replacementTaskId ? { replacement_task_id: replacementTaskId } : {}),
         ...(affected_dependents.length ? { dependents: affected_dependents } : {}),
+        ...(rewired.length ? { rewired } : {}),
       },
       source: "close_task",
       message: `${id} ${oldStatus} → ${closeStatus} (close_task): ${reason}`,
     });
 
-    return { success: true, task_id: id, affected_dependents, rewired: [] };
+    // Cancelling (not superseding) leaves dependents pointing at a dead task.
+    // Surface an ops_event so the controller re-points/closes them, rather than
+    // a silent deadlock (G1: a cancelled dep must neither run nor stall silently).
+    if (closeStatus === "cancelled" && affected_dependents.length) {
+      this.addLog({
+        timestamp: task.updated_at,
+        type: "ops_event",
+        kind: "ops_event",
+        event_type: "dependents_blocked_by_cancel",
+        task_id: id,
+        from_status: null,
+        to_status: null,
+        entities: { cancelled: id, dependents: affected_dependents },
+        source: "close_task",
+        message: `Cancelling ${id} blocks ${affected_dependents.length} dependent(s): ${affected_dependents.join(", ")}. Re-point or close them.`,
+      });
+    }
+
+    return { success: true, task_id: id, affected_dependents, rewired };
   }
 
   private validateReplacement(
@@ -650,13 +702,15 @@ export class StateManager {
     if (nextTask) return "none";
     const todos = tasks.filter((t) => t.status === "todo");
     if (todos.length === 0) return "all_done";
-    const closed = new Set(
-      tasks.filter((t) => ["cancelled", "superseded"].includes(t.status)).map((t) => t.id)
+    // superseded deps are rewired/resolvable, so only a cancelled dep is a true
+    // dead-end blocker for the diagnostic.
+    const cancelledIds = new Set(
+      tasks.filter((t) => t.status === "cancelled").map((t) => t.id)
     );
-    const blockedByClosed = todos.some((t) =>
-      t.dependencies.some((d) => closed.has(d))
+    const blockedByCancelled = todos.some((t) =>
+      t.dependencies.some((d) => cancelledIds.has(d))
     );
-    return blockedByClosed ? "blocked_by_cancelled_dep" : "blocked_in_progress";
+    return blockedByCancelled ? "blocked_by_cancelled_dep" : "blocked_in_progress";
   }
 
   getProjectContext(opts: GetProjectContextOptions = {}): {
