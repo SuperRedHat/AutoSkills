@@ -398,16 +398,36 @@ server.tool(
 
 server.tool(
   "add_log",
-  "记录操作日志",
+  "记录操作日志。kind 为粗分类(省略则按 type 推断)，event_type 承接细类型，entities/tags 用于结构化检索(proposal-id/合同号等)。task_id 可为 null 表示项目级 ops 事件。",
   {
     type: z.string().describe("Log type (e.g., task_status_change, decision, review_completed)"),
     message: z.string().describe("Log message"),
-    task_id: z.string().nullable().optional().describe("Related task ID"),
+    task_id: z.string().nullable().optional().describe("Related task ID (null = 项目级事件)"),
+    kind: z
+      .enum([
+        "task_transition",
+        "ops_event",
+        "decision",
+        "note",
+        "workflow_failure",
+        "focus_update",
+      ])
+      .optional()
+      .describe("粗分类；省略则按 type 推断"),
+    event_type: z.string().nullable().optional().describe("细类型(承接 legacy type 语义)"),
+    tags: z.array(z.string()).optional().describe("标签"),
+    entities: z.record(z.any()).optional().describe("关联实体(proposal-id/合同号等)"),
+    source: z.string().nullable().optional().describe("来源"),
   },
-  async ({ type, message, task_id }) => {
+  async ({ type, message, task_id, kind, event_type, tags, entities, source }) => {
     state.addLog({
       timestamp: new Date().toISOString(),
       type,
+      kind,
+      event_type: event_type ?? null,
+      tags,
+      entities,
+      source: source ?? null,
       task_id: task_id || null,
       from_status: null,
       to_status: null,
@@ -421,12 +441,25 @@ server.tool(
 
 server.tool(
   "get_logs",
-  "获取最近的操作日志",
+  "获取操作日志(可作 journal 视图)。kind/event_type/since 在切片之前过滤，避免被更新的无关条目挤掉更早的匹配项。",
   {
-    n: z.number().optional().describe("Number of recent logs to return (default: 10)"),
+    n: z.number().optional().describe("返回条数(默认 10)；等价于 limit，过滤之后才切片"),
+    kind: z
+      .enum([
+        "task_transition",
+        "ops_event",
+        "decision",
+        "note",
+        "workflow_failure",
+        "focus_update",
+      ])
+      .optional()
+      .describe("按粗分类过滤(对旧条目按 type 推断)"),
+    event_type: z.string().optional().describe("按细类型过滤(匹配 event_type，回退 type)"),
+    since: z.string().optional().describe("仅返回该 ISO 时间(含)之后的日志"),
   },
-  async ({ n }) => {
-    const logs = state.getLogs(n || 10);
+  async ({ n, kind, event_type, since }) => {
+    const logs = state.getLogs({ kind, event_type, since, limit: n ?? 10 });
     return {
       content: [
         {

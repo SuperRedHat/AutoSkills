@@ -59,6 +59,14 @@ export interface TasksData {
   tasks: Task[];
 }
 
+export type LogKind =
+  | "task_transition"
+  | "ops_event"
+  | "decision"
+  | "note"
+  | "workflow_failure"
+  | "focus_update";
+
 export interface LogEntry {
   timestamp: string;
   type: string;
@@ -66,6 +74,12 @@ export interface LogEntry {
   from_status: string | null;
   to_status: string | null;
   message: string;
+  // Phase 0.4 additive fields (all optional; pre-existing entries infer kind on read):
+  kind?: LogKind;
+  event_type?: string | null;
+  tags?: string[];
+  entities?: Record<string, unknown>;
+  source?: string | null;
 }
 
 export interface LogsData {
@@ -119,6 +133,26 @@ const PRESENTATION_ORDER: Record<ContextMode, string[]> = {
   ops: ["current_focus", "recent_logs", "in_progress_tasks", "next_task", "tasks_summary"],
   hybrid: ["current_focus", "next_task", "in_progress_tasks", "recent_logs", "tasks_summary"],
 };
+
+// Maps legacy free-text `type` values to the coarse `kind` discriminator (G4),
+// so the 9 real production log types keep their semantics under the 6-value enum.
+const KIND_BY_TYPE: Record<string, LogKind> = {
+  task_status_change: "task_transition",
+  decision: "decision",
+  workflow_failure: "workflow_failure",
+  focus_update: "focus_update",
+  review_completed: "ops_event",
+  milestone_gate: "ops_event",
+  phase_change: "ops_event",
+  manual_acceptance: "ops_event",
+  qa: "ops_event",
+  smoke_results: "ops_event",
+  followup_needed: "ops_event",
+};
+
+function inferKind(type: string): LogKind {
+  return KIND_BY_TYPE[type] ?? "note";
+}
 
 // ---------- Valid state transitions ----------
 
@@ -326,6 +360,7 @@ export class StateManager {
     this.addLog({
       timestamp: new Date().toISOString(),
       type: "task_status_change",
+      kind: "task_transition",
       task_id: id,
       from_status: oldStatus,
       to_status: newStatus,
@@ -365,14 +400,39 @@ export class StateManager {
 
   // ---------- Logs ----------
 
-  getLogs(n?: number): LogEntry[] {
+  /** Coarse kind for a log entry: explicit `kind` wins, else inferred from `type`. */
+  logKind(entry: LogEntry): LogKind {
+    return entry.kind ?? inferKind(entry.type);
+  }
+
+  getLogs(
+    filter?:
+      | number
+      | { kind?: LogKind; event_type?: string; since?: string; limit?: number }
+  ): LogEntry[] {
     const data = this.readJSON<LogsData>("logs.json");
     if (!data) return [];
 
-    const logs = data.logs.sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
-    return n ? logs.slice(0, n) : logs;
+    const opts = typeof filter === "number" ? { limit: filter } : filter ?? {};
+
+    let logs = data.logs
+      .slice()
+      .sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+    // Filter BEFORE slicing, so a kind/event_type/since query never silently
+    // drops older matches behind a window of unrelated, more-recent entries.
+    if (opts.kind) logs = logs.filter((l) => this.logKind(l) === opts.kind);
+    if (opts.event_type) {
+      logs = logs.filter((l) => (l.event_type ?? l.type) === opts.event_type);
+    }
+    if (opts.since) {
+      const since = new Date(opts.since).getTime();
+      logs = logs.filter((l) => new Date(l.timestamp).getTime() >= since);
+    }
+
+    return opts.limit ? logs.slice(0, opts.limit) : logs;
   }
 
   addLog(entry: LogEntry): void {
@@ -421,6 +481,7 @@ export class StateManager {
     this.addLog({
       timestamp: focus.updated_at,
       type: "focus_update",
+      kind: "focus_update",
       task_id: null,
       from_status: null,
       to_status: null,

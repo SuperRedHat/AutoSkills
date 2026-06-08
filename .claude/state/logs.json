@@ -95,6 +95,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-004 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:23:21.561Z",
+      "type": "task_status_change",
+      "task_id": "PM-005",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-005 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:24:54.626Z",
+      "type": "task_status_change",
+      "task_id": "PM-005",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-005 in_progress → auto_verified: add_log 富化 + getLogs 先过滤后切片。LogEntry 加 kind/event_type/tags/entities/source(全 optional);LogKind 6 值枚举;KIND_BY_TYPE 推断表(9 个真实 type→kind,G4)+ inferKind;logKind(explicit kind 优先,否则推断)。getLogs 支持 number(向后兼容)或 {kind,event_type,since,limit}，先过滤后切片(修 journal 正确性)。内部两处 addLog 显式盖 kind(task_transition/focus_update)。index.ts add_log/get_logs 工具开放新字段/过滤。测试 6 例:filter-before-slice 复现(ops_event 藏在更新 notes 后仍取到)、kind 推断(含 unknown→note + 真实 fixture)、enrichment 往返、since、数字形向后兼容。tsc 干净;29/29 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T12:25:00.867Z",
+      "type": "task_status_change",
+      "task_id": "PM-005",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-005 auto_verified → done"
     }
   ]
 }
