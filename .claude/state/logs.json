@@ -23,6 +23,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-001 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:13:49.889Z",
+      "type": "task_status_change",
+      "task_id": "PM-002",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-002 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:14:52.585Z",
+      "type": "task_status_change",
+      "task_id": "PM-002",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-002 in_progress → auto_verified: characterization 测试锁住现状：getProjectContext(500 字摘要+省略号、tasks_summary、≤10 logs、当前无 in_progress_tasks/current_focus)、updateProjectProgress 恰好 legacy 5 键、getLogs(n) 降序切片、getNextTask 仅 done 满足依赖 + 前向 gauntlet、cancelled/superseded 当前被拒。顺带发现并补全 fixture 缺的 prd.md/architecture.md(councilflow+nano)。10/10 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T12:14:55.831Z",
+      "type": "task_status_change",
+      "task_id": "PM-002",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-002 auto_verified → done"
     }
   ]
 }
