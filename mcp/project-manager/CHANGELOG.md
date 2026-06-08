@@ -2,6 +2,32 @@
 
 All notable changes to the project-manager MCP server.
 
+## [1.3.0] — 2026-06-08 — cross-project / portfolio (read-only)
+
+Additive, backward-compatible. Addresses feedback L6 (module-global active project;
+no cross-project reference). Design: `AutoSkills/docs/adr-003-cross-project-portfolio.md`.
+
+### Added
+- **Per-call `project_dir` on all 10 read tools** (`get_project_info` / `get_prd` /
+  `get_architecture` / `get_all_tasks` / `get_task_by_id` / `get_next_task` / `get_logs` /
+  `get_project_context` / `get_current_focus` / `get_server_info`): read another project's state
+  **without switching the active project**. Never reassigns the module-global; paths are
+  canonicalized (symlink / Windows case / UNC); a non-project dir returns a classified error
+  (`not_a_project` / `state_unreadable`). `get_server_info` echoes `resolved` / `active_project`.
+- **`get_portfolio(project_dirs[])`** — read-only cross-project aggregator (per project:
+  name, status, dual-rate metrics, current_focus, next_task, next_task_blocked_reason). Per-call
+  list **only**; never reads a registry. A bad dir yields a per-entry error without sinking others.
+- New module `src/project_dir.ts` (`resolveProjectDir` safety contract) + `StateManager.getPortfolioSummary`.
+
+### Compatibility
+- Fully backward compatible: `project_dir` is optional everywhere (omitted = active project,
+  unchanged output); `set_project_dir` and the single-active-project default are untouched; no new
+  schema_version.
+
+### Deferred
+- Cross-project **writes** (write tools do not accept `project_dir`), portfolio **registry file**,
+  cross-project **pointer task type**.
+
 ## [1.2.0] — 2026-06-08 — backlog completion (priority / batch / reopen / external profiles)
 
 Additive, backward-compatible. Completes the original feedback backlog (L4 / L5 / L9)
