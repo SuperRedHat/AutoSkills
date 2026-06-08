@@ -13,4 +13,5 @@
   - `review_checklist`
   - `stage_gate`
 - repo-local 规则只补充项目特殊约束，不复制整套全局规则
+- 终止任务（取消/被取代）走 `close_task`（cancelled / superseded），由 project-feedback 或管理决策调用，`update_task_status` 不接受这两个状态
 
