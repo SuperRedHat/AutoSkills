@@ -15,6 +15,8 @@ description: 查看项目进度。当用户说"进度"、"看板"、"状态"、"
 
 也可改用一次 `get_project_context` 拿到 `tasks_summary.metrics`（`total_all` / `active_total` / `done` / `cancelled` / `superseded` / `closed_total` / `raw_completion_rate` / `active_completion_rate`），直接得到双完成率与各终态计数，省去本地统计。
 
+跨项目（1.3.0+）：只读工具均可传 `project_dir` 查看**另一个**项目而**不切走**当前项目；要并排看多个项目，用一次 `get_portfolio(project_dirs[])` 直接拿到逐项目的 进度双率/当前焦点/下一个任务 摘要（仅 per-call 列表，不读注册表）。
+
 ### 第二步：计算并输出看板
 
 ```

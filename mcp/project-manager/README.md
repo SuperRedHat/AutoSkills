@@ -66,3 +66,8 @@ npm run build
 
 ### 迁移
 - `migrate_tasks_schema` — v0 -> v1 迁移，幂等；从不改动任务 status，回填日志的 `kind`/`event_type`，并写入 `schema_version=1`
+
+### 跨项目 / portfolio（只读，1.3.0+）
+- 所有**只读**工具（`get_project_info` / `get_prd` / `get_architecture` / `get_all_tasks` / `get_task_by_id` / `get_next_task` / `get_logs` / `get_project_context` / `get_current_focus` / `get_server_info`）新增可选 `project_dir`：定位另一个项目（含 `.claude/state` 的目录）做**只读**查询，**不切换**当前活动项目、**不改写**任何全局态（消除"`set_project_dir` 切过去还得记得切回"的痛点）。不传 = 当前活动项目，行为完全同现状。路径会 canonical 化（解 symlink / Windows 大小写 / UNC）；非项目目录返回 `not_a_project` / `state_unreadable` 分类错误。`get_server_info` 会回显 `resolved` / `active_project` 便于排错。
+- `get_portfolio` — 跨项目只读聚合：对传入的 `project_dirs[]`（**仅 per-call 列表，不读任何注册表**）逐项目返回 `name`/`status`/双率 metrics/`current_focus`/`next_task`/`next_task_blocked_reason` 摘要；坏项目逐条 `error`，不拖垮整体。
+- **写工具本轮不支持跨项目 `project_dir`**（写另一项目仍需 `set_project_dir` 切过去）；跨项目写 / portfolio 注册表 / pointer 任务类型留待后续。

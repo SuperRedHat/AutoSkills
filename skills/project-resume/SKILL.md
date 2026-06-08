@@ -26,6 +26,7 @@ description: 恢复项目上下文。当用户说"继续项目"、"恢复上下�
 - `tasks_summary.metrics`：双完成率 `raw_completion_rate`（含全部任务）与 `active_completion_rate`（剔除 cancelled/superseded）
 - `tasks_summary.next_task_blocked_reason`：`none | all_done | blocked_in_progress | blocked_by_cancelled_dep`
 - `current_focus`：结构化焦点快照（含服务端计算的 `is_stale`），无则为 `null`
+- 跨项目只读（1.3.0+）：本工具及其它只读工具可传 `project_dir` 查看另一个项目的状态而**不切换**当前活动项目（恢复时想顺带看一眼别的项目进展时用；要并排多项目用 `get_portfolio`。写仍需 `set_project_dir` 切过去）
 
 ### 第二步：输出摘要
 
