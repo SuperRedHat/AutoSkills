@@ -823,9 +823,9 @@
         "下游文档一致"
       ],
       "stage_gate": true,
-      "status": "todo",
+      "status": "in_progress",
       "created_at": "2026-06-08T18:00:08.600Z",
-      "updated_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:12:55.246Z",
       "commit_hash": "",
       "notes": "",
       "verification_commands": []

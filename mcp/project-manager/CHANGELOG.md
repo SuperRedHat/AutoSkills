@@ -2,6 +2,34 @@
 
 All notable changes to the project-manager MCP server.
 
+## [1.2.0] — 2026-06-08 — backlog completion (priority / batch / reopen / external profiles)
+
+Additive, backward-compatible. Completes the original feedback backlog (L4 / L5 / L9)
+plus reopen. Design: `AutoSkills/docs/adr-002-project-manager-backlog-completion.md`.
+
+### Added
+- **Task priority** (`priority?: number`, default 0, higher = more urgent). `get_next_task` now
+  returns the highest-priority **runnable** todo, ties broken by creation order; priority **never**
+  overrides dependency gating. New `set_task_priority` tool. (L5)
+- **Batch operations** (L4): `update_tasks` (batch forward transitions, per-item partial success,
+  each still validated), `close_tasks` (batch close), `archive_module(module, reason)` (cancel all
+  non-terminal tasks in a module).
+- **`reopen_task(id, reason, to_status?)`** — audited reverse of `close_task`: brings a terminal
+  task (`done` / `cancelled` / `superseded`) back to `todo` (default) or `in_progress`. Reopening a
+  superseded task clears `replacement_task_id` (dependents rewired at supersede time are NOT
+  auto-restored; the audit log flags it). The single audited reverse edge out of a terminal state —
+  supersedes the 1.1.0 "no reopen in v1" non-goal.
+
+### Changed
+- **`verification_profile`** names are validated at runtime against the external
+  `~/.workflow-core/policies/verification-profiles.json` (no longer a hardcoded enum). Adding a
+  profile is a JSON-only edit; unknown names are rejected (lenient only if the file is missing). (L9)
+
+### Compatibility
+- Fully backward compatible: `priority` defaults to 0 (= legacy creation-order scheduling); all new
+  tools are additive; **no new schema_version** (normalizeTask defaults `priority` on read). Deploys
+  together with 1.1.0.
+
 ## [1.1.0] — 2026-06-08 — ops / management capabilities (schema v1)
 
 Additive, backward-compatible release adding operational / management / rich-recovery

@@ -575,6 +575,14 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-205 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T18:12:55.274Z",
+      "type": "task_status_change",
+      "task_id": "PM-206",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-206 todo → in_progress"
     }
   ]
 }
