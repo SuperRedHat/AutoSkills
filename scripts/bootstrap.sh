@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # One-click install of AutoSkills on a new machine. See bootstrap.ps1.
-# Usage: bootstrap.sh [--dry-run] [--force] [--help]
+# Usage: bootstrap.sh [--dry-run] [--force] [--migrate-state=dir1,dir2] [--help]
 
 set -euo pipefail
 
 DRY_RUN=0
 FORCE=0
+MIGRATE_STATE=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
+    --migrate-state=*) MIGRATE_STATE="${arg#*=}" ;;
     --help|-h) sed -n '2,4p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
@@ -71,6 +73,24 @@ invoke "npm run build in $MCP_DIR" bash -c "cd '$MCP_DIR' && npm run build"
 if [[ $DRY_RUN -eq 0 && ! -f "$MCP_DIR/dist/index.js" ]]; then
   echo "Build did not produce dist/index.js" >&2
   exit 3
+fi
+
+# --- Step 3.5 (optional): migrate existing project state to schema v1 ---
+echo
+if [[ -n "$MIGRATE_STATE" ]]; then
+  echo "--- Step 3.5 (optional): migrate project state to schema v1 (idempotent) ---"
+  STATE_JS="$MCP_DIR/dist/state.js"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] migrate_tasks_schema on: $MIGRATE_STATE"
+  else
+    [[ -f "$STATE_JS" ]] || { echo "Built state module not found: $STATE_JS" >&2; exit 3; }
+    IFS=',' read -ra PROJ_DIRS <<< "$MIGRATE_STATE"
+    for proj in "${PROJ_DIRS[@]}"; do
+      node -e "const{StateManager}=require('$STATE_JS');const r=new StateManager('$proj').migrateTaskSchema();console.log('    $proj -> '+JSON.stringify(r));"
+    done
+  fi
+else
+  echo "--- Step 3.5 (optional): state migration skipped (lazy first-touch). Pass --migrate-state=dir1,dir2 to batch-migrate. ---"
 fi
 
 # --- Step 4: register MCP with 3 CLIs per manifest ---

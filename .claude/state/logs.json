@@ -303,6 +303,62 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-105 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:46:53.820Z",
+      "type": "task_status_change",
+      "task_id": "PM-106",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-106 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:46:54.310Z",
+      "type": "task_status_change",
+      "task_id": "PM-107",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-107 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:46:55.258Z",
+      "type": "task_status_change",
+      "task_id": "PM-108",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-108 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:46:55.361Z",
+      "type": "task_status_change",
+      "task_id": "PM-109",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-109 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:50:38.936Z",
+      "type": "task_status_change",
+      "task_id": "PM-110",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-110 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:50:43.529Z",
+      "type": "task_status_change",
+      "task_id": "PM-110",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-110 in_progress → auto_verified: bootstrap.ps1/.sh 加可选 -MigrateState / --migrate-state=dir1,dir2 步骤(Step 3.5)，默认跳过(惰性 first-touch)。机制经真实数据非破坏验证:对 councilflow 临时副本跑 dist/state.js 的 migrateTaskSchema：run1 migrated=114/logs=449/sv=1/skipped=false，run2 skipped=true/migrated=0(幂等)，post sv=1 raw=active=1。路径用正斜杠喂 node 避免转义。"
+    },
+    {
+      "timestamp": "2026-06-08T13:50:46.643Z",
+      "type": "task_status_change",
+      "task_id": "PM-110",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-110 auto_verified → done"
     }
   ]
 }

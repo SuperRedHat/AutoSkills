@@ -18,11 +18,18 @@
 .PARAMETER Force
   Skip interactive confirmation prompts (currently no-op; reserved).
 
+.PARAMETER MigrateState
+  Optional list of existing project roots to migrate to schema v1 after the
+  build (idempotent; safe to re-run; never changes task status). Default:
+  skipped — migration is lazy (the upgraded server backfills on first write,
+  and read paths compute the new fields on the fly).
+
 .PARAMETER Help
 #>
 param(
   [switch]$DryRun = $false,
   [switch]$Force = $false,
+  [string[]]$MigrateState = @(),
   [switch]$Help = $false
 )
 
@@ -88,6 +95,24 @@ Invoke-Action "npm run build in $mcpProjectDir" {
   try { npm run build } finally { Pop-Location }
   $distIndex = Join-Path $mcpProjectDir 'dist\index.js'
   if (-not (Test-Path $distIndex)) { throw "Build did not produce $distIndex" }
+}
+
+# --- Step 3.5 (optional): migrate existing project state to schema v1 ---
+Write-Output ""
+if ($MigrateState.Count -gt 0) {
+  Write-Output "--- Step 3.5 (optional): migrate $($MigrateState.Count) project(s) to schema v1 ---"
+  $statePath = Join-Path $mcpProjectDir 'dist\state.js'
+  Invoke-Action "migrate_tasks_schema on provided project roots (idempotent)" {
+    if (-not (Test-Path $statePath)) { throw "Built state module not found: $statePath" }
+    $stateFwd = ($statePath -replace '\\', '/')
+    foreach ($proj in $MigrateState) {
+      $projFwd = ($proj -replace '\\', '/')
+      $js = "const{StateManager}=require('$stateFwd');const r=new StateManager('$projFwd').migrateTaskSchema();console.log('    $projFwd -> '+JSON.stringify(r));"
+      node -e $js
+    }
+  }
+} else {
+  Write-Output "--- Step 3.5 (optional): state migration skipped (lazy first-touch). Pass -MigrateState dir1,dir2 to batch-migrate. ---"
 }
 
 # --- Step 4: register MCP with 3 CLIs ---
