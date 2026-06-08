@@ -445,6 +445,49 @@ export class StateManager {
     return { success: true, task_id: id };
   }
 
+  updateTasks(
+    updates: { id: string; status: Task["status"]; notes?: string }[]
+  ): { id: string; success: boolean; error?: string }[] {
+    return updates.map((u) => ({ id: u.id, ...this.updateTaskStatus(u.id, u.status, u.notes) }));
+  }
+
+  closeTasks(
+    closes: {
+      id: string;
+      status: "cancelled" | "superseded";
+      reason: string;
+      replacement_task_id?: string;
+    }[]
+  ): { id: string; success: boolean; error?: string; affected_dependents?: string[] }[] {
+    return closes.map((c) => {
+      const r = this.closeTask(c.id, c.status, c.reason, c.replacement_task_id);
+      return {
+        id: c.id,
+        success: r.success,
+        error: r.error,
+        affected_dependents: r.affected_dependents,
+      };
+    });
+  }
+
+  archiveModule(
+    module: string,
+    reason: string
+  ): { closed: string[]; results: { id: string; success: boolean; error?: string }[] } {
+    const data = this.getTasks();
+    if (!data) return { closed: [], results: [] };
+    const targets = data.tasks
+      .filter(
+        (t) => t.module === module && !["done", "cancelled", "superseded"].includes(t.status)
+      )
+      .map((t) => t.id);
+    const results = targets.map((id) => {
+      const r = this.closeTask(id, "cancelled", reason);
+      return { id, success: r.success, error: r.error };
+    });
+    return { closed: results.filter((r) => r.success).map((r) => r.id), results };
+  }
+
   getTaskById(id: string): Task | null {
     const data = this.getTasks();
     if (!data) return null;

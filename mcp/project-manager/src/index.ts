@@ -391,6 +391,73 @@ server.tool(
 );
 
 server.tool(
+  "update_tasks",
+  "批量前向改状态（逐条仍走完整校验，允许部分成功；不接受 cancelled/superseded——请用 close_tasks）。",
+  {
+    updates: z
+      .array(
+        z.object({
+          id: z.string(),
+          status: z.enum([
+            "todo",
+            "in_progress",
+            "auto_verified",
+            "awaiting_manual_acceptance",
+            "done",
+          ]),
+          notes: z.string().optional(),
+        })
+      )
+      .describe("批量状态更新"),
+  },
+  async ({ updates }) => {
+    const r = state.updateTasks(updates);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "close_tasks",
+  "批量关闭任务（逐条走 close_task：cancelled 需 reason；superseded 需 reason + replacement_task_id）。",
+  {
+    closes: z
+      .array(
+        z.object({
+          id: z.string(),
+          status: z.enum(["cancelled", "superseded"]),
+          reason: z.string(),
+          replacement_task_id: z.string().optional(),
+        })
+      )
+      .describe("批量关闭"),
+  },
+  async ({ closes }) => {
+    const r = state.closeTasks(closes);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "archive_module",
+  "把某 module 下所有非终态任务批量取消（close_task cancelled）。用于整模块作废。",
+  {
+    module: z.string().describe("模块名"),
+    reason: z.string().describe("作废原因"),
+  },
+  async ({ module, reason }) => {
+    const r = state.archiveModule(module, reason);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Archived module "${module}": cancelled ${r.closed.length} task(s)${r.closed.length ? " (" + r.closed.join(", ") + ")" : ""}.`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
   "reopen_task",
   "复活终态任务（受审计管理旁路，不走前向状态机）：把 done/cancelled/superseded 移回 todo（默认）或 in_progress。reason 必填。superseded 复活会清空 replacement_task_id；其在 supersede 时被改写的下游依赖不会自动改回（见审计日志）。",
   {

@@ -715,11 +715,11 @@
         "npm --prefix mcp/project-manager run build",
         "npm --prefix mcp/project-manager test"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T18:00:08.600Z",
-      "updated_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:05:40.953Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "L4 批量:updateTasks(逐条走 updateTaskStatus,部分成功,仍校验+拒终态)、closeTasks(逐条走 closeTask,返回逐条结果+affected_dependents)、archiveModule(只关 module 下非终态任务为 cancelled,返回 closed 列表)。三个 MCP 工具落地(update_tasks/close_tasks/archive_module)。全部复用现有校验,不绕过。3 用例:update_tasks 部分成功+逐条独立、close_tasks 批量+不误伤、archive_module 只动该模块非终态、留 done/其他模块。tsc 干净;65/65 绿。",
       "review_checklist": [],
       "stage_gate": false
     },
