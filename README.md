@@ -26,6 +26,25 @@
 | `docs/bootstrap.md` | bootstrap 深度文档：每一步、幂等性、快照、回滚 |
 | `docs/skills-migration-report.md` | skills 搬迁审计（TASK-065 产出） |
 | `docs/mcp-migration-report.md` | MCP server 搬迁审计（TASK-066 产出） |
+| `docs/adr-001..003-*.md` | project-manager ops / 管理 / 跨项目能力设计（ADR） |
+| `mcp/project-manager/CHANGELOG.md` | project-manager 版本变更日志（当前 **v1.3.0**） |
+
+---
+
+## project-manager 能力速览（v1.3.0）
+
+`project-manager` 已从最初的"线性 build 任务 + 日志持久化"扩展为支持**运营 / 管理 / 跨项目**的状态引擎（全程**向后兼容、纯加法**）。完整工具清单见 [mcp/project-manager/README.md](mcp/project-manager/README.md)，设计依据见 `docs/adr-001..003`，版本变更见 [CHANGELOG](mcp/project-manager/CHANGELOG.md)。
+
+- **任务生命周期**：除前向状态机（`todo → in_progress → auto_verified → done`）外，新增终态 `cancelled` / `superseded`，经**受审计的** `close_task` 进入（不污染完成率）；`reopen_task` 受审计地复活终态任务（撤销误关/误完成）。
+- **优先级**：任务可带 `priority`，`get_next_task` 优先派高优先级（同分按创建顺序，**永不越过依赖门控**）；`set_task_priority` 事后调整。
+- **批量**：`update_tasks` / `close_tasks` / `archive_module` 一次处理多个任务（逐条仍走完整校验）。
+- **当前焦点（ops）**：`set_current_focus` / `get_current_focus` 把"在做什么 / 在等什么"记成结构化快照（`focus.json`，带 `is_stale`）——运营 / 事件驱动型工作尤其受用。
+- **富日志 / journal**：`add_log` 支持 `kind` / `event_type` / `tags` / `entities`（`task_id` 可为 null = 项目级事件）；`get_logs` 可按 `kind` / `event_type` / `since` 先过滤后切片（journal 视图）。
+- **双完成率**：进度同时给 `raw`（含全部任务）与 `active`（剔除已取消 / 被取代）两个口径，避免取消任务后完成率虚高/虚低。
+- **跨项目 / portfolio**：所有**只读**工具支持可选 `project_dir`（**不切走**当前项目即可查另一个项目）；`get_portfolio(project_dirs[])` 一次聚合多项目的进度 / 焦点 / 下一个任务。
+- **更丰富的恢复上下文**：`get_project_context` 现额外返回 `in_progress` 全文、双完成率 `metrics`、`current_focus`、`next_task_blocked_reason` 诊断——`/project-resume` 因此能直接呈现"现在在哪、在等谁、为何卡住"。
+
+> **升级到 v1.3.0**：旧状态文件**无需改动**即可读（新字段读时计算）；可选地用 `bootstrap.ps1 -MigrateState dir1,dir2` / `bootstrap.sh --migrate-state=dir1,dir2` 把既有项目**幂等**迁移到 schema v1（绝不改任务 status、回填日志 `kind`、补双完成率）。
 
 ---
 
@@ -174,3 +193,6 @@ restore 会还原 skills 三端目录、`claude-commands`、`gemini-settings.jso
 - [CouncilFlow](https://github.com/SuperRedHat/CouncilFlow) — 配套 sidecar 本体
 - [docs/bootstrap.md](docs/bootstrap.md) — bootstrap 深度文档
 - [mcp-manifest.json](mcp-manifest.json) — MCP 注册真源
+- [mcp/project-manager/README.md](mcp/project-manager/README.md) — project-manager 完整工具清单（v1.3.0）
+- [mcp/project-manager/CHANGELOG.md](mcp/project-manager/CHANGELOG.md) — project-manager 版本变更
+- `docs/adr-001..003-*.md` — ops / 管理 / 跨项目能力设计决策
