@@ -610,9 +610,9 @@
         "全下游一致性"
       ],
       "stage_gate": true,
-      "status": "todo",
+      "status": "in_progress",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T13:54:55.711Z",
       "commit_hash": "",
       "notes": "",
       "verification_commands": []

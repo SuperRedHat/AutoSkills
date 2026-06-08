@@ -423,6 +423,14 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-109 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:54:55.772Z",
+      "type": "task_status_change",
+      "task_id": "PM-111",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-111 todo → in_progress"
     }
   ]
 }
