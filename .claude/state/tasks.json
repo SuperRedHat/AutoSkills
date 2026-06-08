@@ -610,11 +610,11 @@
         "全下游一致性"
       ],
       "stage_gate": true,
-      "status": "in_progress",
+      "status": "done",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T13:54:55.711Z",
+      "updated_at": "2026-06-08T16:39:22.036Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "用户 sign-off Phase 1 / release。代码+文档+测试全部完成(MCP v1.1.0,50/50 绿,18/18 任务 done)。用户选择自行执行部署/迁移/合并/推送(outball-facing 动作不由我代劳)。已向用户提供精确命令清单。",
       "verification_commands": []
     }
   ]

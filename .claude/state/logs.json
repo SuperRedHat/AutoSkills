@@ -431,6 +431,30 @@
       "from_status": "todo",
       "to_status": "in_progress",
       "message": "PM-111 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:56:31.263Z",
+      "type": "task_status_change",
+      "task_id": "PM-111",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-111 in_progress → auto_verified: Phase 1 收口验证：clean tsc build v1.1.0；全量 50/50 测试绿；CHANGELOG + version bump 已提交。所有 18 任务 PM-001..110 done 并提交(AutoSkills 分支 feat/pm-ops-capabilities 14 提交 + CouncilFlow 分支 docs/pm-ops-integration-contract 1 提交)。关键部署事实:运行中的 MCP 注册在 ~/.claude/mcp-project-manager/dist(独立 COPY,非 in-repo dist)——故构建从未影响在跑服务，部署需显式 copy+restart。剩余为 outward-facing 动作(部署/重注册、可选舰队迁移、合并/推送)，按 stage_gate 留用户 sign-off。"
+    },
+    {
+      "timestamp": "2026-06-08T13:56:39.853Z",
+      "type": "task_status_change",
+      "task_id": "PM-111",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "PM-111 auto_verified → awaiting_manual_acceptance: stage_gate=true：Phase 1 全部完成并验证。等待用户 sign-off 部署与发布(copy 新 dist→~/.claude/mcp-project-manager + 重启 / 可选 bootstrap --migrate-state 舰队迁移 / 合并+推送两个分支)。这些是 outward-facing/不可逆动作，由用户决定执行。"
+    },
+    {
+      "timestamp": "2026-06-08T16:39:22.056Z",
+      "type": "task_status_change",
+      "task_id": "PM-111",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-111 awaiting_manual_acceptance → done: 用户 sign-off Phase 1 / release。代码+文档+测试全部完成(MCP v1.1.0,50/50 绿,18/18 任务 done)。用户选择自行执行部署/迁移/合并/推送(outball-facing 动作不由我代劳)。已向用户提供精确命令清单。"
     }
   ]
 }
