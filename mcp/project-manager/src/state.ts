@@ -932,6 +932,28 @@ export class StateManager {
     };
   }
 
+  /** Compact read-only summary for cross-project portfolio aggregation (ADR-003 B). */
+  getPortfolioSummary(): {
+    name: string | null;
+    status: string | null;
+    metrics: ProgressMetrics;
+    current_focus: { summary: string; is_stale: boolean } | null;
+    next_task: { id: string; title: string } | null;
+    next_task_blocked_reason: NextTaskBlockedReason;
+  } {
+    const ctx = this.getProjectContext();
+    const focus = ctx.current_focus;
+    const nt = ctx.tasks_summary.next_task;
+    return {
+      name: ctx.project?.name ?? null,
+      status: ctx.project?.status ?? null,
+      metrics: ctx.tasks_summary.metrics,
+      current_focus: focus ? { summary: focus.summary, is_stale: focus.is_stale } : null,
+      next_task: nt ? { id: nt.id, title: nt.title } : null,
+      next_task_blocked_reason: ctx.tasks_summary.next_task_blocked_reason,
+    };
+  }
+
   migrateTaskSchema(): {
     migrated: number;
     logs_migrated: number;

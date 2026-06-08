@@ -647,6 +647,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-302 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T18:51:37.123Z",
+      "type": "task_status_change",
+      "task_id": "PM-303",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-303 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:52:33.311Z",
+      "type": "task_status_change",
+      "task_id": "PM-303",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-303 in_progress → auto_verified: get_portfolio(project_dirs[]) 只读聚合:逐项目 selectState→getPortfolioSummary(name/status/双率metrics/current_focus{summary,is_stale}/next_task{id,title}/blocked_reason);坏项目逐条 {ok:false,error_kind} 不拖垮整体;project_dirs z.array().min(1) 强制非空(不读注册表)。getPortfolioSummary 加在 StateManager(可测)。4 单测(摘要/焦点+is_stale/next_task 形状/聚合 good+bad)。端到端 smoke 真实 3 项目:CouncilFlow completed、ClaudeX in_progress(raw0.89/active1.00/cancelled17)、__nope__→not_a_project 逐条不崩。tsc 干净;82/82 绿。纯读不改任何项目状态。"
+    },
+    {
+      "timestamp": "2026-06-08T18:52:38.157Z",
+      "type": "task_status_change",
+      "task_id": "PM-303",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-303 auto_verified → done"
     }
   ]
 }

@@ -732,6 +732,42 @@ server.tool(
   }
 );
 
+// ==================== Portfolio (cross-project, read-only) ====================
+
+server.tool(
+  "get_portfolio",
+  "跨项目只读聚合：对传入的每个项目目录返回 进度双率 / 当前焦点 / 下一个任务 / 阻塞原因 摘要。仅接受 per-call project_dirs[]（不读任何注册表，避免隐式上下文）。坏项目逐条返回 error，不拖垮整体。纯读，不改任何项目状态。",
+  {
+    project_dirs: z
+      .array(z.string())
+      .min(1)
+      .describe("要聚合的项目根目录列表（每个含 .claude/state）；必填，不读注册表"),
+  },
+  async ({ project_dirs }) => {
+    const entries = project_dirs.map((dir) => {
+      const sel = selectState(dir);
+      if (!sel.ok) {
+        return {
+          project_dir: dir,
+          resolved_project_dir: sel.resolved,
+          ok: false,
+          error_kind: sel.error_kind,
+          error: sel.error,
+        };
+      }
+      return {
+        project_dir: dir,
+        resolved_project_dir: sel.resolved,
+        ok: true,
+        ...sel.state.getPortfolioSummary(),
+      };
+    });
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }],
+    };
+  }
+);
+
 // ==================== Current Focus (ops) ====================
 
 server.tool(
