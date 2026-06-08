@@ -64,6 +64,21 @@ function selectState(dir?: string): StateSelection {
   };
 }
 
+function selErr(sel: { error_kind: string; error: string }) {
+  return {
+    content: [
+      { type: "text" as const, text: `Error (${sel.error_kind}): ${sel.error}` },
+    ],
+  };
+}
+
+const PROJECT_DIR_PARAM = z
+  .string()
+  .optional()
+  .describe(
+    "可选：跨项目只读，定位另一个项目（含 .claude/state 的目录）；不传=当前活动项目，且不会切换活动项目"
+  );
+
 const server = new McpServer({
   name: "project-manager",
   version: "1.0.0",
@@ -105,8 +120,10 @@ server.tool(
 
 // ==================== Project Management ====================
 
-server.tool("get_project_info", "获取项目元信息", {}, async () => {
-  const info = state.getProjectInfo();
+server.tool("get_project_info", "获取项目元信息（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const info = sel.state.getProjectInfo();
   return {
     content: [
       {
@@ -129,8 +146,10 @@ server.tool(
   }
 );
 
-server.tool("get_prd", "获取 PRD 文档", {}, async () => {
-  const prd = state.getPRD();
+server.tool("get_prd", "获取 PRD 文档（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const prd = sel.state.getPRD();
   return {
     content: [
       {
@@ -153,8 +172,10 @@ server.tool(
   }
 );
 
-server.tool("get_architecture", "获取架构设计文档", {}, async () => {
-  const arch = state.getArchitecture();
+server.tool("get_architecture", "获取架构设计文档（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const arch = sel.state.getArchitecture();
   return {
     content: [
       {
@@ -256,8 +277,10 @@ server.tool(
   }
 );
 
-server.tool("get_next_task", "获取下一个可执行任务（依赖已全部完成）", {}, async () => {
-  const task = state.getNextTask();
+server.tool("get_next_task", "获取下一个可执行任务（依赖已全部完成；可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const task = sel.state.getNextTask();
   return {
     content: [
       {
@@ -315,9 +338,12 @@ server.tool(
       ])
       .optional()
       .describe("Filter by status"),
+    project_dir: PROJECT_DIR_PARAM,
   },
-  async ({ status }) => {
-    const tasks = state.getAllTasks(status ? { status } : undefined);
+  async ({ status, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const tasks = sel.state.getAllTasks(status ? { status } : undefined);
     return {
       content: [
         {
@@ -334,9 +360,11 @@ server.tool(
 server.tool(
   "get_task_by_id",
   "获取单个任务详情",
-  { id: z.string().describe("Task ID") },
-  async ({ id }) => {
-    const task = state.getTaskById(id);
+  { id: z.string().describe("Task ID"), project_dir: PROJECT_DIR_PARAM },
+  async ({ id, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const task = sel.state.getTaskById(id);
     return {
       content: [
         {
@@ -649,9 +677,12 @@ server.tool(
       .describe("按粗分类过滤(对旧条目按 type 推断)"),
     event_type: z.string().optional().describe("按细类型过滤(匹配 event_type，回退 type)"),
     since: z.string().optional().describe("仅返回该 ISO 时间(含)之后的日志"),
+    project_dir: PROJECT_DIR_PARAM,
   },
-  async ({ n, kind, event_type, since }) => {
-    const logs = state.getLogs({ kind, event_type, since, limit: n ?? 10 });
+  async ({ n, kind, event_type, since, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const logs = sel.state.getLogs({ kind, event_type, since, limit: n ?? 10 });
     return {
       content: [
         {
@@ -683,9 +714,12 @@ server.tool(
       .boolean()
       .optional()
       .describe("是否返回 in_progress 任务全文（默认 true；token 预算紧张时设 false）"),
+    project_dir: PROJECT_DIR_PARAM,
   },
-  async ({ context_mode, max_recent_events, include_full_in_progress }) => {
-    const context = state.getProjectContext({
+  async ({ context_mode, max_recent_events, include_full_in_progress, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const context = sel.state.getProjectContext({
       context_mode,
       max_recent_events,
       include_full_in_progress,
@@ -703,9 +737,11 @@ server.tool(
 server.tool(
   "get_current_focus",
   "获取当前焦点快照(ops)：返回 focus.json 结构化对象(含服务端计算的 is_stale)，无则返回 null。",
-  {},
-  async () => {
-    const focus = state.getCurrentFocus();
+  { project_dir: PROJECT_DIR_PARAM },
+  async ({ project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const focus = sel.state.getCurrentFocus();
     return {
       content: [
         { type: "text" as const, text: focus ? JSON.stringify(focus, null, 2) : "null" },
@@ -748,10 +784,12 @@ server.tool(
 
 server.tool(
   "get_server_info",
-  "获取 MCP Server 诊断信息（当前项目目录、状态文件路径）",
-  {},
-  async () => {
-    const stateDir = path.join(projectDir, ".claude", "state");
+  "获取 MCP Server 诊断信息（当前项目目录、状态文件路径；可选 project_dir 跨项目只读探测，返回 resolved/active）",
+  { project_dir: PROJECT_DIR_PARAM },
+  async ({ project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const stateDir = sel.state_path;
     const stateExists = fs.existsSync(stateDir);
     const files = stateExists
       ? fs.readdirSync(stateDir).join(", ")
@@ -762,7 +800,8 @@ server.tool(
           type: "text" as const,
           text: JSON.stringify(
             {
-              project_dir: projectDir,
+              project_dir: sel.resolved,
+              active_project: sel.active,
               state_dir: stateDir,
               state_exists: stateExists,
               state_files: files,

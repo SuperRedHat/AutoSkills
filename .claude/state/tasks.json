@@ -893,11 +893,11 @@
         "npm --prefix mcp/project-manager run build",
         "npm --prefix mcp/project-manager test"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T18:45:41.556Z",
-      "updated_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:50:46.687Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "10 个只读工具加可选 project_dir,经 selectState 解析:缺省用全局 active state(同现状)、提供则临时 StateManager,绝不改写全局;ok=false 经 selErr 返回带 error_kind 错误。get_server_info 升级诊断面返回 resolved/active_project/state_dir。共享 PROJECT_DIR_PARAM。3 用例(真实 fixture 跨项目读 114、两项目独立 state、not_a_project 不崩)。tsc 校验 10 处接线;78/78 绿。缺省 project_dir 输出形状同现状(向后兼容)。",
       "review_checklist": [],
       "stage_gate": false
     },
