@@ -823,11 +823,11 @@
         "下游文档一致"
       ],
       "stage_gate": true,
-      "status": "awaiting_manual_acceptance",
+      "status": "done",
       "created_at": "2026-06-08T18:00:08.600Z",
-      "updated_at": "2026-06-08T18:13:42.371Z",
+      "updated_at": "2026-06-08T23:34:58.630Z",
       "commit_hash": "",
-      "notes": "stage_gate=true：Phase 2 全部完成并验证。等待用户 sign-off。部署/合并/推送与 Phase 1 一并由用户执行(同分支)。",
+      "notes": "隐式验收：用户一路推进至 Phase 3 + 审计 + 发版 v2.0（含全部 Phase 2 内容），收口时补 done。",
       "verification_commands": []
     },
     {
@@ -998,11 +998,11 @@
         "下游文档一致"
       ],
       "stage_gate": true,
-      "status": "awaiting_manual_acceptance",
+      "status": "done",
       "created_at": "2026-06-08T18:45:41.556Z",
-      "updated_at": "2026-06-08T18:56:27.746Z",
+      "updated_at": "2026-06-08T23:34:59.698Z",
       "commit_hash": "",
-      "notes": "stage_gate=true：Phase 3(L6 跨项目/portfolio 只读)全部完成并验证。等待用户 sign-off。部署/合并/推送与 Phase 1/2 一并由用户执行(同分支)。",
+      "notes": "隐式验收：用户继续到审计 + 发版 v2.0（含全部 Phase 3 跨项目/portfolio），收口时补 done。",
       "verification_commands": []
     },
     {

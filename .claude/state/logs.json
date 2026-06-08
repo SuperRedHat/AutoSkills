@@ -799,6 +799,22 @@
       "from_status": null,
       "to_status": null,
       "message": "[收口 2026-06-09] project-manager ops/管理/跨项目优化全部完成并发布。Phase 0-3(ADR-001/002/003) + 多 agent 审计修复(PM-401/402/403)全部 done。已部署(MCP v1.3.0 → ~/.claude/mcp-project-manager；11 技能同步三端；7 项目舰队迁移 v1)、合并推送两仓 main、发版 AutoSkills v2.0 + CouncilFlow v0.1.8(均建 GitHub Release)。下次在新窗口于 AutoSkills 仓 /project-resume 衔接。Deferred 进阶项:跨进程写加锁、cross-project 写、portfolio 注册表、pointer 任务类型、CF role_router NDJSON / zero-external 边角。"
+    },
+    {
+      "timestamp": "2026-06-08T23:34:58.657Z",
+      "type": "task_status_change",
+      "task_id": "PM-206",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-206 awaiting_manual_acceptance → done: 隐式验收：用户一路推进至 Phase 3 + 审计 + 发版 v2.0（含全部 Phase 2 内容），收口时补 done。"
+    },
+    {
+      "timestamp": "2026-06-08T23:34:59.726Z",
+      "type": "task_status_change",
+      "task_id": "PM-305",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-305 awaiting_manual_acceptance → done: 隐式验收：用户继续到审计 + 发版 v2.0（含全部 Phase 3 跨项目/portfolio），收口时补 done。"
     }
   ]
 }
