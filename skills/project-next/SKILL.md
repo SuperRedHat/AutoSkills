@@ -7,7 +7,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
 
 ## 执行流程
 
-1. 调用 `get_next_task` 取出可执行任务。
+1. 调用 `get_next_task` 取出可执行任务（该工具已自动过滤 `cancelled` / `superseded` 任务，并会沿 `superseded` 的 replacement 链解析依赖；遇到被 `cancelled` 依赖阻塞时会显式上报而非静默死锁，不会把已关闭任务派回执行）。
 2. 调用 `update_task_status(id, "in_progress")`。
 3. 如果检测到 `council` 可用，则把项目目录下的 `.council/config.yaml` 视为自动分发真源；如果文件缺失，CouncilFlow 会在首次调用时自动生成一份项目本地配置模板。
 4. 如当前任务方案存在明显不确定，且用户显式要求 `discuss`，先调用 `CouncilFlow` 进行方案收敛：
@@ -75,6 +75,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
    - 只有在 `status = local_execution` 时，当前主控才允许本地修复
    - 如果返回 `status = delegated`，则先读取 fixer 产物，再重新进入 tester
    - 如果返回错误、缺少 artifact，或无法完成调用，则**停止当前 workflow 并如实报告失败**
+   - 如果 fixer 阶段发现任务本身**无法修复 / 超出范围 / 被前置条件长期阻塞**，role 阶段不要无限循环重试：fixer 只负责如实报告，由**控制器/管理决策**（不是 role 阶段）用 `close_task(id, "cancelled", reason=...)` 关闭，或升级到 `project-feedback` 处理（`close_task` 不归 role 阶段调用，`workflow_failure` 日志也不构成关闭授权）
 10. 只有当 tester 与 reviewer 都明确通过后，当前主控才负责收口、状态流转与最终汇报。
 11. 验证通过后调用 `update_task_status(id, "auto_verified")`。
 12. 根据 `acceptance_mode` 和 `stage_gate` 决定下一状态：

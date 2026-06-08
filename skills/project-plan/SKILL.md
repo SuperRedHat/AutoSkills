@@ -108,6 +108,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 - 不再只写 `needs_manual_review`
 - `needs_manual_review` 仅作为兼容字段保留
 - `review_checklist` 只在需要人工确认时填写
+- 规划阶段只创建 `todo` 任务，不在此处设置终态：`cancelled` / `superseded` 属于创建后的终态关闭，由 `project-next` / `project-feedback` / `project-change` 通过 `close_task` 处理，不在 plan 时设定
 - 有 CouncilFlow 时，不要在未获得 `local_execution` 或委派产物前直接跳过 route-first 步骤
 - `planner` / `synthesizer` 都属于硬前置阶段；不要把任务拆解或最终清单综合静默留在主控本地
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON 并调用 `project-manager` MCP `add_log(type="workflow_failure", ...)`，再停止当前 workflow

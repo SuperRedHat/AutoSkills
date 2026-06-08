@@ -51,8 +51,14 @@ description: 恢复项目上下文。当用户说"继续项目"、"恢复上下�
 ## ⏳ 待验收任务
 - TASK-XXX ...
 
+## 🚫 已取消/已超代任务
+（**仅当 tasks_summary.metrics.cancelled > 0 或 superseded > 0 时才渲染本段**；两者都为 0 则整段省略）
+- TASK-XXX 🚫 cancelled — <原因>
+- TASK-XXX 🔁 superseded → TASK-YYY
+
 ## 📌 下一个可执行任务
 TASK-XXX ...
+（next_task 永远不会是 cancelled/superseded 任务——`get_next_task` 已过滤终态；输出前再核对一遍其状态不属于这两类）
 （若 next_task 为 null，用 next_task_blocked_reason 说明原因：全部完成 / 被进行中任务阻塞 / 被已取消依赖阻塞）
 
 ## 📝 最近重要事件
