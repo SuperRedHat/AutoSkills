@@ -64,6 +64,7 @@ export interface Task {
   updated_at: string;
   commit_hash: string;
   notes: string;
+  priority?: number;
   // Phase 1 close_task fields (set only via the audited close_task bypass):
   replacement_task_id?: string | null;
   closed_at?: string | null;
@@ -347,11 +348,39 @@ export class StateManager {
       return false;
     };
 
-    return (
-      data.tasks.find(
-        (t) => t.status === "todo" && t.dependencies.every(depSatisfied)
-      ) || null
+    const runnable = data.tasks.filter(
+      (t) => t.status === "todo" && t.dependencies.every(depSatisfied)
     );
+    if (runnable.length === 0) return null;
+    // Highest priority wins; ties keep creation (array) order — a strict `>` in
+    // reduce keeps the earlier element on equality (stable, = legacy behavior).
+    return runnable.reduce((best, t) =>
+      (t.priority ?? 0) > (best.priority ?? 0) ? t : best
+    );
+  }
+
+  setTaskPriority(id: string, priority: number): { success: boolean; error?: string } {
+    const data = this.getTasks();
+    if (!data) return { success: false, error: "No tasks found" };
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, error: `Task ${id} not found` };
+    const old = task.priority ?? 0;
+    task.priority = priority;
+    task.updated_at = new Date().toISOString();
+    this.saveTasks(data);
+    this.addLog({
+      timestamp: task.updated_at,
+      type: "priority_change",
+      kind: "ops_event",
+      event_type: "priority_change",
+      task_id: id,
+      from_status: null,
+      to_status: null,
+      entities: { from: old, to: priority },
+      source: "set_task_priority",
+      message: `${id} priority ${old} → ${priority}`,
+    });
+    return { success: true };
   }
 
   getTaskById(id: string): Task | null {
@@ -873,6 +902,7 @@ export class StateManager {
       review_checklist: task.review_checklist || [],
       stage_gate: task.stage_gate || false,
       replacement_task_id: task.replacement_task_id ?? null,
+      priority: typeof task.priority === "number" ? task.priority : 0,
     };
   }
 

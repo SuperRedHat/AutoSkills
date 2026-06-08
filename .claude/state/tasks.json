@@ -616,6 +616,219 @@
       "commit_hash": "",
       "notes": "用户 sign-off Phase 1 / release。代码+文档+测试全部完成(MCP v1.1.0,50/50 绿,18/18 任务 done)。用户选择自行执行部署/迁移/合并/推送(outball-facing 动作不由我代劳)。已向用户提供精确命令清单。",
       "verification_commands": []
+    },
+    {
+      "id": "PM-201",
+      "title": "B1 任务优先级 (L5)",
+      "description": "Task 加 priority?:number(默认0,越大越优先);normalizeTask 补默认;getNextTask 在依赖满足的 todo 中取最高优先级、同分按创建顺序(沿用 Phase1 superseded 解析/cancelled 不满足);create_tasks/add_subtask Zod 加 priority;新增 set_task_priority(id,priority) 工具(写 ops_event 日志)。ADR-002 B1。",
+      "dependencies": [
+        "PM-111"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "全 0 优先级时 getNextTask 行为等于现状(创建顺序)",
+        "高优先级 todo 优先返回,同分稳定按创建顺序",
+        "set_task_priority 改值生效并记日志",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase2",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "done",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:02:21.927Z",
+      "commit_hash": "",
+      "notes": "L5 优先级:Task.priority?(默认0越大越优先);normalizeTask 补默认;getNextTask 改为在依赖满足的 todo 中 reduce 取最高优先级、严格 > 保证同分按创建顺序(=现状);create_tasks/add_subtask Zod 加 priority;新增 setTaskPriority 方法 + set_task_priority 工具(写 priority_change ops_event)。6 用例:全0=创建序、高优先胜出、同分稳定、不越过依赖门、set_task_priority 重选+日志、normalize 默认0。tsc 干净;56/56 绿。",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-202",
+      "title": "B3 reopen_task (撤销/复活)",
+      "description": "reopen_task(id,reason,to_status?=todo|in_progress):仅终态(done/cancelled/superseded)可复活;清 closed_at/close_reason;superseded 复活清 replacement_task_id 并日志提示(不自动改回已改写的下游依赖);写 task_reopened 审计日志(kind=task_transition,source=reopen_task);重算 progress;受审计旁路不走 VALID_TRANSITIONS。ADR-002 B3。",
+      "dependencies": [
+        "PM-201"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "非终态调用被拒(task is not closed)",
+        "done/cancelled/superseded 可复活到 todo/in_progress",
+        "superseded 复活清 replacement_task_id 且日志提示",
+        "写 task_reopened 审计日志;progress 重算;reason 必填",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase2",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:00:08.600Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-203",
+      "title": "B2 批量操作 (L4)",
+      "description": "update_tasks([{id,status,notes?}]) 逐条走 updateTaskStatus 返回逐条结果(允许部分成功);close_tasks([{id,status,reason,replacement_task_id?}]) 逐条走 closeTask;archive_module(module,reason) 把该 module 非终态任务批量 close_task(cancelled)。全部复用现有校验,不绕过。ADR-002 B2。",
+      "dependencies": [
+        "PM-202"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "update_tasks 逐条独立、部分成功、仍走前向校验+拒绝终态",
+        "close_tasks 逐条 close 并合并 affected_dependents",
+        "archive_module 只关非终态、返回被关列表",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase2",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:00:08.600Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-204",
+      "title": "B4 verification_profile 去硬枚举 (L9)",
+      "description": "VerificationProfile 类型放宽为 string;create_tasks/add_subtask 的 verification_profile 由 z.enum 改 z.string().optional();新增 loadProfileNames() 读外置 verification-profiles.json 的 keys;handler 层校验:传了未知名→拒绝并列出合法名,文件缺失→宽松放行。加 profile 只改文件、代码零改动。ADR-002 B4。",
+      "dependencies": [
+        "PM-203"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "已知 profile(backend 等)仍合法",
+        "未知 profile 名被拒并提示合法名字",
+        "外置文件缺失时宽松放行不阻塞",
+        "加新 profile 到外置文件即被接受(无需改代码)",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase2",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:00:08.600Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-205",
+      "title": "B5 下游 doc/skill 同步",
+      "description": "状态图模板×2 加 reopen_task 反向边;README + CouncilFlow integration.md 增 update_tasks/close_tasks/archive_module/reopen_task/set_task_priority 工具 + priority 字段 + profile 外置可扩展;project-plan(priority+profile 外置)/project-feedback/project-next(reopen_task 边界=管理决策)。CF Python 预计零改动,实现时核实。ADR-002 B5。",
+      "dependencies": [
+        "PM-204"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "模板状态图含 reopen_task 反向边",
+        "README/integration.md 含 5 个新工具 + priority + profile 外置说明",
+        "技能散文与新契约一致",
+        "CF Python 确认未改动"
+      ],
+      "files": [
+        "templates/global-claude-CLAUDE.md",
+        "templates/global-codex-AGENTS.md",
+        "mcp/project-manager/README.md",
+        "../CouncilFlow/docs/integration.md",
+        "skills/project-plan/SKILL.md",
+        "skills/project-feedback/SKILL.md",
+        "skills/project-next/SKILL.md"
+      ],
+      "module": "phase2",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:00:08.600Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-206",
+      "title": "Phase 2 收口 gate (CHANGELOG + v1.2.0)",
+      "description": "clean build + 全量测试绿;CHANGELOG 加 1.2.0 条目;package.json version 1.1.0→1.2.0;舰队 smoke 复跑确认无回归。与 Phase 1 同分支一并部署(不单独部署)。等用户 sign-off。ADR-002 B6。",
+      "dependencies": [
+        "PM-205"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "全量测试绿、clean build",
+        "CHANGELOG 1.2.0 + version bump",
+        "舰队 smoke 无回归",
+        "用户 sign-off"
+      ],
+      "files": [
+        "mcp/project-manager/CHANGELOG.md",
+        "mcp/project-manager/package.json"
+      ],
+      "module": "phase2",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "workflow_meta",
+      "review_checklist": [
+        "B1-B4 是否都向后兼容",
+        "reopen/优先级/批量是否有边界遗漏",
+        "下游文档一致"
+      ],
+      "stage_gate": true,
+      "status": "todo",
+      "created_at": "2026-06-08T18:00:08.600Z",
+      "updated_at": "2026-06-08T18:00:08.600Z",
+      "commit_hash": "",
+      "notes": "",
+      "verification_commands": []
     }
   ]
 }

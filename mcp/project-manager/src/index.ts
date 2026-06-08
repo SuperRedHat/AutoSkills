@@ -193,6 +193,7 @@ server.tool(
         verification_commands: z.array(z.string()).optional(),
         review_checklist: z.array(z.string()).optional(),
         stage_gate: z.boolean().optional(),
+        priority: z.number().optional().describe("越大越优先（默认 0）"),
       })
     ).describe("Array of tasks to create"),
   },
@@ -334,6 +335,7 @@ server.tool(
     verification_commands: z.array(z.string()).optional(),
     review_checklist: z.array(z.string()).optional(),
     stage_gate: z.boolean().optional(),
+    priority: z.number().optional().describe("越大越优先（默认 0）"),
   },
   async ({ parent_id, ...subtaskData }) => {
     const subtask: Task = {
@@ -382,6 +384,26 @@ server.tool(
                 ? ` Affected dependents: ${r.affected_dependents.join(", ")}.`
                 : "")
             : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "set_task_priority",
+  "调整任务优先级（数值，越大越优先）。get_next_task 在依赖满足的 todo 中优先返回高优先级者，同分按创建顺序。",
+  {
+    id: z.string().describe("Task ID"),
+    priority: z.number().describe("越大越优先（默认 0）"),
+  },
+  async ({ id, priority }) => {
+    const r = state.setTaskPriority(id, priority);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success ? `Task ${id} priority set to ${priority}.` : `Error: ${r.error}`,
         },
       ],
     };
