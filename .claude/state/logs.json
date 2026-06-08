@@ -47,6 +47,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-002 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:18:05.611Z",
+      "type": "task_status_change",
+      "task_id": "PM-003",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-003 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:19:34.809Z",
+      "type": "task_status_change",
+      "task_id": "PM-003",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-003 in_progress → auto_verified: get_project_context 加法扩展(零破坏):新增 in_progress_tasks 全文、tasks_summary.metrics(双完成率,读时计算)、next_task_blocked_reason(none/all_done/blocked_in_progress/blocked_by_cancelled_dep)、context_mode(build|ops|hybrid 仅呈现 hint)、presentation_order、schema_version(读时识别默认0)、budget 开关 max_recent_events/include_full_in_progress。helper: getCurrentFocus(读 focus.json,算 is_stale)/computeProgressMetrics(count 用 string 类型兼容未来 cancelled/superseded)/computeNextTaskBlockedReason。index.ts get_project_context 工具加 3 个可选参数。tsc 干净;18/18 测试绿(含 context_mode 集合一致性、rate 防 NaN、blocked_reason 三态)。characterization 中\"未暴露\"断言按规则在同一改动里更新。updateProjectProgress 持久层未动(留 PM-104)。"
+    },
+    {
+      "timestamp": "2026-06-08T12:19:37.238Z",
+      "type": "task_status_change",
+      "task_id": "PM-003",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-003 auto_verified → done"
     }
   ]
 }

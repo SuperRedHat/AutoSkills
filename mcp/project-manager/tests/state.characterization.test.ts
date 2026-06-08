@@ -57,9 +57,15 @@ describe("getProjectContext (current shape)", () => {
     expect(ctx.recent_logs.length).toBeLessThanOrEqual(10);
   });
 
-  it("does NOT yet expose in_progress full text or current_focus (pre-Phase-0)", () => {
-    expect((ctx as Record<string, unknown>).in_progress_tasks).toBeUndefined();
-    expect((ctx as Record<string, unknown>).current_focus).toBeUndefined();
+  // Updated in PM-003 (Phase 0.2): these fields are now additively exposed.
+  // Detailed behavior lives in context.ops.test.ts; here we only assert the
+  // contract shape so the characterization stays honest about what changed.
+  it("now additively exposes in_progress_tasks + current_focus + metrics + mode (Phase 0.2)", () => {
+    expect(Array.isArray(ctx.in_progress_tasks)).toBe(true);
+    expect(ctx.current_focus).toBeNull(); // no focus.json in fixture
+    expect(ctx.context_mode).toBe("build");
+    expect(ctx.tasks_summary.metrics.total_all).toBe(114);
+    expect(ctx.tasks_summary.next_task_blocked_reason).toBe("all_done");
   });
 });
 

@@ -444,10 +444,27 @@ server.tool(
 
 server.tool(
   "get_project_context",
-  "获取完整项目上下文（用于新会话恢复）。一次性返回 PRD 摘要 + 架构摘要 + 任务状态 + 最近日志。",
-  {},
-  async () => {
-    const context = state.getProjectContext();
+  "获取完整项目上下文（用于新会话恢复）。返回 PRD/架构摘要 + 任务状态(含双完成率 metrics) + in_progress 全文 + current_focus + 最近日志 + next_task_blocked_reason 诊断。context_mode 仅影响呈现排序/摘要，不过滤任务。",
+  {
+    context_mode: z
+      .enum(["build", "ops", "hybrid"])
+      .optional()
+      .describe("呈现 hint（默认 build）。仅影响默认排序/摘要，不参与权限/过滤/状态机。"),
+    max_recent_events: z
+      .number()
+      .optional()
+      .describe("返回的最近日志条数（默认 build=10 / hybrid=15 / ops=20）"),
+    include_full_in_progress: z
+      .boolean()
+      .optional()
+      .describe("是否返回 in_progress 任务全文（默认 true；token 预算紧张时设 false）"),
+  },
+  async ({ context_mode, max_recent_events, include_full_in_progress }) => {
+    const context = state.getProjectContext({
+      context_mode,
+      max_recent_events,
+      include_full_in_progress,
+    });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(context, null, 2) },

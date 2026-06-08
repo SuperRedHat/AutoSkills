@@ -18,6 +18,7 @@ export interface ProjectInfo {
   updated_at: string;
   status: "initialized" | "designed" | "planned" | "in_progress" | "completed";
   tech_stack: string[];
+  schema_version?: number;
   progress: {
     total: number;
     done: number;
@@ -70,6 +71,54 @@ export interface LogEntry {
 export interface LogsData {
   logs: LogEntry[];
 }
+
+// ---------- ops / context types (Phase 0) ----------
+
+export type ContextMode = "build" | "ops" | "hybrid";
+
+export interface CurrentFocus {
+  schema_version: number;
+  summary: string;
+  last_event: string | null;
+  next_trigger: string | null;
+  waiting_on: string[];
+  related_task_ids: string[];
+  related_entities: Record<string, unknown>;
+  source: string | null;
+  updated_at: string;
+  stale_after: string | null;
+}
+
+export interface ProgressMetrics {
+  total_all: number;
+  active_total: number;
+  done: number;
+  cancelled: number;
+  superseded: number;
+  closed_total: number;
+  raw_completion_rate: number;
+  active_completion_rate: number;
+}
+
+export type NextTaskBlockedReason =
+  | "none"
+  | "all_done"
+  | "blocked_in_progress"
+  | "blocked_by_cancelled_dep";
+
+export interface GetProjectContextOptions {
+  context_mode?: ContextMode;
+  max_recent_events?: number;
+  include_full_in_progress?: boolean;
+}
+
+// Presentation hint only (D1): governs the SUGGESTED section order for a
+// consumer; it never filters/permissions/branches the underlying data.
+const PRESENTATION_ORDER: Record<ContextMode, string[]> = {
+  build: ["next_task", "in_progress_tasks", "tasks_summary", "current_focus", "recent_logs"],
+  ops: ["current_focus", "recent_logs", "in_progress_tasks", "next_task", "tasks_summary"],
+  hybrid: ["current_focus", "next_task", "in_progress_tasks", "recent_logs", "tasks_summary"],
+};
 
 // ---------- Valid state transitions ----------
 
@@ -335,25 +384,86 @@ export class StateManager {
 
   // ---------- Context Recovery ----------
 
-  getProjectContext(): {
+  getCurrentFocus(): (CurrentFocus & { is_stale: boolean }) | null {
+    const focus = this.readJSON<CurrentFocus>("focus.json");
+    if (!focus) return null;
+    const is_stale = focus.stale_after
+      ? new Date().getTime() > new Date(focus.stale_after).getTime()
+      : false;
+    return { ...focus, is_stale };
+  }
+
+  private computeProgressMetrics(tasks: Task[]): ProgressMetrics {
+    const total_all = tasks.length;
+    // `s` is typed as string (not the status union) so that referencing the
+    // Phase-1 statuses "cancelled"/"superseded" here compiles cleanly while the
+    // Task.status union still has only the legacy five values.
+    const count = (s: string) => tasks.filter((t) => t.status === s).length;
+    const done = count("done");
+    const cancelled = count("cancelled");
+    const superseded = count("superseded");
+    const closed_total = done + cancelled + superseded;
+    const active_total = total_all - cancelled - superseded;
+    const rate = (num: number, den: number) => (den > 0 ? num / den : 0);
+    return {
+      total_all,
+      active_total,
+      done,
+      cancelled,
+      superseded,
+      closed_total,
+      raw_completion_rate: rate(done, total_all),
+      active_completion_rate: rate(done, active_total),
+    };
+  }
+
+  private computeNextTaskBlockedReason(
+    tasks: Task[],
+    nextTask: Task | null
+  ): NextTaskBlockedReason {
+    if (nextTask) return "none";
+    const todos = tasks.filter((t) => t.status === "todo");
+    if (todos.length === 0) return "all_done";
+    const closed = new Set(
+      tasks.filter((t) => ["cancelled", "superseded"].includes(t.status)).map((t) => t.id)
+    );
+    const blockedByClosed = todos.some((t) =>
+      t.dependencies.some((d) => closed.has(d))
+    );
+    return blockedByClosed ? "blocked_by_cancelled_dep" : "blocked_in_progress";
+  }
+
+  getProjectContext(opts: GetProjectContextOptions = {}): {
     project: ProjectInfo | null;
+    schema_version: number;
+    context_mode: ContextMode;
+    presentation_order: string[];
     prd_summary: string | null;
     architecture_summary: string | null;
     tasks_summary: {
       total: number;
       by_status: Record<string, number>;
       next_task: Task | null;
+      next_task_blocked_reason: NextTaskBlockedReason;
       awaiting_acceptance: Task[];
+      metrics: ProgressMetrics;
     };
+    in_progress_tasks: Task[];
+    current_focus: (CurrentFocus & { is_stale: boolean }) | null;
     recent_logs: LogEntry[];
   } {
+    const mode: ContextMode = opts.context_mode ?? "build";
+    const includeFullInProgress = opts.include_full_in_progress ?? true;
+    const maxRecent =
+      opts.max_recent_events ?? (mode === "ops" ? 20 : mode === "hybrid" ? 15 : 10);
+
     const project = this.getProjectInfo();
     const prd = this.getPRD();
     const arch = this.getArchitecture();
     const tasksData = this.getTasks();
-    const logs = this.getLogs(10);
+    const logs = this.getLogs(maxRecent);
 
-    // Extract first 500 chars of PRD as summary
+    // Extract first 500 chars of PRD/architecture as summary
     const prdSummary = prd ? prd.substring(0, 500) + (prd.length > 500 ? "..." : "") : null;
     const archSummary = arch ? arch.substring(0, 500) + (arch.length > 500 ? "..." : "") : null;
 
@@ -362,19 +472,29 @@ export class StateManager {
     for (const t of tasks) {
       byStatus[t.status] = (byStatus[t.status] || 0) + 1;
     }
+    const nextTask = this.getNextTask();
 
     return {
       project,
+      schema_version: project?.schema_version ?? 0,
+      context_mode: mode,
+      presentation_order: PRESENTATION_ORDER[mode],
       prd_summary: prdSummary,
       architecture_summary: archSummary,
       tasks_summary: {
         total: tasks.length,
         by_status: byStatus,
-        next_task: this.getNextTask(),
+        next_task: nextTask,
+        next_task_blocked_reason: this.computeNextTaskBlockedReason(tasks, nextTask),
         awaiting_acceptance: tasks.filter(
           (t) => t.status === "awaiting_manual_acceptance"
         ),
+        metrics: this.computeProgressMetrics(tasks),
       },
+      in_progress_tasks: includeFullInProgress
+        ? tasks.filter((t) => t.status === "in_progress")
+        : [],
+      current_focus: this.getCurrentFocus(),
       recent_logs: logs,
     };
   }
