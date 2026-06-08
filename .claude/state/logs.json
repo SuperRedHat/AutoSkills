@@ -583,6 +583,46 @@
       "from_status": "todo",
       "to_status": "in_progress",
       "message": "PM-206 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:13:37.923Z",
+      "type": "task_status_change",
+      "task_id": "PM-206",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-206 in_progress → auto_verified: Phase 2 收口验证:clean build v1.2.0;全量 70/70 测试绿;CHANGELOG 1.2.0 + version bump + ADR-002 已提交;舰队回归 smoke 7 项目 0 NaN、getNextTask 无报错。Phase 2 全部 6 任务 PM-201..205 done。AutoSkills 分支 feat/pm-ops-capabilities 现领先 main 25 提交(Phase1+Phase2),CouncilFlow 分支 docs/pm-ops-integration-contract 2 提交。与 Phase 1 同分支一并部署。剩余 outball-facing(部署/合并/推送)留用户。"
+    },
+    {
+      "timestamp": "2026-06-08T18:13:42.399Z",
+      "type": "task_status_change",
+      "task_id": "PM-206",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "PM-206 auto_verified → awaiting_manual_acceptance: stage_gate=true：Phase 2 全部完成并验证。等待用户 sign-off。部署/合并/推送与 Phase 1 一并由用户执行(同分支)。"
+    },
+    {
+      "timestamp": "2026-06-08T18:45:51.421Z",
+      "type": "task_status_change",
+      "task_id": "PM-301",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-301 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:46:34.334Z",
+      "type": "task_status_change",
+      "task_id": "PM-301",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-301 in_progress → auto_verified: C1:新建 src/project_dir.ts(resolveProjectDir:path.resolve+realpathSync canonical 解 symlink/Windows 大小写/UNC,statSync 校验 .claude/state 是目录,返回 ok/resolved/state_path 或 not_a_project/state_unreadable);index.ts 加 selectState(dir?)——缺省返回模块级全局 state(active:true)、提供则 resolveProjectDir+临时 StateManager,绝不改写全局。独立模块便于测试(不触发 server 启动)。5 用例:合法 canonical、不存在/无 state→not_a_project、state 是文件→state_unreadable、相对路径归一。tsc 干净;75/75 绿。selectState 本步未用,C2 接入。"
+    },
+    {
+      "timestamp": "2026-06-08T18:46:37.220Z",
+      "type": "task_status_change",
+      "task_id": "PM-301",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-301 auto_verified → done"
     }
   ]
 }

@@ -6,6 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { StateManager, Task } from "./state.js";
 import { findUnknownProfiles } from "./profiles.js";
+import { resolveProjectDir } from "./project_dir.js";
 
 // Resolve project directory: env var > search upward for .claude/state/ > cwd
 function findProjectDir(): string {
@@ -28,6 +29,40 @@ function findProjectDir(): string {
 let projectDir = findProjectDir();
 let state = new StateManager(projectDir);
 const workflowCoreDir = path.join(os.homedir(), ".workflow-core");
+
+// Cross-project addressing (ADR-003): pick a StateManager for an optional per-call
+// project_dir WITHOUT touching the module-global projectDir/state. No project_dir
+// => the active project (current behavior). Read-only tools use this; the global
+// is never reassigned here (only set_project_dir does that).
+type StateSelection =
+  | { ok: true; state: StateManager; resolved: string; state_path: string; active: boolean }
+  | {
+      ok: false;
+      error_kind: "not_a_project" | "state_unreadable";
+      error: string;
+      resolved: string;
+    };
+
+function selectState(dir?: string): StateSelection {
+  if (!dir) {
+    return {
+      ok: true,
+      state,
+      resolved: projectDir,
+      state_path: path.join(projectDir, ".claude", "state"),
+      active: true,
+    };
+  }
+  const r = resolveProjectDir(dir);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    state: new StateManager(r.resolved),
+    resolved: r.resolved,
+    state_path: r.state_path,
+    active: false,
+  };
+}
 
 const server = new McpServer({
   name: "project-manager",

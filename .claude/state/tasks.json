@@ -823,9 +823,184 @@
         "下游文档一致"
       ],
       "stage_gate": true,
-      "status": "in_progress",
+      "status": "awaiting_manual_acceptance",
       "created_at": "2026-06-08T18:00:08.600Z",
-      "updated_at": "2026-06-08T18:12:55.246Z",
+      "updated_at": "2026-06-08T18:13:42.371Z",
+      "commit_hash": "",
+      "notes": "stage_gate=true：Phase 2 全部完成并验证。等待用户 sign-off。部署/合并/推送与 Phase 1 一并由用户执行(同分支)。",
+      "verification_commands": []
+    },
+    {
+      "id": "PM-301",
+      "title": "C1 selectState/resolveProjectDir 安全契约",
+      "description": "新建 src/project_dir.ts:resolveProjectDir(dir) 做路径 canonical(path.resolve+realpathSync 解 symlink/Windows 大小写/UNC)+ 校验 .claude/state 是目录,返回 {ok,resolved,state_path} 或 {ok:false,error_kind:not_a_project|state_unreadable,error,resolved}。index.ts 加 selectState(dir?):缺省返回模块级全局 state(active:true)、提供则 resolveProjectDir+临时 StateManager,绝不改写全局。ADR-003 A/§1.1。",
+      "dependencies": [
+        "PM-206"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "resolveProjectDir 合法目录返回 ok+canonical resolved+state_path",
+        "不存在/无 .claude/state → not_a_project",
+        ".claude/state 是文件而非目录 → state_unreadable",
+        "selectState 缺省用全局 state 不改写;提供则临时 StateManager",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/project_dir.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase3",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "done",
+      "created_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:46:37.187Z",
+      "commit_hash": "",
+      "notes": "C1:新建 src/project_dir.ts(resolveProjectDir:path.resolve+realpathSync canonical 解 symlink/Windows 大小写/UNC,statSync 校验 .claude/state 是目录,返回 ok/resolved/state_path 或 not_a_project/state_unreadable);index.ts 加 selectState(dir?)——缺省返回模块级全局 state(active:true)、提供则 resolveProjectDir+临时 StateManager,绝不改写全局。独立模块便于测试(不触发 server 启动)。5 用例:合法 canonical、不存在/无 state→not_a_project、state 是文件→state_unreadable、相对路径归一。tsc 干净;75/75 绿。selectState 本步未用,C2 接入。",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-302",
+      "title": "C2 只读工具加 per-call project_dir",
+      "description": "10 个只读工具(get_project_info/get_prd/get_architecture/get_all_tasks/get_task_by_id/get_next_task/get_logs/get_project_context/get_current_focus/get_server_info)加可选 project_dir,经 selectState 解析;ok=false 返回带 error_kind 的错误;成功的返回带 resolved_project_dir/state_path 便于排错。绝不污染全局。写工具不加(本轮)。ADR-003 §1.2。",
+      "dependencies": [
+        "PM-301"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "跨项目只读:project_dir 指向另一项目能读到其 state",
+        "not_a_project 目录返回友好 error_kind",
+        "调用后模块级全局 projectDir/state 未变(不污染)",
+        "缺省 project_dir 行为完全同现状(向后兼容)",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase3",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:45:41.556Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-303",
+      "title": "C3 get_portfolio 只读聚合",
+      "description": "get_portfolio(project_dirs[]):仅 per-call 列表(空/缺省报错,绝不读注册表);逐项目经 selectState 返回 {project_dir,resolved_project_dir,ok,name,status,metrics(双率+计数),current_focus(summary+is_stale),next_task(id+title),next_task_blocked_reason} 或 {ok:false,error_kind,error};一个坏项目不拖垮整体。纯读。ADR-003 B/§2。",
+      "dependencies": [
+        "PM-302"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "多项目聚合返回逐条摘要",
+        "坏项目逐条 error 不影响其他",
+        "空列表报错(不隐式读注册表)",
+        "纯读不改任何项目 state",
+        "tsc 干净;全量测试绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase3",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:45:41.556Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-304",
+      "title": "C4 下游 doc 同步",
+      "description": "README 加 per-call project_dir(只读工具)+ get_portfolio + resolved_project_dir 回显说明;CF integration.md 加跨项目只读契约(project_dir 仅只读、portfolio per-call、写/注册表/pointer defer、CF 跨项目仅用只读);project-status/project-resume 注记可用 project_dir 查别的项目 + get_portfolio。状态图模板不涉及。CF Python 零改动。ADR-003 §4。",
+      "dependencies": [
+        "PM-303"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "README 含 project_dir/get_portfolio 说明",
+        "integration.md 含跨项目只读契约 + defer 边界",
+        "project-status/resume 注记跨项目只读用法",
+        "CF Python 未改动"
+      ],
+      "files": [
+        "mcp/project-manager/README.md",
+        "../CouncilFlow/docs/integration.md",
+        "skills/project-status/SKILL.md",
+        "skills/project-resume/SKILL.md"
+      ],
+      "module": "phase3",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:45:41.556Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-305",
+      "title": "C5 Phase 3 收口 gate (CHANGELOG + v1.3.0)",
+      "description": "clean build + 全量测试 + 舰队 smoke;CHANGELOG 加 1.3.0;package.json 1.2.0→1.3.0;与 Phase1/2 同分支一并部署。等用户 sign-off。ADR-003 §6 C5。",
+      "dependencies": [
+        "PM-304"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "全量测试绿、clean build、舰队 smoke 无回归",
+        "CHANGELOG 1.3.0 + version bump",
+        "用户 sign-off"
+      ],
+      "files": [
+        "mcp/project-manager/CHANGELOG.md",
+        "mcp/project-manager/package.json"
+      ],
+      "module": "phase3",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "workflow_meta",
+      "review_checklist": [
+        "跨项目只读是否真不污染全局",
+        "portfolio 是否真不隐式读注册表",
+        "写/pointer 是否确实 defer 未引入",
+        "下游文档一致"
+      ],
+      "stage_gate": true,
+      "status": "todo",
+      "created_at": "2026-06-08T18:45:41.556Z",
+      "updated_at": "2026-06-08T18:45:41.556Z",
       "commit_hash": "",
       "notes": "",
       "verification_commands": []
