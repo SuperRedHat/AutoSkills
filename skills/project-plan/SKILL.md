@@ -49,10 +49,11 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
   "module": "模块名",
   "needs_manual_review": true,
   "acceptance_mode": "auto|manual|milestone_manual",
-  "verification_profile": "backend|frontend_unit|frontend_browser|frontend_visual|docs|workflow_meta",
+  "verification_profile": "backend|frontend_unit|frontend_browser|frontend_visual|docs|workflow_meta（名称来自外部策略文件，不限于这 6 个）",
   "verification_commands": ["command"],
   "review_checklist": ["人工检查项"],
   "stage_gate": false,
+  "priority": 0,
   "status": "todo"
 }
 ```
@@ -62,6 +63,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
    - 普通前端任务：`auto + frontend_browser`
    - 高风险视觉任务：`milestone_manual`
    - 阶段收口任务：`manual`
+   - 任务可选携带 `priority`（数字，默认 0，越大越紧急）；`get_next_task` 会优先派发优先级最高的可执行任务，同优先级按创建顺序，但 `priority` 永远不会越过依赖门控。需要插队时给关键任务设较高 `priority` 即可，不必靠调整依赖或创建顺序。
 8. 展示任务列表并等待用户确认。
 9. 用户确认后，**host 主控**（不是 sidecar）调用 MCP：
    - 如果 synthesizer 走了 `status=delegated`：先读 `.council/delegations/<id>/result.md`，在它的基础上整理最终任务清单 JSON，再调 `create_tasks`
@@ -108,6 +110,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 - 不再只写 `needs_manual_review`
 - `needs_manual_review` 仅作为兼容字段保留
 - `review_checklist` 只在需要人工确认时填写
+- `verification_profile` 的可选名称来自外部策略文件 `~/.workflow-core/policies/verification-profiles.json`，运行时按该文件校验；新增一个 profile 只需编辑这个 JSON 文件，无需改代码，也不必局限于原来的 6 个内置名称（未知名称会被拒绝，仅当文件缺失时才放宽）
 - 规划阶段只创建 `todo` 任务，不在此处设置终态：`cancelled` / `superseded` 属于创建后的终态关闭，由 `project-next` / `project-feedback` / `project-change` 通过 `close_task` 处理，不在 plan 时设定
 - 有 CouncilFlow 时，不要在未获得 `local_execution` 或委派产物前直接跳过 route-first 步骤
 - `planner` / `synthesizer` 都属于硬前置阶段；不要把任务拆解或最终清单综合静默留在主控本地

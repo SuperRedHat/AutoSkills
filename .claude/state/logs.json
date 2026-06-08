@@ -551,6 +551,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-204 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T18:09:20.391Z",
+      "type": "task_status_change",
+      "task_id": "PM-205",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-205 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:12:14.152Z",
+      "type": "task_status_change",
+      "task_id": "PM-205",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-205 in_progress → auto_verified: Phase 2 下游同步(diff 已逐一审):模板×2 加 reopen_task 反向边(前向+Phase1 行不变);README 加 5 个新工具 + priority 字段 + 优先级感知 get_next_task + profile 外置校验,并修正自相矛盾的\"v1 不支持 reopen\"措辞;CF integration.md 加 1.2.0 反向边说明 + 'Management and batch tools' 段 + 'Task priority' 段 + 'verification_profile validation' 段(CF Python 零改动);project-feedback 加 reopen 复活路径并删除过时\"v1 无 reopen\"句;project-next 加优先级感知 + reopen 边界;project-plan 加 priority 字段/指引 + profile 外置说明。准确、最小增量。70/70 测试仍绿、代码未被 doc agents 触碰。"
+    },
+    {
+      "timestamp": "2026-06-08T18:12:17.162Z",
+      "type": "task_status_change",
+      "task_id": "PM-205",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-205 auto_verified → done"
     }
   ]
 }

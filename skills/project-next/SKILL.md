@@ -7,7 +7,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
 
 ## 执行流程
 
-1. 调用 `get_next_task` 取出可执行任务（该工具已自动过滤 `cancelled` / `superseded` 任务，并会沿 `superseded` 的 replacement 链解析依赖；遇到被 `cancelled` 依赖阻塞时会显式上报而非静默死锁，不会把已关闭任务派回执行）。
+1. 调用 `get_next_task` 取出可执行任务（该工具已自动过滤 `cancelled` / `superseded` 任务，并会沿 `superseded` 的 replacement 链解析依赖；遇到被 `cancelled` 依赖阻塞时会显式上报而非静默死锁，不会把已关闭任务派回执行）。该工具现在是**优先级感知**的：在所有可执行的 `todo` 里优先返回 `priority` 最高的一个，同优先级按创建顺序，但 `priority` 永远不会越过依赖门控。
 2. 调用 `update_task_status(id, "in_progress")`。
 3. 如果检测到 `council` 可用，则把项目目录下的 `.council/config.yaml` 视为自动分发真源；如果文件缺失，CouncilFlow 会在首次调用时自动生成一份项目本地配置模板。
 4. 如当前任务方案存在明显不确定，且用户显式要求 `discuss`，先调用 `CouncilFlow` 进行方案收敛：
@@ -105,6 +105,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
 - reviewer 有 findings 时必须进入 fixer，再回到 tester 与 reviewer；不要把失败修补混进主控的未授权本地动作里
 - 只有 tester 与 reviewer 都明确通过后，才允许进入 synthesizer、状态流转与 commit
 - 当任务等待人工确认时，输出 `review_checklist`
+- `reopen_task`（把终态任务带回 `todo` / `in_progress`）和 `close_task` 一样，属于控制器/管理动作，不是 role 阶段调用；`project-next` 的 role 驱动阶段不调用它，复活任务应交由 `project-feedback` 或显式管理决策处理
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON（`workflow=project-next`、对应 `failed_stage`）并调用 `project-manager` MCP `add_log(type="workflow_failure", task_id=<task id>, ...)`，再停止当前 workflow
 
 
