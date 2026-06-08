@@ -359,6 +359,70 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-110 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:30.912Z",
+      "type": "task_status_change",
+      "task_id": "PM-106",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-106 in_progress → auto_verified: 模板状态图同步(diff 已审)：global-claude-CLAUDE.md / global-codex-AGENTS.md 前向路径逐字保留，追加 cancelled/superseded 终态(无出边、仅 close_task 进入、update_task_status 拒绝)+ 两条 close_task 转移 + getNextTask blockquote(superseded 沿替代链/cancelled 阻塞下游显式上报)；repo-CLAUDE.md / repo-AGENTS.md 各加一行 close_task 说明。准确、最小增量。"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:30.952Z",
+      "type": "task_status_change",
+      "task_id": "PM-107",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-107 in_progress → auto_verified: 7 技能散文同步(diff 已逐一审)：project-next(get_next_task 过滤终态/解析替代链/不死锁 + fixer 不无限循环、close_task 非 role 调用、workflow_failure 不授权关闭)、project-feedback(返工 vs 不做拆分，close_task 主要调用方，cancelled/superseded 语义+校验+ops_event+审计)、project-status(双率展示+折叠终态段)、project-change(step8 supersede 旧任务→replacement)、project-review(死任务不挂修复、升级建议 close)、project-resume(已取消/已超代段守卫+next_task 非终态核对)、project-plan(只建 todo、终态归 close_task)。准确、最小增量、保留 zh-CN。"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:34.048Z",
+      "type": "task_status_change",
+      "task_id": "PM-108",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-108 in_progress → auto_verified: CouncilFlow integration.md 同步(diff 已审，CF Python 零改动)：Consumption Rules 加 3 条(cancelled/superseded=closed-but-not-done 不计 active 率、current_focus 辅助非权威、日志按 kind/event_type 消费)；新增 'project-manager Task-State Contract' 段(7 值枚举+前向机不变、close_task API 全约束、get_project_context 加法返回+context_mode 仅 hint、add_log/get_logs/migrate);Workflow Failure Report Protocol(行 606-612)加 workflow_failure 不授权 close_task、失败留原状、关闭归 project-feedback/控制器。准确。"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:40.881Z",
+      "type": "task_status_change",
+      "task_id": "PM-109",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-109 in_progress → auto_verified: README 同步(diff 已审)：任务管理节补 get_next_task 终态处理 / update_task_status 拒绝并引导 close_task / 新增 close_task 条目 / get_all_tasks 含终态 / 7 值枚举说明；日志节补 add_log kind/event_type/tags/entities/source(task_id 可 null) + get_logs 先过滤后切片;上下文恢复节补 get_project_context 加法字段+context_mode hint+get/set_current_focus;新增迁移节。mcp-manifest.json 不枚举工具(仅 version/servers/command/args_template/env/trust)，无陈旧字段，保持原样(已验仍合法 JSON)。已知次要遗留:README 安装示例路径(~/.claude/mcp-project-manager)与 manifest(${AUTOSKILLS_HOME}/mcp/project-manager)不一致——属既有安装文档陈旧、非本契约范围，留作后续。50/50 测试仍绿、代码未被 doc agents 触碰。"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:45.567Z",
+      "type": "task_status_change",
+      "task_id": "PM-106",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-106 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:45.605Z",
+      "type": "task_status_change",
+      "task_id": "PM-107",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-107 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:45.772Z",
+      "type": "task_status_change",
+      "task_id": "PM-108",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-108 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:53:46.098Z",
+      "type": "task_status_change",
+      "task_id": "PM-109",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-109 auto_verified → done"
     }
   ]
 }
