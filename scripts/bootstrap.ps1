@@ -18,11 +18,18 @@
 .PARAMETER Force
   Skip interactive confirmation prompts (currently no-op; reserved).
 
+.PARAMETER MigrateState
+  Optional list of existing project roots to migrate to schema v1 after the
+  build (idempotent; safe to re-run; never changes task status). Default:
+  skipped — migration is lazy (the upgraded server backfills on first write,
+  and read paths compute the new fields on the fly).
+
 .PARAMETER Help
 #>
 param(
   [switch]$DryRun = $false,
   [switch]$Force = $false,
+  [string[]]$MigrateState = @(),
   [switch]$Help = $false
 )
 
@@ -88,6 +95,27 @@ Invoke-Action "npm run build in $mcpProjectDir" {
   try { npm run build } finally { Pop-Location }
   $distIndex = Join-Path $mcpProjectDir 'dist\index.js'
   if (-not (Test-Path $distIndex)) { throw "Build did not produce $distIndex" }
+}
+
+# --- Step 3.5 (optional): migrate existing project state to schema v1 ---
+Write-Output ""
+if ($MigrateState.Count -gt 0) {
+  Write-Output "--- Step 3.5 (optional): migrate $($MigrateState.Count) project(s) to schema v1 ---"
+  $statePath = Join-Path $mcpProjectDir 'dist\state.js'
+  Invoke-Action "migrate_tasks_schema on provided project roots (idempotent)" {
+    if (-not (Test-Path $statePath)) { throw "Built state module not found: $statePath" }
+    # Pass paths via env vars (NOT interpolated into the JS source) so a path with
+    # a quote/backslash/space can neither break the JS string nor inject code.
+    $env:PM_STATE_JS = ($statePath -replace '\\', '/')
+    $js = "const{StateManager}=require(process.env.PM_STATE_JS);const r=new StateManager(process.env.PM_PROJ_DIR).migrateTaskSchema();console.log('    '+process.env.PM_PROJ_DIR+' -> '+JSON.stringify(r));"
+    foreach ($proj in $MigrateState) {
+      $env:PM_PROJ_DIR = $proj
+      node -e $js
+    }
+    Remove-Item Env:\PM_STATE_JS, Env:\PM_PROJ_DIR -ErrorAction SilentlyContinue
+  }
+} else {
+  Write-Output "--- Step 3.5 (optional): state migration skipped (lazy first-touch). Pass -MigrateState dir1,dir2 to batch-migrate. ---"
 }
 
 # --- Step 4: register MCP with 3 CLIs ---

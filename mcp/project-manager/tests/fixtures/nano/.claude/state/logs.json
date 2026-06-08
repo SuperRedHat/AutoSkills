@@ -1,0 +1,260 @@
+{
+  "logs": [
+    {
+      "timestamp": "2026-03-14T19:48:05.583Z",
+      "type": "decision",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "PRD 已确认并保存"
+    },
+    {
+      "timestamp": "2026-03-14T19:55:23.087Z",
+      "type": "decision",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "架构设计已确认并保存"
+    },
+    {
+      "timestamp": "2026-03-14T20:01:02.229Z",
+      "type": "task_status_change",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "已创建 2 个任务"
+    },
+    {
+      "timestamp": "2026-03-14T20:01:20.541Z",
+      "type": "task_status_change",
+      "task_id": "TASK-001",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-001 todo → in_progress: 开始实现 Ru ALE 简化预测引擎与自动测试"
+    },
+    {
+      "timestamp": "2026-03-14T20:05:20.052Z",
+      "type": "task_status_change",
+      "task_id": "TASK-001",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-001 in_progress → auto_verified: 核心预测模型与单元测试已通过"
+    },
+    {
+      "timestamp": "2026-03-14T20:05:23.148Z",
+      "type": "task_status_change",
+      "task_id": "TASK-001",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "TASK-001 auto_verified → done: 已提交 commit 7f551bf0f2754a794393ec2e7ec843236c449fc7"
+    },
+    {
+      "timestamp": "2026-03-14T20:14:18.653Z",
+      "type": "task_status_change",
+      "task_id": "TASK-002",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-002 todo → in_progress: 实现 HTML 演示页面、Plotly 图表和前端 smoke test"
+    },
+    {
+      "timestamp": "2026-03-14T20:14:44.577Z",
+      "type": "task_status_change",
+      "task_id": "TASK-002",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-002 in_progress → auto_verified: 前端页面、图表和 smoke test 已通过"
+    },
+    {
+      "timestamp": "2026-03-14T20:14:50.527Z",
+      "type": "task_status_change",
+      "task_id": "TASK-002",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "TASK-002 auto_verified → awaiting_manual_acceptance: 已提交 commit 38f58b16387ab2466ba1f16dbee501a1dc1f41a3，等待手动验收页面效果"
+    },
+    {
+      "timestamp": "2026-03-14T20:14:59.914Z",
+      "type": "task_status_change",
+      "task_id": "TASK-001",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-001 已自动验证并完成，提交 commit 7f551bf0f2754a794393ec2e7ec843236c449fc7"
+    },
+    {
+      "timestamp": "2026-03-14T20:14:59.938Z",
+      "type": "task_status_change",
+      "task_id": "TASK-002",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-002 已自动验证，等待手动验收，提交 commit 38f58b16387ab2466ba1f16dbee501a1dc1f41a3"
+    },
+    {
+      "timestamp": "2026-03-14T20:17:27.745Z",
+      "type": "task_status_change",
+      "task_id": "TASK-002",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "TASK-002 awaiting_manual_acceptance → done: 用户手动验收通过；验收反馈：ok"
+    },
+    {
+      "timestamp": "2026-03-14T20:17:27.762Z",
+      "type": "review_completed",
+      "task_id": "TASK-002",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-002 手动验收通过，用户反馈：ok"
+    },
+    {
+      "timestamp": "2026-03-14T20:55:07.765Z",
+      "type": "decision",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "新增小变更：在页面中展示当前模型使用的全部公式与关键中间量"
+    },
+    {
+      "timestamp": "2026-03-14T20:55:14.977Z",
+      "type": "task_status_change",
+      "task_id": "TASK-003",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-003 todo → in_progress: 开始实现模型全部公式展示与中间量展示"
+    },
+    {
+      "timestamp": "2026-03-14T20:58:39.596Z",
+      "type": "task_status_change",
+      "task_id": "TASK-003",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-003 in_progress → auto_verified: 公式展示增强已实现，自动测试通过"
+    },
+    {
+      "timestamp": "2026-03-14T20:58:42.683Z",
+      "type": "task_status_change",
+      "task_id": "TASK-003",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "TASK-003 auto_verified → awaiting_manual_acceptance: 已提交 commit e2fd3dd850e0f7187d2ac5a4a24307a406253f4e，等待手动验收公式展示效果"
+    },
+    {
+      "timestamp": "2026-03-14T20:58:47.651Z",
+      "type": "task_status_change",
+      "task_id": "TASK-003",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-003 已自动验证并进入手动验收，提交 commit e2fd3dd850e0f7187d2ac5a4a24307a406253f4e"
+    },
+    {
+      "timestamp": "2026-03-14T21:22:48.568Z",
+      "type": "decision",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "新增中等变更：采用 .NET 单文件启动器打包 Windows exe，并将前端图表资源本地化"
+    },
+    {
+      "timestamp": "2026-03-14T21:23:00.580Z",
+      "type": "task_status_change",
+      "task_id": "TASK-004",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-004 todo → in_progress: 开始本地化 Plotly 静态资源并适配 exe 启动"
+    },
+    {
+      "timestamp": "2026-03-14T21:23:59.563Z",
+      "type": "task_status_change",
+      "task_id": "TASK-004",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-004 in_progress → auto_verified: 前端资源已本地化，测试通过"
+    },
+    {
+      "timestamp": "2026-03-14T21:24:17.707Z",
+      "type": "task_status_change",
+      "task_id": "TASK-004",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "TASK-004 auto_verified → awaiting_manual_acceptance: 已提交 commit 044db3e92d0b33378e6fabdfafc42cdcd042b191，待与 exe 一并手动验收"
+    },
+    {
+      "timestamp": "2026-03-14T21:24:20.219Z",
+      "type": "task_status_change",
+      "task_id": "TASK-005",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-005 todo → in_progress: 开始实现 .NET 单文件启动器与 exe 打包脚本"
+    },
+    {
+      "timestamp": "2026-03-14T21:29:34.898Z",
+      "type": "task_status_change",
+      "task_id": "TASK-005",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-005 in_progress → auto_verified: 启动器、发布脚本和打包后的 exe smoke test 已通过"
+    },
+    {
+      "timestamp": "2026-03-14T21:29:38.290Z",
+      "type": "task_status_change",
+      "task_id": "TASK-005",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "TASK-005 auto_verified → awaiting_manual_acceptance: 已提交 commit 853880df38ecb3986ab9ca0d3cb518b3ad6f0076，等待手动验收 exe 启动与浏览器打开效果"
+    },
+    {
+      "timestamp": "2026-03-14T21:29:43.019Z",
+      "type": "task_status_change",
+      "task_id": "TASK-004",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-004 已自动验证并等待与 exe 一并手动验收，提交 commit 044db3e92d0b33378e6fabdfafc42cdcd042b191"
+    },
+    {
+      "timestamp": "2026-03-14T21:29:43.023Z",
+      "type": "task_status_change",
+      "task_id": "TASK-005",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-005 已自动验证并等待手动验收，提交 commit 853880df38ecb3986ab9ca0d3cb518b3ad6f0076"
+    },
+    {
+      "timestamp": "2026-03-14T21:37:42.526Z",
+      "type": "decision",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "新增中等变更：为 Intel Mac 生成 osx-x64 启动包，包含 .command 启动脚本与说明文件"
+    },
+    {
+      "timestamp": "2026-03-14T21:38:06.114Z",
+      "type": "task_status_change",
+      "task_id": "TASK-006",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "TASK-006 todo → in_progress: 开始实现 Intel Mac osx-x64 启动包输出与校验脚本"
+    },
+    {
+      "timestamp": "2026-03-14T21:40:17.210Z",
+      "type": "task_status_change",
+      "task_id": "TASK-006",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "TASK-006 in_progress → auto_verified: osx-x64 启动包已生成，结构校验通过，Windows 回归通过"
+    },
+    {
+      "timestamp": "2026-03-14T21:40:19.910Z",
+      "type": "task_status_change",
+      "task_id": "TASK-006",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "TASK-006 auto_verified → awaiting_manual_acceptance: 已提交 commit 76c4306b892944be5097a1877192d82b9e96b901，等待 Intel Mac 手动验收"
+    },
+    {
+      "timestamp": "2026-03-14T21:40:22.613Z",
+      "type": "task_status_change",
+      "task_id": "TASK-006",
+      "from_status": null,
+      "to_status": null,
+      "message": "TASK-006 已自动验证并等待 Intel Mac 手动验收，提交 commit 76c4306b892944be5097a1877192d82b9e96b901"
+    }
+  ]
+}

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # One-click install of AutoSkills on a new machine. See bootstrap.ps1.
-# Usage: bootstrap.sh [--dry-run] [--force] [--help]
+# Usage: bootstrap.sh [--dry-run] [--force] [--migrate-state=dir1,dir2] [--help]
 
 set -euo pipefail
 
 DRY_RUN=0
 FORCE=0
+MIGRATE_STATE=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
+    --migrate-state=*) MIGRATE_STATE="${arg#*=}" ;;
     --help|-h) sed -n '2,4p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
@@ -66,11 +68,31 @@ if [[ ! -d "$MCP_DIR" ]]; then
   exit 1
 fi
 
-invoke "npm install in $MCP_DIR" bash -c "cd '$MCP_DIR' && npm install"
-invoke "npm run build in $MCP_DIR" bash -c "cd '$MCP_DIR' && npm run build"
+invoke "npm install in $MCP_DIR" bash -c 'cd "$1" && npm install' _ "$MCP_DIR"
+invoke "npm run build in $MCP_DIR" bash -c 'cd "$1" && npm run build' _ "$MCP_DIR"
 if [[ $DRY_RUN -eq 0 && ! -f "$MCP_DIR/dist/index.js" ]]; then
   echo "Build did not produce dist/index.js" >&2
   exit 3
+fi
+
+# --- Step 3.5 (optional): migrate existing project state to schema v1 ---
+echo
+if [[ -n "$MIGRATE_STATE" ]]; then
+  echo "--- Step 3.5 (optional): migrate project state to schema v1 (idempotent) ---"
+  STATE_JS="$MCP_DIR/dist/state.js"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] migrate_tasks_schema on: $MIGRATE_STATE"
+  else
+    [[ -f "$STATE_JS" ]] || { echo "Built state module not found: $STATE_JS" >&2; exit 3; }
+    IFS=',' read -ra PROJ_DIRS <<< "$MIGRATE_STATE"
+    for proj in "${PROJ_DIRS[@]}"; do
+      # Paths via env vars (single-quoted JS reads process.env) — no shell
+      # interpolation into the JS source, so no quote-break / injection.
+      PM_STATE_JS="$STATE_JS" PM_PROJ_DIR="$proj" node -e 'const{StateManager}=require(process.env.PM_STATE_JS);const r=new StateManager(process.env.PM_PROJ_DIR).migrateTaskSchema();console.log("    "+process.env.PM_PROJ_DIR+" -> "+JSON.stringify(r));'
+    done
+  fi
+else
+  echo "--- Step 3.5 (optional): state migration skipped (lazy first-touch). Pass --migrate-state=dir1,dir2 to batch-migrate. ---"
 fi
 
 # --- Step 4: register MCP with 3 CLIs per manifest ---
@@ -87,9 +109,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 4
 fi
 
-MCP_COMMAND="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print(m['servers']['project-manager']['command'])")"
-MCP_ARGS_RAW="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print('\n'.join(m['servers']['project-manager']['args_template']))")"
-TRUST_GEMINI="$(python3 -c "import json; m=json.load(open('$MANIFEST',encoding='utf-8')); print(str(m['servers']['project-manager']['trust']['gemini']).lower())")"
+# Manifest path via env (not interpolated into the Python string literal) to avoid
+# injection if the path contains a quote.
+export PM_MANIFEST="$MANIFEST"
+MCP_COMMAND="$(python3 -c "import json,os; m=json.load(open(os.environ['PM_MANIFEST'],encoding='utf-8')); print(m['servers']['project-manager']['command'])")"
+MCP_ARGS_RAW="$(python3 -c "import json,os; m=json.load(open(os.environ['PM_MANIFEST'],encoding='utf-8')); print('\n'.join(m['servers']['project-manager']['args_template']))")"
+TRUST_GEMINI="$(python3 -c "import json,os; m=json.load(open(os.environ['PM_MANIFEST'],encoding='utf-8')); print(str(m['servers']['project-manager']['trust']['gemini']).lower())")"
 
 # Expand ${AUTOSKILLS_HOME}
 MCP_ARGS=()
@@ -132,9 +157,13 @@ if [[ $DRY_RUN -eq 1 ]]; then
 else
   echo "[action]  gemini mcp register (edit $GEMINI_SETTINGS, trust=$TRUST_GEMINI)"
   mkdir -p "$USER_HOME/.gemini"
-  python3 - <<PYEOF
+  # Build the args JSON from the array via argv (no word-splitting / single-element
+  # collapse), then pass everything through env into a QUOTED heredoc so nothing is
+  # shell-interpolated into the Python source (no injection, no triple-quote break).
+  MCP_ARGS_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${MCP_ARGS[@]}")"
+  PM_GEMINI_SETTINGS="$GEMINI_SETTINGS" PM_MCP_COMMAND="$MCP_COMMAND" PM_MCP_ARGS_JSON="$MCP_ARGS_JSON" PM_TRUST_GEMINI="$TRUST_GEMINI" python3 - <<'PYEOF'
 import json, os
-path = r"$GEMINI_SETTINGS"
+path = os.environ['PM_GEMINI_SETTINGS']
 data = {}
 if os.path.isfile(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -144,9 +173,9 @@ if os.path.isfile(path):
             data = {}
 data.setdefault('mcpServers', {})
 data['mcpServers']['project-manager'] = {
-    'command': r"""$MCP_COMMAND""",
-    'args': ${MCP_ARGS_JSON:-$(python3 -c "import json,sys; print(json.dumps(['${MCP_ARGS[@]}']))")},
-    'trust': ${TRUST_GEMINI}
+    'command': os.environ['PM_MCP_COMMAND'],
+    'args': json.loads(os.environ['PM_MCP_ARGS_JSON']),
+    'trust': os.environ['PM_TRUST_GEMINI'].lower() == 'true',
 }
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)

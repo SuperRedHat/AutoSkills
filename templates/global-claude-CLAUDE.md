@@ -26,7 +26,17 @@ todo -> in_progress -> auto_verified -> awaiting_manual_acceptance  (acceptance_
 todo -> in_progress -> auto_verified -> done                        (acceptance_mode=milestone_manual and stage_gate=false)
 todo -> in_progress -> auto_verified -> awaiting_manual_acceptance  (acceptance_mode=milestone_manual and stage_gate=true)
 awaiting_manual_acceptance -> in_progress
+
+# 终止状态 cancelled / superseded：无出边，仅可经 close_task 进入（受审计的管理旁路，update_task_status 不接受这两个状态）
+# 仅 project-feedback（人工 gate 拒绝）或控制器/管理决策可调用 close_task；角色工作流阶段只上报失败，不调用 close_task
+任意非终止状态 --close_task(cancelled, reason)--> cancelled
+任意非终止状态 --close_task(superseded, reason, replacement_task_id)--> superseded
+
+# 终止状态 done / cancelled / superseded：现各有唯一一条「受审计」反向边，经 reopen_task 回到 todo（默认）或 in_progress（reason 必填，受审计管理旁路，正常只由 project-feedback/控制器调用；不走正向状态机）
+done / cancelled / superseded --reopen_task(reason, to_status?)--> todo | in_progress
 ```
+
+> getNextTask 把 cancelled / superseded 视为「已关闭但非 done」：superseded 依赖沿 replacement 链改指向替代任务，cancelled 依赖会阻塞其下游（显式上报，不静默死锁）。
 
 ### 任务验收字段
 规划任务时优先写入以下字段：

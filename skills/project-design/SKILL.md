@@ -88,7 +88,7 @@ description: 系统架构设计。当用户说"开始设计"、"架构设计"、
 1. 如果 synthesizer 走了 `status=delegated`：先读 `.council/delegations/<id>/result.md`，在它的基础上整理最终架构文档，再调 `save_architecture`
 2. 如果 synthesizer 走了 `status=local_execution`：直接用主控本地整理好的草稿调 `save_architecture`
 3. 调用 `update_project_info` 更新状态为 `designed`，更新技术栈
-4. 调用 `add_log` 记录 "架构设计已确认并保存"
+4. 调用 `add_log` 记录 "架构设计已确认并保存"（Phase 0.4+ 可带 `kind="decision"`、`event_type="architecture_saved"`）
 
 ### 第六步：引导下一步
 > "架构设计已保存。你可以使用 /project-plan 进入任务拆解阶段。"

@@ -58,6 +58,8 @@ council delegate --role reviewer --objective "审查最近完成任务的代码�
 ### 第五步：自动创建修复任务
 严重问题调用 MCP `add_subtask` 创建修复任务。调用 `add_log` 记录审查结果。
 
+但如果审查发现某个任务**根本方向有问题**（不是可修复的缺陷，而是任务本身已不该存在 / 已超出范围 / 已被其它实现替代），**不要**给这个"死任务"再挂修复子任务：`project-review` 不负责终态关闭，应升级到 `project-feedback` / `project-change` 并给出建议——由它们或控制器用 `close_task(cancelled|superseded)` 处理；本步用 `add_log(kind="decision", ...)` 记录"建议关闭 + 理由"，不要自行调用 `close_task`。
+
 ## 注意事项
 - 不要鸡蛋里挑骨头
 - 严重问题必须给具体修复建议

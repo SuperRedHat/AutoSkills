@@ -5,6 +5,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { StateManager, Task } from "./state.js";
+import { findUnknownProfiles } from "./profiles.js";
+import { resolveProjectDir } from "./project_dir.js";
 
 // Resolve project directory: env var > search upward for .claude/state/ > cwd
 function findProjectDir(): string {
@@ -27,6 +29,55 @@ function findProjectDir(): string {
 let projectDir = findProjectDir();
 let state = new StateManager(projectDir);
 const workflowCoreDir = path.join(os.homedir(), ".workflow-core");
+
+// Cross-project addressing (ADR-003): pick a StateManager for an optional per-call
+// project_dir WITHOUT touching the module-global projectDir/state. No project_dir
+// => the active project (current behavior). Read-only tools use this; the global
+// is never reassigned here (only set_project_dir does that).
+type StateSelection =
+  | { ok: true; state: StateManager; resolved: string; state_path: string; active: boolean }
+  | {
+      ok: false;
+      error_kind: "not_a_project" | "state_unreadable";
+      error: string;
+      resolved: string;
+    };
+
+function selectState(dir?: string): StateSelection {
+  if (!dir) {
+    return {
+      ok: true,
+      state,
+      resolved: projectDir,
+      state_path: path.join(projectDir, ".claude", "state"),
+      active: true,
+    };
+  }
+  const r = resolveProjectDir(dir);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    state: new StateManager(r.resolved),
+    resolved: r.resolved,
+    state_path: r.state_path,
+    active: false,
+  };
+}
+
+function selErr(sel: { error_kind: string; error: string }) {
+  return {
+    content: [
+      { type: "text" as const, text: `Error (${sel.error_kind}): ${sel.error}` },
+    ],
+  };
+}
+
+const PROJECT_DIR_PARAM = z
+  .string()
+  .optional()
+  .describe(
+    "可选：跨项目只读，定位另一个项目（含 .claude/state 的目录）；不传=当前活动项目，且不会切换活动项目"
+  );
 
 const server = new McpServer({
   name: "project-manager",
@@ -69,8 +120,10 @@ server.tool(
 
 // ==================== Project Management ====================
 
-server.tool("get_project_info", "获取项目元信息", {}, async () => {
-  const info = state.getProjectInfo();
+server.tool("get_project_info", "获取项目元信息（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const info = sel.state.getProjectInfo();
   return {
     content: [
       {
@@ -93,8 +146,10 @@ server.tool(
   }
 );
 
-server.tool("get_prd", "获取 PRD 文档", {}, async () => {
-  const prd = state.getPRD();
+server.tool("get_prd", "获取 PRD 文档（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const prd = sel.state.getPRD();
   return {
     content: [
       {
@@ -117,8 +172,10 @@ server.tool(
   }
 );
 
-server.tool("get_architecture", "获取架构设计文档", {}, async () => {
-  const arch = state.getArchitecture();
+server.tool("get_architecture", "获取架构设计文档（可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const arch = sel.state.getArchitecture();
   return {
     content: [
       {
@@ -181,22 +238,28 @@ server.tool(
         needs_manual_review: z.boolean(),
         acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
         verification_profile: z
-          .enum([
-            "backend",
-            "frontend_unit",
-            "frontend_browser",
-            "frontend_visual",
-            "docs",
-            "workflow_meta",
-          ])
-          .optional(),
+          .string()
+          .optional()
+          .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
         verification_commands: z.array(z.string()).optional(),
         review_checklist: z.array(z.string()).optional(),
         stage_gate: z.boolean().optional(),
+        priority: z.number().optional().describe("越大越优先（默认 0）"),
       })
     ).describe("Array of tasks to create"),
   },
   async ({ tasks }) => {
+    const { unknown, valid } = findUnknownProfiles(tasks.map((t) => t.verification_profile));
+    if (unknown.length) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: unknown verification_profile(s): ${unknown.join(", ")}. Valid: ${valid.join(", ")}. (Add new profiles to ~/.workflow-core/policies/verification-profiles.json — no code change needed.)`,
+          },
+        ],
+      };
+    }
     const fullTasks: Task[] = tasks.map((t) => ({
       ...t,
       status: "todo" as const,
@@ -214,8 +277,10 @@ server.tool(
   }
 );
 
-server.tool("get_next_task", "获取下一个可执行任务（依赖已全部完成）", {}, async () => {
-  const task = state.getNextTask();
+server.tool("get_next_task", "获取下一个可执行任务（依赖已全部完成；可选 project_dir 跨项目只读）", { project_dir: PROJECT_DIR_PARAM }, async ({ project_dir }) => {
+  const sel = selectState(project_dir);
+  if (!sel.ok) return selErr(sel);
+  const task = sel.state.getNextTask();
   return {
     content: [
       {
@@ -259,7 +324,7 @@ server.tool(
 
 server.tool(
   "get_all_tasks",
-  "获取所有任务（可按状态筛选）",
+  "获取所有任务（可按状态筛选，含 cancelled/superseded 终态）",
   {
     status: z
       .enum([
@@ -268,12 +333,17 @@ server.tool(
         "auto_verified",
         "awaiting_manual_acceptance",
         "done",
+        "cancelled",
+        "superseded",
       ])
       .optional()
       .describe("Filter by status"),
+    project_dir: PROJECT_DIR_PARAM,
   },
-  async ({ status }) => {
-    const tasks = state.getAllTasks(status ? { status } : undefined);
+  async ({ status, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const tasks = sel.state.getAllTasks(status ? { status } : undefined);
     return {
       content: [
         {
@@ -290,9 +360,11 @@ server.tool(
 server.tool(
   "get_task_by_id",
   "获取单个任务详情",
-  { id: z.string().describe("Task ID") },
-  async ({ id }) => {
-    const task = state.getTaskById(id);
+  { id: z.string().describe("Task ID"), project_dir: PROJECT_DIR_PARAM },
+  async ({ id, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const task = sel.state.getTaskById(id);
     return {
       content: [
         {
@@ -320,20 +392,26 @@ server.tool(
     needs_manual_review: z.boolean(),
     acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
     verification_profile: z
-      .enum([
-        "backend",
-        "frontend_unit",
-        "frontend_browser",
-        "frontend_visual",
-        "docs",
-        "workflow_meta",
-      ])
-      .optional(),
+      .string()
+      .optional()
+      .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
     verification_commands: z.array(z.string()).optional(),
     review_checklist: z.array(z.string()).optional(),
     stage_gate: z.boolean().optional(),
+    priority: z.number().optional().describe("越大越优先（默认 0）"),
   },
   async ({ parent_id, ...subtaskData }) => {
+    const { unknown, valid } = findUnknownProfiles([subtaskData.verification_profile]);
+    if (unknown.length) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: unknown verification_profile "${unknown[0]}". Valid: ${valid.join(", ")}. (Add it to ~/.workflow-core/policies/verification-profiles.json — no code change needed.)`,
+          },
+        ],
+      };
+    }
     const subtask: Task = {
       ...subtaskData,
       status: "todo",
@@ -350,6 +428,146 @@ server.tool(
           text: result.success
             ? `Subtask ${subtaskData.id} added under ${parent_id}.`
             : `Error: ${result.error}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "close_task",
+  "关闭任务到 cancelled/superseded（受审计管理旁路，不走前向状态机）。只能从非终态进入；cancelled 需 reason；superseded 需 reason + replacement_task_id（校验存在/非自身/非closed/无环）。写一条 task_closed 审计日志。",
+  {
+    id: z.string().describe("要关闭的任务 ID"),
+    status: z.enum(["cancelled", "superseded"]).describe("关闭目标态"),
+    reason: z.string().describe("关闭原因（必填）"),
+    replacement_task_id: z
+      .string()
+      .optional()
+      .describe("superseded 时必填：替代任务 ID"),
+  },
+  async ({ id, status, reason, replacement_task_id }) => {
+    const r = state.closeTask(id, status, reason, replacement_task_id);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success
+            ? `Task ${id} closed as ${status}.` +
+              (r.affected_dependents?.length
+                ? ` Affected dependents: ${r.affected_dependents.join(", ")}.`
+                : "")
+            : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "update_tasks",
+  "批量前向改状态（逐条仍走完整校验，允许部分成功；不接受 cancelled/superseded——请用 close_tasks）。",
+  {
+    updates: z
+      .array(
+        z.object({
+          id: z.string(),
+          status: z.enum([
+            "todo",
+            "in_progress",
+            "auto_verified",
+            "awaiting_manual_acceptance",
+            "done",
+          ]),
+          notes: z.string().optional(),
+        })
+      )
+      .describe("批量状态更新"),
+  },
+  async ({ updates }) => {
+    const r = state.updateTasks(updates);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "close_tasks",
+  "批量关闭任务（逐条走 close_task：cancelled 需 reason；superseded 需 reason + replacement_task_id）。",
+  {
+    closes: z
+      .array(
+        z.object({
+          id: z.string(),
+          status: z.enum(["cancelled", "superseded"]),
+          reason: z.string(),
+          replacement_task_id: z.string().optional(),
+        })
+      )
+      .describe("批量关闭"),
+  },
+  async ({ closes }) => {
+    const r = state.closeTasks(closes);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "archive_module",
+  "把某 module 下所有非终态任务批量取消（close_task cancelled）。用于整模块作废。",
+  {
+    module: z.string().describe("模块名"),
+    reason: z.string().describe("作废原因"),
+  },
+  async ({ module, reason }) => {
+    const r = state.archiveModule(module, reason);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Archived module "${module}": cancelled ${r.closed.length} task(s)${r.closed.length ? " (" + r.closed.join(", ") + ")" : ""}.`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "reopen_task",
+  "复活终态任务（受审计管理旁路，不走前向状态机）：把 done/cancelled/superseded 移回 todo（默认）或 in_progress。reason 必填。superseded 复活会清空 replacement_task_id；其在 supersede 时被改写的下游依赖不会自动改回（见审计日志）。",
+  {
+    id: z.string().describe("Task ID"),
+    reason: z.string().describe("复活原因（必填）"),
+    to_status: z.enum(["todo", "in_progress"]).optional().describe("复活目标态（默认 todo）"),
+  },
+  async ({ id, reason, to_status }) => {
+    const r = state.reopenTask(id, reason, to_status ?? "todo");
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success
+            ? `Task ${id} reopened to ${to_status ?? "todo"}.`
+            : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "set_task_priority",
+  "调整任务优先级（数值，越大越优先）。get_next_task 在依赖满足的 todo 中优先返回高优先级者，同分按创建顺序。",
+  {
+    id: z.string().describe("Task ID"),
+    priority: z.number().describe("越大越优先（默认 0）"),
+  },
+  async ({ id, priority }) => {
+    const r = state.setTaskPriority(id, priority);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success ? `Task ${id} priority set to ${priority}.` : `Error: ${r.error}`,
         },
       ],
     };
@@ -379,15 +597,17 @@ server.tool("get_verification_profiles", "获取共享 verification profile 定�
 
 server.tool(
   "migrate_tasks_schema",
-  "将现有 tasks.json 迁移为兼容 acceptance_mode 的 schema",
+  "将现有 state 迁移到 schema v1（幂等、不改任务 status、回填日志 kind、补双率 progress、盖 schema_version）。已是 v1 则跳过。",
   {},
   async () => {
-    const result = state.migrateTaskSchema();
+    const r = state.migrateTaskSchema();
     return {
       content: [
         {
           type: "text" as const,
-          text: `Migrated ${result.migrated} tasks to the acceptance-mode-compatible schema.`,
+          text: r.skipped
+            ? `Already at schema v${r.schema_version}; migration skipped (no-op).`
+            : `Migrated to schema v${r.schema_version}: ${r.migrated} tasks normalized, ${r.logs_migrated} log entries backfilled with kind/event_type. Task statuses unchanged; progress recomputed (dual-rate).`,
         },
       ],
     };
@@ -398,16 +618,36 @@ server.tool(
 
 server.tool(
   "add_log",
-  "记录操作日志",
+  "记录操作日志。kind 为粗分类(省略则按 type 推断)，event_type 承接细类型，entities/tags 用于结构化检索(proposal-id/合同号等)。task_id 可为 null 表示项目级 ops 事件。",
   {
     type: z.string().describe("Log type (e.g., task_status_change, decision, review_completed)"),
     message: z.string().describe("Log message"),
-    task_id: z.string().nullable().optional().describe("Related task ID"),
+    task_id: z.string().nullable().optional().describe("Related task ID (null = 项目级事件)"),
+    kind: z
+      .enum([
+        "task_transition",
+        "ops_event",
+        "decision",
+        "note",
+        "workflow_failure",
+        "focus_update",
+      ])
+      .optional()
+      .describe("粗分类；省略则按 type 推断"),
+    event_type: z.string().nullable().optional().describe("细类型(承接 legacy type 语义)"),
+    tags: z.array(z.string()).optional().describe("标签"),
+    entities: z.record(z.any()).optional().describe("关联实体(proposal-id/合同号等)"),
+    source: z.string().nullable().optional().describe("来源"),
   },
-  async ({ type, message, task_id }) => {
+  async ({ type, message, task_id, kind, event_type, tags, entities, source }) => {
     state.addLog({
       timestamp: new Date().toISOString(),
       type,
+      kind,
+      event_type: event_type ?? null,
+      tags,
+      entities,
+      source: source ?? null,
       task_id: task_id || null,
       from_status: null,
       to_status: null,
@@ -421,12 +661,28 @@ server.tool(
 
 server.tool(
   "get_logs",
-  "获取最近的操作日志",
+  "获取操作日志(可作 journal 视图)。kind/event_type/since 在切片之前过滤，避免被更新的无关条目挤掉更早的匹配项。",
   {
-    n: z.number().optional().describe("Number of recent logs to return (default: 10)"),
+    n: z.number().int().min(1).optional().describe("返回条数(默认 10，>=1)；等价于 limit，过滤之后才切片"),
+    kind: z
+      .enum([
+        "task_transition",
+        "ops_event",
+        "decision",
+        "note",
+        "workflow_failure",
+        "focus_update",
+      ])
+      .optional()
+      .describe("按粗分类过滤(对旧条目按 type 推断)"),
+    event_type: z.string().optional().describe("按细类型过滤(匹配 event_type，回退 type)"),
+    since: z.string().optional().describe("仅返回该 ISO 时间(含)之后的日志"),
+    project_dir: PROJECT_DIR_PARAM,
   },
-  async ({ n }) => {
-    const logs = state.getLogs(n || 10);
+  async ({ n, kind, event_type, since, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const logs = sel.state.getLogs({ kind, event_type, since, limit: n ?? 10 });
     return {
       content: [
         {
@@ -444,13 +700,117 @@ server.tool(
 
 server.tool(
   "get_project_context",
-  "获取完整项目上下文（用于新会话恢复）。一次性返回 PRD 摘要 + 架构摘要 + 任务状态 + 最近日志。",
-  {},
-  async () => {
-    const context = state.getProjectContext();
+  "获取完整项目上下文（用于新会话恢复）。返回 PRD/架构摘要 + 任务状态(含双完成率 metrics) + in_progress 全文 + current_focus + 最近日志 + next_task_blocked_reason 诊断。context_mode 仅影响呈现排序/摘要，不过滤任务。",
+  {
+    context_mode: z
+      .enum(["build", "ops", "hybrid"])
+      .optional()
+      .describe("呈现 hint（默认 build）。仅影响默认排序/摘要，不参与权限/过滤/状态机。"),
+    max_recent_events: z
+      .number()
+      .optional()
+      .describe("返回的最近日志条数（默认 build=10 / hybrid=15 / ops=20）"),
+    include_full_in_progress: z
+      .boolean()
+      .optional()
+      .describe("是否返回 in_progress 任务全文（默认 true；token 预算紧张时设 false）"),
+    project_dir: PROJECT_DIR_PARAM,
+  },
+  async ({ context_mode, max_recent_events, include_full_in_progress, project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const context = sel.state.getProjectContext({
+      context_mode,
+      max_recent_events,
+      include_full_in_progress,
+    });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(context, null, 2) },
+      ],
+    };
+  }
+);
+
+// ==================== Portfolio (cross-project, read-only) ====================
+
+server.tool(
+  "get_portfolio",
+  "跨项目只读聚合：对传入的每个项目目录返回 进度双率 / 当前焦点 / 下一个任务 / 阻塞原因 摘要。仅接受 per-call project_dirs[]（不读任何注册表，避免隐式上下文）。坏项目逐条返回 error，不拖垮整体。纯读，不改任何项目状态。",
+  {
+    project_dirs: z
+      .array(z.string())
+      .min(1)
+      .describe("要聚合的项目根目录列表（每个含 .claude/state）；必填，不读注册表"),
+  },
+  async ({ project_dirs }) => {
+    const entries = project_dirs.map((dir) => {
+      const sel = selectState(dir);
+      if (!sel.ok) {
+        return {
+          project_dir: dir,
+          resolved_project_dir: sel.resolved,
+          ok: false,
+          error_kind: sel.error_kind,
+          error: sel.error,
+        };
+      }
+      return {
+        project_dir: dir,
+        resolved_project_dir: sel.resolved,
+        ok: true,
+        ...sel.state.getPortfolioSummary(),
+      };
+    });
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }],
+    };
+  }
+);
+
+// ==================== Current Focus (ops) ====================
+
+server.tool(
+  "get_current_focus",
+  "获取当前焦点快照(ops)：返回 focus.json 结构化对象(含服务端计算的 is_stale)，无则返回 null。",
+  { project_dir: PROJECT_DIR_PARAM },
+  async ({ project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const focus = sel.state.getCurrentFocus();
+    return {
+      content: [
+        { type: "text" as const, text: focus ? JSON.stringify(focus, null, 2) : "null" },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "set_current_focus",
+  "设置当前焦点快照(ops)：单槽 pinned 指针，写入 .claude/state/focus.json；updated_at 由服务端盖章；并记一条 focus_update 日志。",
+  {
+    summary: z.string().describe("当前在做/在等什么的一句话"),
+    last_event: z.string().nullable().optional().describe("上一个关键事件"),
+    next_trigger: z.string().nullable().optional().describe("下一个触发条件"),
+    waiting_on: z.array(z.string()).optional().describe("在等待的实体/人/任务"),
+    related_task_ids: z.array(z.string()).optional().describe("关联任务 ID"),
+    related_entities: z
+      .record(z.any())
+      .optional()
+      .describe("关联实体(proposal-id/合同号等)"),
+    source: z.string().nullable().optional().describe("来源(如 manual / workflow 名)"),
+    stale_after: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("过期时间 ISO；超过则 is_stale=true"),
+  },
+  async (input) => {
+    const focus = state.setCurrentFocus(input);
+    return {
+      content: [
+        { type: "text" as const, text: `Current focus updated at ${focus.updated_at}.` },
       ],
     };
   }
@@ -460,21 +820,31 @@ server.tool(
 
 server.tool(
   "get_server_info",
-  "获取 MCP Server 诊断信息（当前项目目录、状态文件路径）",
-  {},
-  async () => {
-    const stateDir = path.join(projectDir, ".claude", "state");
-    const stateExists = fs.existsSync(stateDir);
-    const files = stateExists
-      ? fs.readdirSync(stateDir).join(", ")
-      : "directory not found";
+  "获取 MCP Server 诊断信息（当前项目目录、状态文件路径；可选 project_dir 跨项目只读探测，返回 resolved/active）",
+  { project_dir: PROJECT_DIR_PARAM },
+  async ({ project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    const stateDir = sel.state_path;
+    let stateExists = false;
+    let files: string;
+    try {
+      const st = fs.statSync(stateDir);
+      stateExists = st.isDirectory();
+      files = st.isDirectory()
+        ? fs.readdirSync(stateDir).join(", ")
+        : "state path exists but is not a directory";
+    } catch {
+      files = "directory not found";
+    }
     return {
       content: [
         {
           type: "text" as const,
           text: JSON.stringify(
             {
-              project_dir: projectDir,
+              project_dir: sel.resolved,
+              active_project: sel.active,
               state_dir: stateDir,
               state_exists: stateExists,
               state_files: files,

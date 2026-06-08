@@ -43,7 +43,9 @@ restore_dir() {
   local snap_name="$1"; local dst="$2"
   local src="$SNAPSHOT_PATH/$snap_name"
   if [[ -d "$src" ]]; then
-    invoke "restore $dst" bash -c "rm -rf '$dst' && cp -r '$src' '$dst'"
+    # Pass paths as argv (not interpolated into a bash -c string) — a path with a
+    # quote/space cannot break the command or inject.
+    invoke "restore $dst" bash -c 'rm -rf -- "$1" && cp -r -- "$2" "$1"' _ "$dst" "$src"
   else
     echo "[info]    skip (not in snapshot): $snap_name"
   fi
