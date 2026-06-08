@@ -1067,11 +1067,11 @@
         "bash -n scripts/bootstrap.sh",
         "bash -n scripts/restore-global-workflow.sh"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T19:27:31.984Z",
-      "updated_at": "2026-06-08T19:27:31.984Z",
+      "updated_at": "2026-06-08T19:34:49.608Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "脚本 shell 注入/健壮性修复:统一改为 env 变量传路径(绝不插值进 node -e/python -c/bash -c)。bootstrap.ps1/.sh 的 -MigrateState 用 PM_STATE_JS/PM_PROJ_DIR env(单引号 JS 读 process.env);bootstrap.sh manifest 解析 export PM_MANIFEST 经 os.environ;gemini heredoc 改 QUOTED <<PYEOF + 全 env + argv 构 MCP_ARGS_JSON(一并修三连引号 + 多元素塌缩 + 路径注入);MCP_DIR bash -c 改 positional(_ \"$1\");restore-global-workflow.sh bash -c 改 argv;backup date %N 改可移植 %Y%m%dT%H%M%SZ。bash -n 四脚本全过;注入 payload(';echo INJECTED;')经 env 传入被当惰性数据(未执行)。",
       "review_checklist": [],
       "stage_gate": false
     },

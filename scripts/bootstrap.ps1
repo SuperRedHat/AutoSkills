@@ -104,12 +104,15 @@ if ($MigrateState.Count -gt 0) {
   $statePath = Join-Path $mcpProjectDir 'dist\state.js'
   Invoke-Action "migrate_tasks_schema on provided project roots (idempotent)" {
     if (-not (Test-Path $statePath)) { throw "Built state module not found: $statePath" }
-    $stateFwd = ($statePath -replace '\\', '/')
+    # Pass paths via env vars (NOT interpolated into the JS source) so a path with
+    # a quote/backslash/space can neither break the JS string nor inject code.
+    $env:PM_STATE_JS = ($statePath -replace '\\', '/')
+    $js = "const{StateManager}=require(process.env.PM_STATE_JS);const r=new StateManager(process.env.PM_PROJ_DIR).migrateTaskSchema();console.log('    '+process.env.PM_PROJ_DIR+' -> '+JSON.stringify(r));"
     foreach ($proj in $MigrateState) {
-      $projFwd = ($proj -replace '\\', '/')
-      $js = "const{StateManager}=require('$stateFwd');const r=new StateManager('$projFwd').migrateTaskSchema();console.log('    $projFwd -> '+JSON.stringify(r));"
+      $env:PM_PROJ_DIR = $proj
       node -e $js
     }
+    Remove-Item Env:\PM_STATE_JS, Env:\PM_PROJ_DIR -ErrorAction SilentlyContinue
   }
 } else {
   Write-Output "--- Step 3.5 (optional): state migration skipped (lazy first-touch). Pass -MigrateState dir1,dir2 to batch-migrate. ---"

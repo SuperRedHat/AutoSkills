@@ -14,7 +14,7 @@ for arg in "$@"; do
 done
 
 USER_HOME="${HOME}"
-TS="$(date -u +%Y%m%dT%H%M%S%NZ | sed 's/[0-9][0-9][0-9][0-9][0-9][0-9]Z$/Z/')"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"  # portable (GNU + BSD/macOS); %N is GNU-only
 BACKUP_ROOT="$USER_HOME/.workflow-core-backups/$TS"
 
 echo "[backup] target root: $BACKUP_ROOT"
