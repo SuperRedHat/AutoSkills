@@ -230,11 +230,11 @@
         "舰队读取是否无 NaN"
       ],
       "stage_gate": true,
-      "status": "awaiting_manual_acceptance",
+      "status": "done",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:29:29.070Z",
+      "updated_at": "2026-06-08T13:33:46.056Z",
       "commit_hash": "",
-      "notes": "stage_gate=true：Phase 0 全部完成并验证通过，等待用户 sign-off 后才解锁 Phase 1（状态机+迁移，高 ripple）。",
+      "notes": "用户 sign-off Phase 0：29/29 测试、舰队 0 NaN、向后兼容确认。解锁 Phase 1。",
       "verification_commands": []
     },
     {
@@ -264,11 +264,11 @@
         "npm --prefix mcp/project-manager run build",
         "npm --prefix mcp/project-manager test"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T13:34:57.230Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "Task.status 加 cancelled/superseded(终态);VALID_TRANSITIONS 加 cancelled:[]/superseded:[](无出边);updateTaskStatus 加守卫拒绝这两个目标并引导用 close_task(前向主路径保持纯净);get_all_tasks 工具枚举加这两值。3 用例:updateTaskStatus 拒绝+close_task 提示、终态无出边、getAllTasks 过滤+metrics(raw 0.25/active 0.5)。tsc 干净;32/32 绿。",
       "review_checklist": [],
       "stage_gate": false
     },

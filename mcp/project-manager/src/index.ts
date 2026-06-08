@@ -259,7 +259,7 @@ server.tool(
 
 server.tool(
   "get_all_tasks",
-  "获取所有任务（可按状态筛选）",
+  "获取所有任务（可按状态筛选，含 cancelled/superseded 终态）",
   {
     status: z
       .enum([
@@ -268,6 +268,8 @@ server.tool(
         "auto_verified",
         "awaiting_manual_acceptance",
         "done",
+        "cancelled",
+        "superseded",
       ])
       .optional()
       .describe("Filter by status"),

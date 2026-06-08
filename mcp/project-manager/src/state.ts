@@ -48,7 +48,9 @@ export interface Task {
     | "in_progress"
     | "auto_verified"
     | "awaiting_manual_acceptance"
-    | "done";
+    | "done"
+    | "cancelled"
+    | "superseded";
   created_at: string;
   updated_at: string;
   commit_hash: string;
@@ -161,6 +163,11 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   in_progress: ["auto_verified"],
   auto_verified: ["done", "awaiting_manual_acceptance"],
   awaiting_manual_acceptance: ["done", "in_progress"],
+  // Terminal states. cancelled/superseded are reachable ONLY via close_task
+  // (the audited management bypass), never through updateTaskStatus, and have
+  // no outbound edges — same terminal discipline as `done`.
+  cancelled: [],
+  superseded: [],
 };
 
 // ---------- State Manager ----------
@@ -319,6 +326,15 @@ export class StateManager {
 
     const task = data.tasks.find((t) => t.id === id);
     if (!task) return { success: false, error: `Task ${id} not found` };
+
+    // Closed states are reachable only through the audited close_task bypass,
+    // never the forward gauntlet — keep the main path pure (防假装完成).
+    if (newStatus === "cancelled" || newStatus === "superseded") {
+      return {
+        success: false,
+        error: `Use close_task to set "${newStatus}" (audited management bypass); update_task_status only drives the forward state machine.`,
+      };
+    }
 
     // Validate transition
     const allowed = VALID_TRANSITIONS[task.status];

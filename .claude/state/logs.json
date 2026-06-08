@@ -175,6 +175,38 @@
       "from_status": "auto_verified",
       "to_status": "awaiting_manual_acceptance",
       "message": "PM-007 auto_verified → awaiting_manual_acceptance: stage_gate=true：Phase 0 全部完成并验证通过，等待用户 sign-off 后才解锁 Phase 1（状态机+迁移，高 ripple）。"
+    },
+    {
+      "timestamp": "2026-06-08T13:33:46.086Z",
+      "type": "task_status_change",
+      "task_id": "PM-007",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-007 awaiting_manual_acceptance → done: 用户 sign-off Phase 0：29/29 测试、舰队 0 NaN、向后兼容确认。解锁 Phase 1。"
+    },
+    {
+      "timestamp": "2026-06-08T13:33:46.572Z",
+      "type": "task_status_change",
+      "task_id": "PM-101",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-101 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:34:53.862Z",
+      "type": "task_status_change",
+      "task_id": "PM-101",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-101 in_progress → auto_verified: Task.status 加 cancelled/superseded(终态);VALID_TRANSITIONS 加 cancelled:[]/superseded:[](无出边);updateTaskStatus 加守卫拒绝这两个目标并引导用 close_task(前向主路径保持纯净);get_all_tasks 工具枚举加这两值。3 用例:updateTaskStatus 拒绝+close_task 提示、终态无出边、getAllTasks 过滤+metrics(raw 0.25/active 0.5)。tsc 干净;32/32 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T13:34:57.248Z",
+      "type": "task_status_change",
+      "task_id": "PM-101",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-101 auto_verified → done"
     }
   ]
 }
