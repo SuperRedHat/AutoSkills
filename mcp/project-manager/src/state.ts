@@ -4,13 +4,11 @@ import * as path from "path";
 // ---------- Types ----------
 
 export type AcceptanceMode = "auto" | "manual" | "milestone_manual";
-export type VerificationProfile =
-  | "backend"
-  | "frontend_unit"
-  | "frontend_browser"
-  | "frontend_visual"
-  | "docs"
-  | "workflow_meta";
+// Profile NAMES are defined externally in
+// ~/.workflow-core/policies/verification-profiles.json (validated at runtime via
+// src/profiles.ts) — adding a profile needs no code change. Canonical names today:
+// backend | frontend_unit | frontend_browser | frontend_visual | docs | workflow_meta.
+export type VerificationProfile = string;
 
 export interface ProjectInfo {
   name: string;

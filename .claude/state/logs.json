@@ -527,6 +527,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-203 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T18:06:59.802Z",
+      "type": "task_status_change",
+      "task_id": "PM-204",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-204 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:08:34.057Z",
+      "type": "task_status_change",
+      "task_id": "PM-204",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-204 in_progress → auto_verified: L9 verification_profile 去硬枚举:VerificationProfile 类型放宽为 string;新建 src/profiles.ts(loadProfileNames 读外置文件 keys / findUnknownProfiles 校验,文件缺失则宽松);create_tasks/add_subtask 的 Zod 由 enum 改 z.string();handler 层校验未知 profile→拒绝并列出合法名。提取独立模块避免 import index.ts 触发 server 启动。5 用例(读 keys/标记未知/新 profile 免改码接受/缺文件宽松/忽略空值)+ 真实 ~/.workflow-core 文件验证(返回 6 个 profile、backend 合法、typo 被拒)。tsc 干净;70/70 绿。加新 profile 现在只改那个 JSON、代码零改动。"
+    },
+    {
+      "timestamp": "2026-06-08T18:08:37.019Z",
+      "type": "task_status_change",
+      "task_id": "PM-204",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-204 auto_verified → done"
     }
   ]
 }

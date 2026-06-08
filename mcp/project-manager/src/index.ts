@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { StateManager, Task } from "./state.js";
+import { findUnknownProfiles } from "./profiles.js";
 
 // Resolve project directory: env var > search upward for .claude/state/ > cwd
 function findProjectDir(): string {
@@ -181,15 +182,9 @@ server.tool(
         needs_manual_review: z.boolean(),
         acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
         verification_profile: z
-          .enum([
-            "backend",
-            "frontend_unit",
-            "frontend_browser",
-            "frontend_visual",
-            "docs",
-            "workflow_meta",
-          ])
-          .optional(),
+          .string()
+          .optional()
+          .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
         verification_commands: z.array(z.string()).optional(),
         review_checklist: z.array(z.string()).optional(),
         stage_gate: z.boolean().optional(),
@@ -198,6 +193,17 @@ server.tool(
     ).describe("Array of tasks to create"),
   },
   async ({ tasks }) => {
+    const { unknown, valid } = findUnknownProfiles(tasks.map((t) => t.verification_profile));
+    if (unknown.length) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: unknown verification_profile(s): ${unknown.join(", ")}. Valid: ${valid.join(", ")}. (Add new profiles to ~/.workflow-core/policies/verification-profiles.json — no code change needed.)`,
+          },
+        ],
+      };
+    }
     const fullTasks: Task[] = tasks.map((t) => ({
       ...t,
       status: "todo" as const,
@@ -323,21 +329,26 @@ server.tool(
     needs_manual_review: z.boolean(),
     acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
     verification_profile: z
-      .enum([
-        "backend",
-        "frontend_unit",
-        "frontend_browser",
-        "frontend_visual",
-        "docs",
-        "workflow_meta",
-      ])
-      .optional(),
+      .string()
+      .optional()
+      .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
     verification_commands: z.array(z.string()).optional(),
     review_checklist: z.array(z.string()).optional(),
     stage_gate: z.boolean().optional(),
     priority: z.number().optional().describe("越大越优先（默认 0）"),
   },
   async ({ parent_id, ...subtaskData }) => {
+    const { unknown, valid } = findUnknownProfiles([subtaskData.verification_profile]);
+    if (unknown.length) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: unknown verification_profile "${unknown[0]}". Valid: ${valid.join(", ")}. (Add it to ~/.workflow-core/policies/verification-profiles.json — no code change needed.)`,
+          },
+        ],
+      };
+    }
     const subtask: Task = {
       ...subtaskData,
       status: "todo",
