@@ -55,6 +55,10 @@ export interface Task {
   updated_at: string;
   commit_hash: string;
   notes: string;
+  // Phase 1 close_task fields (set only via the audited close_task bypass):
+  replacement_task_id?: string | null;
+  closed_at?: string | null;
+  close_reason?: string | null;
 }
 
 export interface TasksData {
@@ -386,6 +390,115 @@ export class StateManager {
     return { success: true };
   }
 
+  /**
+   * Audited management bypass to retire a task to a terminal closed state.
+   * Only reachable here (never via updateTaskStatus). Does NOT touch
+   * VALID_TRANSITIONS. Dependents handling (superseded-rewrite / cancelled-alert)
+   * lands in PM-103; here we validate, set status, compute affected dependents
+   * for the audit trail, and write the task_closed log.
+   */
+  closeTask(
+    id: string,
+    closeStatus: "cancelled" | "superseded",
+    reason: string,
+    replacementTaskId?: string
+  ): {
+    success: boolean;
+    error?: string;
+    task_id?: string;
+    affected_dependents?: string[];
+    rewired?: string[];
+  } {
+    const data = this.getTasks();
+    if (!data) return { success: false, error: "No tasks found" };
+
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, error: `Task ${id} not found` };
+
+    if (["done", "cancelled", "superseded"].includes(task.status)) {
+      return {
+        success: false,
+        error: `Task ${id} is already terminal (${task.status}); cannot close. (No reopen/un-complete in v1.)`,
+      };
+    }
+    if (!reason || !reason.trim()) {
+      return { success: false, error: "close_task requires a non-empty reason." };
+    }
+    if (closeStatus === "superseded") {
+      if (!replacementTaskId) {
+        return { success: false, error: "superseded requires replacement_task_id." };
+      }
+      const check = this.validateReplacement(id, replacementTaskId, data.tasks);
+      if (!check.valid) return { success: false, error: check.error };
+    }
+
+    const oldStatus = task.status;
+    task.status = closeStatus;
+    task.updated_at = new Date().toISOString();
+    task.closed_at = task.updated_at;
+    task.close_reason = reason;
+    if (closeStatus === "superseded") task.replacement_task_id = replacementTaskId ?? null;
+
+    const affected_dependents = data.tasks
+      .filter((t) => t.dependencies.includes(id))
+      .map((t) => t.id);
+
+    this.saveTasks(data);
+    this.updateProjectProgress();
+
+    this.addLog({
+      timestamp: task.updated_at,
+      type: "task_status_change",
+      kind: "task_transition",
+      event_type: "task_closed",
+      task_id: id,
+      from_status: oldStatus,
+      to_status: closeStatus,
+      entities: {
+        reason,
+        ...(replacementTaskId ? { replacement_task_id: replacementTaskId } : {}),
+        ...(affected_dependents.length ? { dependents: affected_dependents } : {}),
+      },
+      source: "close_task",
+      message: `${id} ${oldStatus} → ${closeStatus} (close_task): ${reason}`,
+    });
+
+    return { success: true, task_id: id, affected_dependents, rewired: [] };
+  }
+
+  private validateReplacement(
+    sourceId: string,
+    replacementId: string,
+    tasks: Task[]
+  ): { valid: boolean; error?: string } {
+    if (replacementId === sourceId) {
+      return { valid: false, error: "replacement_task_id cannot be the task itself." };
+    }
+    const target = tasks.find((t) => t.id === replacementId);
+    if (!target) {
+      return { valid: false, error: `replacement_task_id ${replacementId} does not exist.` };
+    }
+    if (["cancelled", "superseded"].includes(target.status)) {
+      return {
+        valid: false,
+        error: `replacement_task_id ${replacementId} is itself closed (${target.status}).`,
+      };
+    }
+    // Cycle check: follow the replacement chain from the target; reaching the
+    // source means closing it would form a cycle.
+    const seen = new Set<string>([sourceId]);
+    let cursor: string | null | undefined = replacementId;
+    while (cursor) {
+      if (seen.has(cursor)) {
+        return { valid: false, error: `replacement chain forms a cycle at ${cursor}.` };
+      }
+      seen.add(cursor);
+      const next: Task | undefined = tasks.find((t) => t.id === cursor);
+      cursor = next?.replacement_task_id ?? null;
+    }
+    return { valid: true };
+  }
+
   getAllTasks(filter?: { status?: Task["status"] }): Task[] {
     const data = this.getTasks();
     if (!data) return [];
@@ -633,6 +746,7 @@ export class StateManager {
       verification_commands: task.verification_commands || [],
       review_checklist: task.review_checklist || [],
       stage_gate: task.stage_gate || false,
+      replacement_task_id: task.replacement_task_id ?? null,
     };
   }
 

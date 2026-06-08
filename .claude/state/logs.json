@@ -207,6 +207,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-101 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:36:30.203Z",
+      "type": "task_status_change",
+      "task_id": "PM-102",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-102 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:37:32.870Z",
+      "type": "task_status_change",
+      "task_id": "PM-102",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-102 in_progress → auto_verified: close_task 方法+工具:校验源非终态(不能反完成 done/不能重关 closed)、reason 必填、superseded 强制 replacement(validateReplacement:存在/非自身/非closed/沿 replacement 链防环);设 status/closed_at/close_reason/replacement_task_id;写 task_closed 审计日志(kind=task_transition,event_type=task_closed,source=close_task,entities含reason/replacement/dependents);重算 progress;返回 affected_dependents。Task 加 replacement_task_id/closed_at/close_reason;normalizeTask 初始化 replacement_task_id。MCP close_task 工具落地。dependents 改写/告警留 PM-103。6 用例(cancel+审计、reason 必填、终态拒、superseded 校验四态、防环、affected_dependents)。tsc 干净;38/38 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T13:37:36.529Z",
+      "type": "task_status_change",
+      "task_id": "PM-102",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-102 auto_verified → done"
     }
   ]
 }

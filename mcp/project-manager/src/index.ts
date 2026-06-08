@@ -358,6 +358,36 @@ server.tool(
   }
 );
 
+server.tool(
+  "close_task",
+  "关闭任务到 cancelled/superseded（受审计管理旁路，不走前向状态机）。只能从非终态进入；cancelled 需 reason；superseded 需 reason + replacement_task_id（校验存在/非自身/非closed/无环）。写一条 task_closed 审计日志。",
+  {
+    id: z.string().describe("要关闭的任务 ID"),
+    status: z.enum(["cancelled", "superseded"]).describe("关闭目标态"),
+    reason: z.string().describe("关闭原因（必填）"),
+    replacement_task_id: z
+      .string()
+      .optional()
+      .describe("superseded 时必填：替代任务 ID"),
+  },
+  async ({ id, status, reason, replacement_task_id }) => {
+    const r = state.closeTask(id, status, reason, replacement_task_id);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success
+            ? `Task ${id} closed as ${status}.` +
+              (r.affected_dependents?.length
+                ? ` Affected dependents: ${r.affected_dependents.join(", ")}.`
+                : "")
+            : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
 server.tool("get_verification_profiles", "获取共享 verification profile 定义", {}, async () => {
   const verificationProfilesPath = path.join(
     workflowCoreDir,
