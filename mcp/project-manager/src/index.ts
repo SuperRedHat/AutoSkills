@@ -411,15 +411,17 @@ server.tool("get_verification_profiles", "获取共享 verification profile 定�
 
 server.tool(
   "migrate_tasks_schema",
-  "将现有 tasks.json 迁移为兼容 acceptance_mode 的 schema",
+  "将现有 state 迁移到 schema v1（幂等、不改任务 status、回填日志 kind、补双率 progress、盖 schema_version）。已是 v1 则跳过。",
   {},
   async () => {
-    const result = state.migrateTaskSchema();
+    const r = state.migrateTaskSchema();
     return {
       content: [
         {
           type: "text" as const,
-          text: `Migrated ${result.migrated} tasks to the acceptance-mode-compatible schema.`,
+          text: r.skipped
+            ? `Already at schema v${r.schema_version}; migration skipped (no-op).`
+            : `Migrated to schema v${r.schema_version}: ${r.migrated} tasks normalized, ${r.logs_migrated} log entries backfilled with kind/event_type. Task statuses unchanged; progress recomputed (dual-rate).`,
         },
       ],
     };

@@ -403,11 +403,11 @@
         "npm --prefix mcp/project-manager run build",
         "npm --prefix mcp/project-manager test"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T13:44:44.249Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "migrate_tasks_schema v0→v1:幂等(schema_version>=1 跳过)、tasks 仅 normalize 绝不改 status(ClaudeX-like cancelled 原样保留)、replacement_task_id 初始化 null、logs 按 G4 推断回填 kind/event_type 不动 message、先盖 schema_version 再 updateProjectProgress 补双率、UTF-8 保值往返。index.ts 工具消息更新。5 用例:cancelled 保留+0 status 变更、schema_version=1+二次跳过、log kind/event_type 回填不动 message、迁移补双率、真实 CouncilFlow fixture 无损(CJK 标题逐一保留、114 全 done、raw=active=1、幂等)。未对真实舰队跑写操作(留 PM-110 opt-in)。tsc 干净;50/50 绿。",
       "review_checklist": [],
       "stage_gate": false
     },

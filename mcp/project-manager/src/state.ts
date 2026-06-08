@@ -169,6 +169,9 @@ function inferKind(type: string): LogKind {
   return KIND_BY_TYPE[type] ?? "note";
 }
 
+/** On-disk schema version stamped on project.json after migration (G3). */
+const CURRENT_SCHEMA_VERSION = 1;
+
 // ---------- Valid state transitions ----------
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
@@ -797,13 +800,64 @@ export class StateManager {
     };
   }
 
-  migrateTaskSchema(): { migrated: number } {
-    const data = this.readJSON<TasksData>("tasks.json");
-    if (!data) return { migrated: 0 };
-    const normalizedTasks = data.tasks.map((task) => this.normalizeTask(task));
-    this.saveTasks({ tasks: normalizedTasks });
+  migrateTaskSchema(): {
+    migrated: number;
+    logs_migrated: number;
+    schema_version: number;
+    skipped: boolean;
+  } {
+    const info = this.getProjectInfo();
+
+    // Idempotency guard (G3): already at the current version -> no-op.
+    if (info && (info.schema_version ?? 0) >= CURRENT_SCHEMA_VERSION) {
+      return {
+        migrated: 0,
+        logs_migrated: 0,
+        schema_version: info.schema_version ?? 0,
+        skipped: true,
+      };
+    }
+
+    // 1. Tasks: normalize (fills defaults incl. replacement_task_id=null). This
+    //    NEVER changes status — pre-existing cancelled/superseded data (e.g.
+    //    ClaudeX's 17 cancelled tasks) is preserved verbatim.
+    const tasksData = this.readJSON<TasksData>("tasks.json");
+    let migrated = 0;
+    if (tasksData) {
+      const normalized = tasksData.tasks.map((task) => this.normalizeTask(task));
+      this.saveTasks({ tasks: normalized });
+      migrated = normalized.length;
+    }
+
+    // 2. Logs: backfill kind/event_type by inference (G4) without touching the
+    //    message/timestamp. Value-preserving round-trip (UTF-8 in/out).
+    const logsData = this.readJSON<LogsData>("logs.json");
+    let logs_migrated = 0;
+    if (logsData) {
+      for (const entry of logsData.logs) {
+        if (!entry.kind) {
+          entry.kind = inferKind(entry.type);
+          if (entry.event_type == null) entry.event_type = entry.type;
+          logs_migrated++;
+        }
+      }
+      this.writeJSON("logs.json", logsData);
+    }
+
+    // 3. Stamp schema_version, then recompute additive dual-rate progress
+    //    (updateProjectProgress re-reads the stamped info and preserves it).
+    if (info) {
+      info.schema_version = CURRENT_SCHEMA_VERSION;
+      this.saveProjectInfo(info);
+    }
     this.updateProjectProgress();
-    return { migrated: normalizedTasks.length };
+
+    return {
+      migrated,
+      logs_migrated,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      skipped: false,
+    };
   }
 
   private normalizeTask(task: Task): Task {
