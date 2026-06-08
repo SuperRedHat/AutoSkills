@@ -1,0 +1,28 @@
+{
+  "logs": [
+    {
+      "timestamp": "2026-06-08T12:07:17.723Z",
+      "type": "task_status_change",
+      "task_id": "PM-001",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-001 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:12:18.749Z",
+      "type": "task_status_change",
+      "task_id": "PM-001",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-001 in_progress → auto_verified: 测试基建立起：vitest 2.1.9 + package.json test 脚本；vitest.config.ts(include tests/**/*.test.ts, node env)；tests/helpers.ts(fixtureProject + tempCopyOfFixture 防污染)；seed.test.ts 2 用例全绿。fixtures 拷贝真实 state：councilflow(114/114 done) + nano(GBK-ish)。npm run build (tsc) 仍干净；tsconfig include=src/** 故 tests/ 不进 build。node_modules/dist 已 gitignore。"
+    },
+    {
+      "timestamp": "2026-06-08T12:12:21.968Z",
+      "type": "task_status_change",
+      "task_id": "PM-001",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-001 auto_verified → done"
+    }
+  ]
+}

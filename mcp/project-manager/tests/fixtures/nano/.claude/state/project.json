@@ -1,0 +1,23 @@
+{
+  "name": "Ru ALE 预测计算器",
+  "created_at": "2026-03-14T19:48:02.659Z",
+  "updated_at": "2026-03-14T21:40:19.910Z",
+  "status": "in_progress",
+  "tech_stack": [
+    "HTML",
+    "CSS",
+    "JavaScript",
+    "ES Modules",
+    "Plotly.js",
+    "Vitest",
+    ".NET 9",
+    "PowerShell"
+  ],
+  "progress": {
+    "total": 6,
+    "done": 2,
+    "in_progress": 0,
+    "awaiting_acceptance": 4,
+    "todo": 0
+  }
+}

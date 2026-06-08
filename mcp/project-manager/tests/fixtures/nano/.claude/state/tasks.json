@@ -1,0 +1,190 @@
+{
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "实现 Ru ALE 简化预测引擎与自动测试",
+      "description": "基于已确认的架构，在纯前端环境中实现 Ru ALE 简化机理模型，包括 oxygen activation、ion-assisted removal、oxidized thickness、EPC、ER 和 ALE window 评分；同时补充默认参数、输入校验辅助和核心单元测试，为页面集成提供稳定计算接口。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "提供可复用的 calculatePrediction(input) 接口",
+        "输出 EPC、ER、oxidized thickness、ALE window score/label",
+        "包含默认参数与基础范围校验",
+        "核心模型测试可通过"
+      ],
+      "files": [
+        "index.html",
+        "package.json",
+        "src/features/prediction-engine/reaction-kernels.js",
+        "src/features/prediction-engine/ru-ale-model.js",
+        "src/features/prediction-engine/window-classifier.js",
+        "src/features/process-controls/presets.js",
+        "src/shared/utils/validation.js",
+        "tests/prediction-engine/ru-ale-model.test.js",
+        "tests/prediction-engine/window-classifier.test.js"
+      ],
+      "module": "prediction-engine",
+      "needs_manual_review": false,
+      "status": "done",
+      "created_at": "2026-03-14T20:00:59.211Z",
+      "updated_at": "2026-03-14T20:05:23.129Z",
+      "commit_hash": "",
+      "notes": "已提交 commit 7f551bf0f2754a794393ec2e7ec843236c449fc7"
+    },
+    {
+      "id": "TASK-002",
+      "title": "实现 HTML 演示页面与交互图表",
+      "description": "基于预测引擎实现纯 HTML/CSS/JavaScript 演示页面，包括参数输入区、结果卡片、单参数趋势曲线、多参数联动热力图，以及模型说明区域；接入 Plotly 实现参数修改后的即时刷新。",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "浏览器可直接打开页面并使用",
+        "可修改 plasma power、pressure、gas flow、electrode temperature、bias voltage",
+        "页面显示 EPC、ER、oxidized thickness、ALE window",
+        "至少包含一张单参数曲线图和一张双参数联动图",
+        "展示模型假设、单位和演示性质说明",
+        "前端集成测试/自动验证通过后进入人工验收"
+      ],
+      "files": [
+        "index.html",
+        "assets/styles/main.css",
+        "src/app.js",
+        "src/features/process-controls/controls-schema.js",
+        "src/features/process-controls/controls-view.js",
+        "src/features/results-panel/results-view.js",
+        "src/features/trend-visualization/plotly-adapter.js",
+        "src/features/trend-visualization/single-parameter-chart.js",
+        "src/features/trend-visualization/multi-parameter-chart.js",
+        "src/features/model-notes/model-notes-view.js",
+        "src/shared/state/app-store.js",
+        "src/shared/utils/format.js"
+      ],
+      "module": "frontend-demo",
+      "needs_manual_review": true,
+      "status": "done",
+      "created_at": "2026-03-14T20:00:59.211Z",
+      "updated_at": "2026-03-14T20:17:27.724Z",
+      "commit_hash": "",
+      "notes": "用户手动验收通过；验收反馈：ok"
+    },
+    {
+      "id": "TASK-003",
+      "title": "展示 Ru ALE 模型全部公式",
+      "description": "在现有 HTML 演示页面中新增完整公式展示区域，展示 prediction-engine 中实际使用的全部核心公式、分类阈值和中间量定义，并结合当前输入显示对应的中间计算值，方便研究人员核对模型假设。",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "页面中完整展示当前模型使用的全部核心公式",
+        "公式区同时展示关键中间量与当前计算值",
+        "公式名称、变量和代码实现保持一致",
+        "相关自动测试通过",
+        "前端页面进入人工验收"
+      ],
+      "files": [
+        "src/features/prediction-engine/ru-ale-model.js",
+        "src/features/model-notes/model-notes-view.js",
+        "assets/styles/main.css",
+        "tests/app.test.js"
+      ],
+      "module": "model-notes",
+      "needs_manual_review": true,
+      "status": "awaiting_manual_acceptance",
+      "created_at": "2026-03-14T20:55:03.476Z",
+      "updated_at": "2026-03-14T20:58:42.662Z",
+      "commit_hash": "",
+      "notes": "已提交 commit e2fd3dd850e0f7187d2ac5a4a24307a406253f4e，等待手动验收公式展示效果"
+    },
+    {
+      "id": "TASK-004",
+      "title": "本地化前端资源以适配 exe 启动",
+      "description": "将图表资源从 CDN 切换为本地静态资源，确保页面能够被本地静态服务完整托管，并补充相应的前端验证。",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "页面不再依赖外部 CDN 加载 Plotly",
+        "index.html 可通过本地 HTTP 服务完整加载模块与图表资源",
+        "现有前端自动测试继续通过"
+      ],
+      "files": [
+        "index.html",
+        "package.json",
+        "assets/vendor/plotly.min.js",
+        "tests/app.test.js"
+      ],
+      "module": "frontend-portability",
+      "needs_manual_review": true,
+      "status": "awaiting_manual_acceptance",
+      "created_at": "2026-03-14T21:22:46.301Z",
+      "updated_at": "2026-03-14T21:24:17.689Z",
+      "commit_hash": "",
+      "notes": "已提交 commit 044db3e92d0b33378e6fabdfafc42cdcd042b191，待与 exe 一并手动验收"
+    },
+    {
+      "id": "TASK-005",
+      "title": "实现 .NET 单文件 exe 启动器",
+      "description": "新增 .NET 9 控制台启动器，通过本地静态服务托管前端资源并自动打开浏览器；补充静态资源准备脚本、启动器验证脚本与发布脚本，并生成 self-contained single-file exe。",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "提供可执行的 .NET 启动器项目",
+        "支持 --port 和 --no-browser 参数",
+        "提供静态资源打包脚本与 exe 发布脚本",
+        "自动验证脚本可成功请求首页和关键静态资源",
+        "生成无需 Node 环境即可运行的 Windows exe"
+      ],
+      "files": [
+        "launcher/RuAleLauncher/RuAleLauncher.csproj",
+        "launcher/RuAleLauncher/Program.cs",
+        "scripts/prepare-webapp.ps1",
+        "scripts/publish-exe.ps1",
+        "scripts/test-launcher.ps1",
+        ".gitignore"
+      ],
+      "module": "desktop-launcher",
+      "needs_manual_review": true,
+      "status": "awaiting_manual_acceptance",
+      "created_at": "2026-03-14T21:22:46.301Z",
+      "updated_at": "2026-03-14T21:29:38.273Z",
+      "commit_hash": "",
+      "notes": "已提交 commit 853880df38ecb3986ab9ca0d3cb518b3ad6f0076，等待手动验收 exe 启动与浏览器打开效果"
+    },
+    {
+      "id": "TASK-006",
+      "title": "打包 Intel Mac 启动包",
+      "description": "基于现有 .NET 启动器发布 `osx-x64` 版本，并生成 `start.command` 与首次运行说明文件，确保 Intel Mac 用户能够在无 Node 环境下启动本地服务并自动打开浏览器。",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "成功生成 `dist/osx-x64/RuAleLauncher`",
+        "成功生成 `dist/osx-x64/start.command` 与说明文件",
+        "发布脚本支持 `osx-x64` 输出",
+        "提供面向 macOS 包结构的自动校验脚本",
+        "用户可在 Intel Mac 上手动执行并完成验收"
+      ],
+      "files": [
+        "scripts/publish-exe.ps1",
+        "scripts/verify-macos-package.ps1",
+        "dist/osx-x64/start.command",
+        "dist/osx-x64/README-macos.txt",
+        ".gitignore"
+      ],
+      "module": "desktop-launcher",
+      "needs_manual_review": true,
+      "status": "awaiting_manual_acceptance",
+      "created_at": "2026-03-14T21:37:39.662Z",
+      "updated_at": "2026-03-14T21:40:19.893Z",
+      "commit_hash": "",
+      "notes": "已提交 commit 76c4306b892944be5097a1877192d82b9e96b901，等待 Intel Mac 手动验收"
+    }
+  ]
+}

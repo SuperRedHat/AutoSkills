@@ -1,0 +1,621 @@
+{
+  "tasks": [
+    {
+      "id": "PM-001",
+      "title": "Phase0.0 立测试基建 (vitest + test 脚本 + 真实 fixture)",
+      "description": "在 mcp/project-manager 引入 vitest，加 package.json 的 test 脚本；从真实 state 拷贝 fixture(CouncilFlow project.json/tasks.json/logs.json + 一个 GBK 混编样本如 nano)。ADR G2/0.0。这是后续所有兼容测试的落地前置。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "npm --prefix mcp/project-manager test 可运行且种子用例通过",
+        "vitest.config 就位，tests/ 目录与 fixtures/ 建立",
+        "fixture 含 CouncilFlow(114/114 done) 与一个 GBK 混编 state 样本"
+      ],
+      "files": [
+        "mcp/project-manager/package.json",
+        "mcp/project-manager/vitest.config.ts",
+        "mcp/project-manager/tests/fixtures/"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager install",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "done",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:12:21.937Z",
+      "commit_hash": "",
+      "notes": "测试基建立起：vitest 2.1.9 + package.json test 脚本；vitest.config.ts(include tests/**/*.test.ts, node env)；tests/helpers.ts(fixtureProject + tempCopyOfFixture 防污染)；seed.test.ts 2 用例全绿。fixtures 拷贝真实 state：councilflow(114/114 done) + nano(GBK-ish)。npm run build (tsc) 仍干净；tsconfig include=src/** 故 tests/ 不进 build。node_modules/dist 已 gitignore。",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-002",
+      "title": "Phase0.1 characterization/snapshot 测试锁住现状",
+      "description": "对现状的 getProjectContext / updateProjectProgress / getLogs / getNextTask 写快照与行为基线测试，先锁定再改。ADR 0.1。",
+      "dependencies": [
+        "PM-001"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "getProjectContext 当前返回形状有快照",
+        "updateProjectProgress 现有 5 键语义有断言",
+        "getLogs(n)/getNextTask 现有行为有基线用例",
+        "npm test 全绿"
+      ],
+      "files": [
+        "mcp/project-manager/tests/state.characterization.test.ts"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-003",
+      "title": "Phase0.2 get_project_context 加法 + schema_version + 双率读时补算",
+      "description": "扩展 getProjectContext(加法不破坏)：返回 in_progress_tasks 全文；读时补算双完成率(schema_version<1 时惰性、非持久);加 next_task_blocked_reason 诊断;新增可选参数 context_mode(build|ops|hybrid，默认 build)/max_recent_events/include_full_in_progress。引入顶层 schema_version(读时识别)。ADR 0.2/0.6/D1/D4(读)/G1(诊断)/G3(惰性)。",
+      "dependencies": [
+        "PM-002"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "getProjectContext 加法返回 in_progress_tasks/双率/next_task_blocked_reason，旧字段不变",
+        "context_mode 仅改排序/详略，断言不同 mode 下 task 集合一致",
+        "对无 schema_version 的旧 fixture 读取不产生 NaN/缺字段",
+        "快照测试更新且全绿"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-004",
+      "title": "Phase0.3 CurrentFocus + focus.json + get/set_current_focus",
+      "description": "定义 CurrentFocus 类型(schema_version/summary/last_event/next_trigger/waiting_on/related_task_ids/related_entities/source/updated_at/stale_after)，存独立 .claude/state/focus.json；加 getCurrentFocus/setCurrentFocus 与 MCP 工具；getProjectContext 返回 current_focus(含服务端计算 is_stale)。ADR 0.3/D2。",
+      "dependencies": [
+        "PM-003"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "set_current_focus 写 focus.json、get_current_focus 读回",
+        "focus 缺失时 getProjectContext 返回 current_focus=null(不报错)",
+        "is_stale 按 now>stale_after 正确计算",
+        "用例覆盖空/有/过期三态"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-005",
+      "title": "Phase0.4 add_log 富化 + getLogs 先过滤后切片",
+      "description": "add_log 开放可选 kind/event_type/tags/entities/source(省略退回旧行为)；LogEntry 加这些字段(不加 stale_after)。getLogs 改为 getLogs(filter?:{kind?,event_type?,since?,limit?})先过滤后切片，修正 journal 视图正确性。ADR 0.4/D3/§9。",
+      "dependencies": [
+        "PM-002"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "add_log 不传新字段时行为与旧版一致(向后兼容)",
+        "getLogs 先按 kind/since 过滤再切片，旧条目读时补 kind 默认",
+        "journal 风格查询能取到更早的匹配项(不被 n 截断漏掉)",
+        "用例覆盖兼容与过滤"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-006",
+      "title": "Phase0.5 project-resume 守卫 + 读侧技能注记",
+      "description": "project-resume 增加守卫:current_focus 有值才渲染焦点段(否则所有既有项目会冒空段);对 project-discuss/project-design 等读侧技能加 Phase0 新字段注记。ADR 0.5/critic。",
+      "dependencies": [
+        "PM-004"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "project-resume 在 current_focus=null 时不渲染空焦点段",
+        "读侧技能注记说明 get_project_context 新增 current_focus/双率(只读 hint)",
+        "散文与 Phase0 实际返回契约一致"
+      ],
+      "files": [
+        "skills/project-resume/SKILL.md",
+        "skills/project-discuss/SKILL.md",
+        "skills/project-design/SKILL.md"
+      ],
+      "module": "phase0",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-007",
+      "title": "Phase0 收口 stage gate (用户验收后才进 Phase1)",
+      "description": "Phase0 全部完成后收口:跑全量 npm test、用真实舰队 fixture 验证读取无 NaN、context_mode 集合一致。等用户 sign-off 后才解锁 Phase1。ADR §7。",
+      "dependencies": [
+        "PM-003",
+        "PM-004",
+        "PM-005",
+        "PM-006"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "Phase0 全部任务 done 且 npm test 全绿",
+        "7 项目舰队 fixture 读取无 NaN/无破坏",
+        "用户手工 sign-off Phase0"
+      ],
+      "files": [
+        "mcp/project-manager/"
+      ],
+      "module": "phase0",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "workflow_meta",
+      "review_checklist": [
+        "加法是否真的零破坏(旧字段/旧读者)",
+        "context_mode 是否仅影响呈现",
+        "舰队读取是否无 NaN"
+      ],
+      "stage_gate": true,
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "verification_commands": []
+    },
+    {
+      "id": "PM-101",
+      "title": "Phase1.1 Task.status 加 cancelled/superseded + updateTaskStatus 拒绝",
+      "description": "Task.status 加 cancelled/superseded(仅 close_task 可写);updateTaskStatus 收到这两个状态时报错引导用 close_task;update_task_status/get_all_tasks 工具枚举相应处理(get_all_tasks 加过滤值,update_task_status 仍拒)。VALID_TRANSITIONS 不变。ADR 1.1/D5。",
+      "dependencies": [
+        "PM-007"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "status 联合类型含 cancelled/superseded",
+        "updateTaskStatus(cancelled|superseded) 返回引导性错误",
+        "get_all_tasks 可按 cancelled/superseded 过滤",
+        "VALID_TRANSITIONS 未被改动(前向主路径不变)"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-102",
+      "title": "Phase1.2 close_task 方法 + 工具 (受审计旁路)",
+      "description": "加 closeTask(id,status:cancelled|superseded,reason,replacement_task_id?) 与 MCP 工具:校验源非终态、reason 必填、superseded 强制 replacement(存在/非自身/非closed/防环);写 add_log(kind=task_transition,event_type=task_closed,source=close_task);重算 progress。不走 VALID_TRANSITIONS。ADR 1.2/D5。",
+      "dependencies": [
+        "PM-101"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "close_task 关 done 任务被拒(不可反完成)",
+        "superseded 无效 replacement(自身/不存在/closed/成环)被拒",
+        "成功 close 写审计日志且 progress 重算",
+        "返回 affected_dependents/rewired/audit 信息"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-103",
+      "title": "Phase1.3 G1 依赖语义 (supersede 改写 / cancelled 告警 / getNextTask)",
+      "description": "close_task(superseded) 时遍历改写所有 dependencies 含该 id 的任务到 replacement_task_id 并写审计;close_task(cancelled) 收集 dependents 并写 ops_event 告警、返回值列出;getNextTask: doneSet 仅 done、解析 superseded 依赖到替代链终点、cancelled 依赖不满足;补 next_task_blocked_reason。ADR 1.3/G1(最高风险)。",
+      "dependencies": [
+        "PM-102"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "supersede 后 dependents 依赖被改写到 replacement,不死锁",
+        "cancelled 依赖的 dependent 既不被 getNextTask 返回也不静默死锁(有告警/诊断)",
+        "next_task=null 时 next_task_blocked_reason 能区分 all_done/blocked_in_progress/blocked_by_cancelled_dep",
+        "专项用例覆盖 rewire/cancel/防环"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-104",
+      "title": "Phase1.4 progress 双率持久化 (加法)",
+      "description": "updateProjectProgress 持久化加法字段(total_all/active_total/cancelled/superseded/closed_total/raw_completion_rate/active_completion_rate),保留 legacy 5 键语义不变。分母 0 取 0。ADR 1.4/D4/G3(加法)。",
+      "dependencies": [
+        "PM-101"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "progress 同时含 legacy 5 键与新 8 键",
+        "raw/active 完成率计算正确,分母 0 不 NaN",
+        "旧读者读 legacy 键不受影响",
+        "用例覆盖含/不含 cancelled/superseded 的项目"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-105",
+      "title": "Phase1.5 migrate_tasks_schema v0→v1 (幂等/编码安全/无损)",
+      "description": "migrate v0→v1:盖 schema_version、task 加 replacement_task_id=null(不改 status)、LogEntry 按 G4 推断表回填 kind/event_type(不改 message)、progress 加法补算;幂等(version>=1 为 no-op)、显式 UTF-8、保值往返。用真实 fixture(CouncilFlow 100% done + GBK 样本)做迁移测试。ADR 1.5/G3/G4。",
+      "dependencies": [
+        "PM-104",
+        "PM-101"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "对 CouncilFlow fixture 迁移后 raw=active=100%、无静默 status 变更",
+        "GBK 混编 fixture 迁移不损坏(保值往返)",
+        "重复迁移幂等(no-op)",
+        "kind/event_type 按推断表回填,9 个 legacy type 语义不丢"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-106",
+      "title": "Phase1.6a 状态图模板同步 (global CLAUDE/AGENTS ×2)",
+      "description": "更新 templates/global-claude-CLAUDE.md 与 global-codex-AGENTS.md 的任务状态图:加 cancelled/superseded 终态、close_task 入口、getNextTask 过滤说明。ADR 1.6。",
+      "dependencies": [
+        "PM-103",
+        "PM-105"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "两个模板状态图含 cancelled/superseded 与 close_task",
+        "与 MCP 实际状态机一致",
+        "repo-CLAUDE/AGENTS 补充项一并核对"
+      ],
+      "files": [
+        "templates/global-claude-CLAUDE.md",
+        "templates/global-codex-AGENTS.md",
+        "templates/repo-CLAUDE.md",
+        "templates/repo-AGENTS.md"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-107",
+      "title": "Phase1.6b 7 个 project-* 技能散文同步",
+      "description": "更新受影响技能:project-next(fixer→close_task)、project-feedback(拒绝→close_task vs 退回)、project-status(双率+closed 看板段)、project-change(supersede 检测)、project-review(不为 closed 建修复)、project-resume(双率+closed 段)、project-plan(close_task 后置说明)。ADR 1.6。",
+      "dependencies": [
+        "PM-103",
+        "PM-105"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "7 技能散文与新状态机/工具一致",
+        "project-status/resume 展示双率与 closed 段",
+        "project-next/feedback 明确 close_task 触发边界"
+      ],
+      "files": [
+        "skills/project-next/SKILL.md",
+        "skills/project-feedback/SKILL.md",
+        "skills/project-status/SKILL.md",
+        "skills/project-change/SKILL.md",
+        "skills/project-review/SKILL.md",
+        "skills/project-resume/SKILL.md",
+        "skills/project-plan/SKILL.md"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-108",
+      "title": "Phase1.6c CouncilFlow integration.md 同步 (9 段)",
+      "description": "更新 CF 集成契约 9 处:Workflow Failure Protocol(失败不授权 close_task)、MCP Registration 加 close_task 管理 API、Consumption Rules(current_focus 非任务态/按 kind 消费/closed-but-not-done)、add_log schema 扩展、Role-Driven Phase Machines(仅 project-feedback 调 close_task)、Minimum Integration Flow(getNextTask 过滤+迁移步)、Permission model(close_task 非沙箱)、新增 get_project_context Contract 段。CF Python 不改。ADR 1.6。",
+      "dependencies": [
+        "PM-103",
+        "PM-105"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "9 段更新且与 MCP 新契约一致",
+        "明确 close_task 仅 project-feedback/显式管理决策可调",
+        "新增 get_project_context Contract 段",
+        "确认未改任何 CF Python 源码"
+      ],
+      "files": [
+        "../CouncilFlow/docs/integration.md"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-109",
+      "title": "Phase1.6d README + mcp-manifest 对齐",
+      "description": "更新 mcp/project-manager/README.md 工具清单(加 close_task/set_current_focus/get_current_focus、新 status、add_log/get_project_context 契约);并消解 integration.md(${MCP_HOME}) 与真实 mcp-manifest.json(${AUTOSKILLS_HOME}/路径) 的占位符漂移。ADR §9/critic。",
+      "dependencies": [
+        "PM-103",
+        "PM-105"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "README 工具清单与实际工具一致(19→新增工具)",
+        "status 枚举更新",
+        "mcp-manifest 占位符/路径与文档一致"
+      ],
+      "files": [
+        "mcp/project-manager/README.md",
+        "mcp-manifest.json"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-110",
+      "title": "Phase1.7 bootstrap 可选舰队迁移",
+      "description": "给 scripts/bootstrap.ps1 与 bootstrap.sh 加可选 -MigrateState 步骤,遍历已知项目目录调 migrate_tasks_schema;默认仍惰性(读时补算+首写持久化)。ADR 1.7/G3。",
+      "dependencies": [
+        "PM-105"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "bootstrap -MigrateState 能批量迁移已知项目且幂等",
+        "默认不强制迁移(惰性兜底仍有效)",
+        "PowerShell 与 sh 双版本一致"
+      ],
+      "files": [
+        "scripts/bootstrap.ps1",
+        "scripts/bootstrap.sh"
+      ],
+      "module": "phase1",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-111",
+      "title": "Phase1 收口 + 重建/重注册 MCP + 发布",
+      "description": "Phase1 全部完成后:全量 npm test 绿;rebuild MCP(npm run build);决定重注册时机(注意会影响本项目自身的状态库,做好备份);用真实舰队验证迁移;更新 CHANGELOG。等用户手工 sign-off。ADR §7/§11。",
+      "dependencies": [
+        "PM-102",
+        "PM-103",
+        "PM-104",
+        "PM-105",
+        "PM-106",
+        "PM-107",
+        "PM-108",
+        "PM-109",
+        "PM-110"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "全量测试绿、build 通过",
+        "真实舰队迁移幂等无损验证通过",
+        "下游文档/11 技能/CF/README/manifest 一致性走查通过",
+        "用户手工 sign-off 发布"
+      ],
+      "files": [
+        "mcp/project-manager/",
+        "CHANGELOG.md"
+      ],
+      "module": "phase1",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "workflow_meta",
+      "review_checklist": [
+        "重注册是否会破坏正在跟踪本项目的状态库(需备份)",
+        "迁移幂等无损是否真实验证",
+        "全下游一致性"
+      ],
+      "stage_gate": true,
+      "status": "todo",
+      "created_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:06:45.150Z",
+      "commit_hash": "",
+      "notes": "",
+      "verification_commands": []
+    }
+  ]
+}
