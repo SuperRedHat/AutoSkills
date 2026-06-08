@@ -663,7 +663,7 @@ server.tool(
   "get_logs",
   "获取操作日志(可作 journal 视图)。kind/event_type/since 在切片之前过滤，避免被更新的无关条目挤掉更早的匹配项。",
   {
-    n: z.number().optional().describe("返回条数(默认 10)；等价于 limit，过滤之后才切片"),
+    n: z.number().int().min(1).optional().describe("返回条数(默认 10，>=1)；等价于 limit，过滤之后才切片"),
     kind: z
       .enum([
         "task_transition",
@@ -826,10 +826,17 @@ server.tool(
     const sel = selectState(project_dir);
     if (!sel.ok) return selErr(sel);
     const stateDir = sel.state_path;
-    const stateExists = fs.existsSync(stateDir);
-    const files = stateExists
-      ? fs.readdirSync(stateDir).join(", ")
-      : "directory not found";
+    let stateExists = false;
+    let files: string;
+    try {
+      const st = fs.statSync(stateDir);
+      stateExists = st.isDirectory();
+      files = st.isDirectory()
+        ? fs.readdirSync(stateDir).join(", ")
+        : "state path exists but is not a directory";
+    } catch {
+      files = "directory not found";
+    }
     return {
       content: [
         {

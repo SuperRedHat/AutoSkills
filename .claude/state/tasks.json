@@ -998,12 +998,116 @@
         "下游文档一致"
       ],
       "stage_gate": true,
-      "status": "in_progress",
+      "status": "awaiting_manual_acceptance",
       "created_at": "2026-06-08T18:45:41.556Z",
-      "updated_at": "2026-06-08T18:55:46.170Z",
+      "updated_at": "2026-06-08T18:56:27.746Z",
+      "commit_hash": "",
+      "notes": "stage_gate=true：Phase 3(L6 跨项目/portfolio 只读)全部完成并验证。等待用户 sign-off。部署/合并/推送与 Phase 1/2 一并由用户执行(同分支)。",
+      "verification_commands": []
+    },
+    {
+      "id": "PM-401",
+      "title": "审计修复批次1:project-manager TS bug",
+      "description": "修 get_logs n=0 返回全部(Zod min1+guard)、invalid since→NaN guard、migrate 无 project.json 不盖 schema_version(幂等洞)、done 缺 VALID_TRANSITIONS、validateReplacement 允许 superseded 进 done 死胡同、get_server_info readdirSync ENOTDIR、closeStatus superseded 非空断言收敛、computeNextTaskBlockedReason 直接依赖→传递依赖。配回归测试。",
+      "dependencies": [
+        "PM-305"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "get_logs n=0 不再返回全部;invalid since 不再静默错误",
+        "migrate 无 project.json 时不谎报 v1",
+        "done 终态报错清晰;validateReplacement 拒 done 替代",
+        "新增回归测试覆盖以上;全量 npm test 绿;tsc 干净"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "audit-fix",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "status": "done",
+      "created_at": "2026-06-08T19:27:31.984Z",
+      "updated_at": "2026-06-08T19:31:08.941Z",
+      "commit_hash": "",
+      "notes": "TS bug 修复:get_logs n Zod min(1)+state limit>=0 guard(n=0/limit=0 不再返回全部,0→[]);since NaN guard(无效 since 忽略过滤而非静默错);migrateTaskSchema 无 project.json 时 !info 直接 skip(不谎报 v1);VALID_TRANSITIONS 加 done:[](终态显式);validateReplacement 拒 done 替代(终态死胡同);get_server_info statSync 包裹(ENOTDIR 不崩);closeTask superseded 用 &&replacementTaskId 收敛去掉非空断言;computeNextTaskBlockedReason 改传递式(沿 superseded 链解析到 cancelled)。5 回归测试。tsc 干净;87/87 绿(原 82 全过,零回归)。未改:progress.total(有意设计)、set_project_dir canonicalize(良性)、跨进程写竞争(ADR-003 已记为已知)。",
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-402",
+      "title": "审计修复批次2:脚本 shell 注入/健壮性",
+      "description": "修 bootstrap.ps1/.sh 的 -MigrateState node -e 路径注入(改 env 传参)、restore-global-workflow.sh bash -c 注入、bootstrap.sh python -c manifest 路径注入(env 传参)、heredoc MCP_ARGS_JSON 多元素塌缩、MCP_DIR 含空格/引号、backup date %N macOS 兼容。bash -n 语法检查 + migrate env 机制非破坏验证。",
+      "dependencies": [
+        "PM-401"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "所有 node -e/python -c/bash -c 路径不再裸插值(env 传参)",
+        "含单引号/空格路径不再破坏命令或注入",
+        "bash -n 通过;migrate env-var 机制经临时副本验证仍工作"
+      ],
+      "files": [
+        "scripts/bootstrap.ps1",
+        "scripts/bootstrap.sh",
+        "scripts/restore-global-workflow.sh",
+        "scripts/backup-global-workflow.sh"
+      ],
+      "module": "audit-fix",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "bash -n scripts/bootstrap.sh",
+        "bash -n scripts/restore-global-workflow.sh"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T19:27:31.984Z",
+      "updated_at": "2026-06-08T19:27:31.984Z",
       "commit_hash": "",
       "notes": "",
-      "verification_commands": []
+      "review_checklist": [],
+      "stage_gate": false
+    },
+    {
+      "id": "PM-403",
+      "title": "审计修复批次3:CouncilFlow Python bug",
+      "description": "修 providers/base.py run_monitored_process 超时不杀进程(finally 兜底 kill)、stdin 同步阻塞写(独立线程写)、state/store.py _write_json 非原子(temp+rename)、cli/discuss.py JSON 解析默认值反了、controller/role_router.py _append_record 非原子(可选)。在 CouncilFlow 跑 pytest 确认无回归。",
+      "dependencies": [
+        "PM-401"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "超时分支 finally 必杀子进程;stdin 大 payload 不死锁",
+        "store _write_json 原子写;discuss 解析默认值与纯文本回退一致",
+        "CouncilFlow pytest 全绿(无回归)"
+      ],
+      "files": [
+        "../CouncilFlow/src/councilflow/providers/base.py",
+        "../CouncilFlow/src/councilflow/state/store.py",
+        "../CouncilFlow/src/councilflow/cli/discuss.py",
+        "../CouncilFlow/src/councilflow/controller/role_router.py"
+      ],
+      "module": "audit-fix",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "python -m pytest -q"
+      ],
+      "status": "todo",
+      "created_at": "2026-06-08T19:27:31.984Z",
+      "updated_at": "2026-06-08T19:27:31.984Z",
+      "commit_hash": "",
+      "notes": "",
+      "review_checklist": [],
+      "stage_gate": false
     }
   ]
 }

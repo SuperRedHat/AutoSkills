@@ -183,6 +183,7 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   // no outbound edges — same terminal discipline as `done`.
   cancelled: [],
   superseded: [],
+  done: [],
 };
 
 // ---------- State Manager ----------
@@ -615,15 +616,15 @@ export class StateManager {
       .map((t) => t.id);
     const rewired: string[] = [];
 
-    if (closeStatus === "superseded") {
-      task.replacement_task_id = replacementTaskId ?? null;
+    if (closeStatus === "superseded" && replacementTaskId) {
+      task.replacement_task_id = replacementTaskId;
       // Rewrite dependents to point at the replacement so the DAG stays runnable
       // (the work moved; dependents should now wait on the replacement, not the husk).
+      // The `&& replacementTaskId` guard also narrows the type — no cast needed
+      // (superseded already validated replacementTaskId is present, above).
       for (const t of data.tasks) {
         if (t.id !== id && t.dependencies.includes(id)) {
-          t.dependencies = t.dependencies.map((d) =>
-            d === id ? (replacementTaskId as string) : d
-          );
+          t.dependencies = t.dependencies.map((d) => (d === id ? replacementTaskId : d));
           rewired.push(t.id);
         }
       }
@@ -683,10 +684,10 @@ export class StateManager {
     if (!target) {
       return { valid: false, error: `replacement_task_id ${replacementId} does not exist.` };
     }
-    if (["cancelled", "superseded"].includes(target.status)) {
+    if (["cancelled", "superseded", "done"].includes(target.status)) {
       return {
         valid: false,
-        error: `replacement_task_id ${replacementId} is itself closed (${target.status}).`,
+        error: `replacement_task_id ${replacementId} is terminal (${target.status}); a replacement must be an active task. If the work is already complete, cancel the source instead of superseding it.`,
       };
     }
     // Cycle check: follow the replacement chain from the target; reaching the
@@ -763,10 +764,15 @@ export class StateManager {
     }
     if (opts.since) {
       const since = new Date(opts.since).getTime();
-      logs = logs.filter((l) => new Date(l.timestamp).getTime() >= since);
+      // Ignore an unparseable `since` rather than silently filtering on NaN.
+      if (!Number.isNaN(since)) {
+        logs = logs.filter((l) => new Date(l.timestamp).getTime() >= since);
+      }
     }
 
-    return opts.limit ? logs.slice(0, opts.limit) : logs;
+    // limit is an explicit non-negative count: 0 => [], undefined => all.
+    // (`opts.limit ? …` was wrong — it treated a real limit of 0 as "no limit".)
+    return opts.limit != null && opts.limit >= 0 ? logs.slice(0, opts.limit) : logs;
   }
 
   addLog(entry: LogEntry): void {
@@ -855,14 +861,28 @@ export class StateManager {
     if (nextTask) return "none";
     const todos = tasks.filter((t) => t.status === "todo");
     if (todos.length === 0) return "all_done";
-    // superseded deps are rewired/resolvable, so only a cancelled dep is a true
-    // dead-end blocker for the diagnostic.
-    const cancelledIds = new Set(
-      tasks.filter((t) => t.status === "cancelled").map((t) => t.id)
-    );
-    const blockedByCancelled = todos.some((t) =>
-      t.dependencies.some((d) => cancelledIds.has(d))
-    );
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    // Resolve a dependency through superseded->replacement chains and report
+    // whether it bottoms out in a cancelled task — the true dead-end blocker.
+    // (A direct-only check missed transitive blocks and superseded chains that
+    // terminate in cancelled; this mirrors getNextTask's depSatisfied walk.)
+    const endsCancelled = (depId: string): boolean => {
+      const seen = new Set<string>();
+      let cur: string | null | undefined = depId;
+      while (cur && !seen.has(cur)) {
+        seen.add(cur);
+        const dt = byId.get(cur);
+        if (!dt) return false;
+        if (dt.status === "cancelled") return true;
+        if (dt.status === "superseded" && dt.replacement_task_id) {
+          cur = dt.replacement_task_id;
+          continue;
+        }
+        return false;
+      }
+      return false;
+    };
+    const blockedByCancelled = todos.some((t) => t.dependencies.some(endsCancelled));
     return blockedByCancelled ? "blocked_by_cancelled_dep" : "blocked_in_progress";
   }
 
@@ -962,12 +982,14 @@ export class StateManager {
   } {
     const info = this.getProjectInfo();
 
-    // Idempotency guard (G3): already at the current version -> no-op.
-    if (info && (info.schema_version ?? 0) >= CURRENT_SCHEMA_VERSION) {
+    // Idempotency guard (G3): no project.json (nothing to stamp) OR already at the
+    // current version -> no-op. Skipping when project.json is absent avoids a
+    // non-idempotent partial run that reports v1 without ever stamping it.
+    if (!info || (info.schema_version ?? 0) >= CURRENT_SCHEMA_VERSION) {
       return {
         migrated: 0,
         logs_migrated: 0,
-        schema_version: info.schema_version ?? 0,
+        schema_version: info?.schema_version ?? 0,
         skipped: true,
       };
     }
