@@ -383,6 +383,68 @@ export class StateManager {
     return { success: true };
   }
 
+  /**
+   * Audited reverse of close_task: bring a TERMINAL task (done/cancelled/superseded)
+   * back to an active state. Management bypass — does not use VALID_TRANSITIONS.
+   * Reopening a superseded task clears its replacement_task_id, but the dependents
+   * that were rewired to the replacement at supersede time are NOT auto-restored
+   * (the log flags this so the caller can re-point them if needed).
+   */
+  reopenTask(
+    id: string,
+    reason: string,
+    toStatus: "todo" | "in_progress" = "todo"
+  ): { success: boolean; error?: string; task_id?: string } {
+    const data = this.getTasks();
+    if (!data) return { success: false, error: "No tasks found" };
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, error: `Task ${id} not found` };
+
+    if (!["done", "cancelled", "superseded"].includes(task.status)) {
+      return {
+        success: false,
+        error: `Task ${id} is not closed (status=${task.status}); only done/cancelled/superseded can be reopened.`,
+      };
+    }
+    if (!reason || !reason.trim()) {
+      return { success: false, error: "reopen_task requires a non-empty reason." };
+    }
+
+    const oldStatus = task.status;
+    const clearedReplacement =
+      oldStatus === "superseded" ? task.replacement_task_id ?? null : null;
+    task.status = toStatus;
+    task.updated_at = new Date().toISOString();
+    task.closed_at = null;
+    task.close_reason = null;
+    if (oldStatus === "superseded") task.replacement_task_id = null;
+
+    this.saveTasks(data);
+    this.updateProjectProgress();
+
+    this.addLog({
+      timestamp: task.updated_at,
+      type: "task_status_change",
+      kind: "task_transition",
+      event_type: "task_reopened",
+      task_id: id,
+      from_status: oldStatus,
+      to_status: toStatus,
+      entities: {
+        reason,
+        ...(clearedReplacement ? { cleared_replacement_task_id: clearedReplacement } : {}),
+      },
+      source: "reopen_task",
+      message:
+        `${id} ${oldStatus} → ${toStatus} (reopen_task): ${reason}` +
+        (clearedReplacement
+          ? ` [cleared replacement ${clearedReplacement}; dependents rewired at supersede time are NOT auto-restored]`
+          : ""),
+    });
+
+    return { success: true, task_id: id };
+  }
+
   getTaskById(id: string): Task | null {
     const data = this.getTasks();
     if (!data) return null;

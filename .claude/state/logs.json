@@ -479,6 +479,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-201 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T18:03:09.006Z",
+      "type": "task_status_change",
+      "task_id": "PM-202",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-202 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T18:03:56.084Z",
+      "type": "task_status_change",
+      "task_id": "PM-202",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-202 in_progress → auto_verified: reopen_task:仅终态(done/cancelled/superseded)可复活到 todo(默认)/in_progress;清 closed_at/close_reason;superseded 复活清 replacement_task_id 并日志注明下游不自动改回;reason 必填;写 task_reopened 审计日志(kind=task_transition,source=reopen_task);重算 progress;受审计旁路不走 VALID_TRANSITIONS。MCP reopen_task 工具落地。6 用例:done→todo+清字段+日志、→in_progress、cancelled 复活、superseded 清 replacement+日志标记、拒非终态/空 reason、复活后重新可跑。tsc 干净;62/62 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T18:03:59.123Z",
+      "type": "task_status_change",
+      "task_id": "PM-202",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-202 auto_verified → done"
     }
   ]
 }

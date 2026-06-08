@@ -391,6 +391,29 @@ server.tool(
 );
 
 server.tool(
+  "reopen_task",
+  "复活终态任务（受审计管理旁路，不走前向状态机）：把 done/cancelled/superseded 移回 todo（默认）或 in_progress。reason 必填。superseded 复活会清空 replacement_task_id；其在 supersede 时被改写的下游依赖不会自动改回（见审计日志）。",
+  {
+    id: z.string().describe("Task ID"),
+    reason: z.string().describe("复活原因（必填）"),
+    to_status: z.enum(["todo", "in_progress"]).optional().describe("复活目标态（默认 todo）"),
+  },
+  async ({ id, reason, to_status }) => {
+    const r = state.reopenTask(id, reason, to_status ?? "todo");
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success
+            ? `Task ${id} reopened to ${to_status ?? "todo"}.`
+            : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
   "set_task_priority",
   "调整任务优先级（数值，越大越优先）。get_next_task 在依赖满足的 todo 中优先返回高优先级者，同分按创建顺序。",
   {
