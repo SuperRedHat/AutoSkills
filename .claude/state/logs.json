@@ -143,6 +143,38 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-006 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T12:27:57.111Z",
+      "type": "task_status_change",
+      "task_id": "PM-007",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-007 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T12:29:15.823Z",
+      "type": "task_status_change",
+      "task_id": "PM-007",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-007 in_progress → auto_verified: Phase 0 收口验证：build OK；全量 29/29 测试绿；舰队 smoke 对 7 个真实项目跑新读时-metrics 路径，0 NaN/0 error(nano2 total=0 正确返回 0.00 非 NaN)。重大发现：ClaudeX 落盘 tasks.json 已含 17 个 status=cancelled 任务(by_status={done:144,cancelled:17}) → 双率正确(raw 0.89/active 1.00)、normalizeTask 前向安全得证、且证明 cancelled 功能本就被真实需要。此为 PM-105 迁移关键输入：迁移不得 choke/改动既有 cancelled 数据。"
+    },
+    {
+      "timestamp": "2026-06-08T12:29:24.868Z",
+      "type": "note",
+      "task_id": "PM-105",
+      "from_status": null,
+      "to_status": null,
+      "message": "[Phase0 gate 发现] ClaudeX 落盘 tasks.json 已含 17 个 status=\"cancelled\" 任务(by_status={done:144,cancelled:17})——早于本次状态机改造，应为手工编辑/旧流程产物。影响 PM-105 迁移：(1) migrate v0→v1 绝不能因既有 cancelled/superseded 而报错或改动其 status；(2) normalizeTask 的 spread 透传已证明对这些值前向安全；(3) 读时 metrics 已能正确把它们计入 cancelled 并算 active_completion_rate。迁移测试需加一个\"既有 cancelled 数据\"fixture(可取 ClaudeX)。"
+    },
+    {
+      "timestamp": "2026-06-08T12:29:29.100Z",
+      "type": "task_status_change",
+      "task_id": "PM-007",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "PM-007 auto_verified → awaiting_manual_acceptance: stage_gate=true：Phase 0 全部完成并验证通过，等待用户 sign-off 后才解锁 Phase 1（状态机+迁移，高 ripple）。"
     }
   ]
 }

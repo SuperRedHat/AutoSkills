@@ -230,11 +230,11 @@
         "舰队读取是否无 NaN"
       ],
       "stage_gate": true,
-      "status": "todo",
+      "status": "awaiting_manual_acceptance",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T12:29:29.070Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "stage_gate=true：Phase 0 全部完成并验证通过，等待用户 sign-off 后才解锁 Phase 1（状态机+迁移，高 ripple）。",
       "verification_commands": []
     },
     {
