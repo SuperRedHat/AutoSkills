@@ -767,6 +767,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-402 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T19:36:16.945Z",
+      "type": "task_status_change",
+      "task_id": "PM-403",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-403 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T19:38:52.884Z",
+      "type": "task_status_change",
+      "task_id": "PM-403",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-403 in_progress → auto_verified: CouncilFlow Python 修复:providers/base.py run_monitored_process (1) stdin 改 daemon 线程写(大 payload 不再与 stdout/stderr 管道缓冲互锁) (2) finally 总是 reap 子进程(poll()==None 才 kill,幂等,杜绝异常/wait 超时路径泄漏);state/store.py _write_json 改 temp+replace 原子写(崩溃/中断不留半截文件);cli/discuss.py _parse_participant_payload JSON 路径默认值(supports_current_direction/has_new_information)与纯文本回退及 model 默认对齐(原来反了)。ruff 全过;pytest 355 passed 0 failed(零回归)。未改(风险/低收益):role_router NDJSON(改文件格式有风险)、orchestrator zero-external 死循环(边角)。"
+    },
+    {
+      "timestamp": "2026-06-08T19:38:56.908Z",
+      "type": "task_status_change",
+      "task_id": "PM-403",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-403 auto_verified → done"
     }
   ]
 }

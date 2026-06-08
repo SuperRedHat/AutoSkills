@@ -1101,11 +1101,11 @@
       "verification_commands": [
         "python -m pytest -q"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T19:27:31.984Z",
-      "updated_at": "2026-06-08T19:27:31.984Z",
+      "updated_at": "2026-06-08T19:38:56.879Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "CouncilFlow Python 修复:providers/base.py run_monitored_process (1) stdin 改 daemon 线程写(大 payload 不再与 stdout/stderr 管道缓冲互锁) (2) finally 总是 reap 子进程(poll()==None 才 kill,幂等,杜绝异常/wait 超时路径泄漏);state/store.py _write_json 改 temp+replace 原子写(崩溃/中断不留半截文件);cli/discuss.py _parse_participant_payload JSON 路径默认值(supports_current_direction/has_new_information)与纯文本回退及 model 默认对齐(原来反了)。ruff 全过;pytest 355 passed 0 failed(零回归)。未改(风险/低收益):role_router NDJSON(改文件格式有风险)、orchestrator zero-external 死循环(边角)。",
       "review_checklist": [],
       "stage_gate": false
     }
