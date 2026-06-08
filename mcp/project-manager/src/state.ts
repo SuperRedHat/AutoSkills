@@ -20,11 +20,20 @@ export interface ProjectInfo {
   tech_stack: string[];
   schema_version?: number;
   progress: {
+    // legacy keys (semantics unchanged; old readers/old dist keep working):
     total: number;
     done: number;
     in_progress: number;
     awaiting_acceptance: number;
     todo: number;
+    // additive dual-rate fields (D4; optional so pre-migration project.json still reads):
+    total_all?: number;
+    active_total?: number;
+    cancelled?: number;
+    superseded?: number;
+    closed_total?: number;
+    raw_completion_rate?: number;
+    active_completion_rate?: number;
   };
 }
 
@@ -231,16 +240,25 @@ export class StateManager {
     const tasks = this.getTasks();
     if (!info || !tasks) return;
 
+    const t = tasks.tasks;
+    const metrics = this.computeProgressMetrics(t);
     info.progress = {
-      total: tasks.tasks.length,
-      done: tasks.tasks.filter((t) => t.status === "done").length,
-      in_progress: tasks.tasks.filter(
-        (t) => t.status === "in_progress" || t.status === "auto_verified"
+      // legacy keys — semantics unchanged (in_progress still counts auto_verified):
+      total: t.length,
+      done: metrics.done,
+      in_progress: t.filter(
+        (x) => x.status === "in_progress" || x.status === "auto_verified"
       ).length,
-      awaiting_acceptance: tasks.tasks.filter(
-        (t) => t.status === "awaiting_manual_acceptance"
-      ).length,
-      todo: tasks.tasks.filter((t) => t.status === "todo").length,
+      awaiting_acceptance: t.filter((x) => x.status === "awaiting_manual_acceptance").length,
+      todo: t.filter((x) => x.status === "todo").length,
+      // additive dual-rate fields (D4):
+      total_all: metrics.total_all,
+      active_total: metrics.active_total,
+      cancelled: metrics.cancelled,
+      superseded: metrics.superseded,
+      closed_total: metrics.closed_total,
+      raw_completion_rate: metrics.raw_completion_rate,
+      active_completion_rate: metrics.active_completion_rate,
     };
     this.saveProjectInfo(info);
   }

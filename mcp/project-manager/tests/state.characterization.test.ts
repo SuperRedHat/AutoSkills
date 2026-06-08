@@ -69,18 +69,32 @@ describe("getProjectContext (current shape)", () => {
   });
 });
 
-describe("updateProjectProgress (current legacy 5-key shape)", () => {
-  it("emits exactly {total,done,in_progress,awaiting_acceptance,todo}", () => {
+describe("updateProjectProgress (legacy keys preserved; dual-rate added in PM-104)", () => {
+  // Updated in PM-104 (Phase 1.4): progress is now additive — the legacy 5 keys
+  // remain with unchanged meaning, and the 8 dual-rate fields are added.
+  it("keeps the legacy 5 keys (unchanged semantics) and adds dual-rate fields", () => {
     const sm = new StateManager(tempCopyOfFixture("councilflow"));
     sm.updateProjectProgress();
     const p = sm.getProjectInfo()!.progress;
-    expect(Object.keys(p).sort()).toEqual(
-      ["awaiting_acceptance", "done", "in_progress", "todo", "total"].sort(),
+    expect(Object.keys(p)).toEqual(
+      expect.arrayContaining(["total", "done", "in_progress", "awaiting_acceptance", "todo"]),
+    );
+    expect(Object.keys(p)).toEqual(
+      expect.arrayContaining([
+        "total_all",
+        "active_total",
+        "cancelled",
+        "superseded",
+        "closed_total",
+        "raw_completion_rate",
+        "active_completion_rate",
+      ]),
     );
     expect(p.total).toBe(114);
     expect(p.done).toBe(114);
     expect(p.in_progress).toBe(0);
     expect(p.todo).toBe(0);
+    expect(p.raw_completion_rate).toBe(1);
   });
 });
 

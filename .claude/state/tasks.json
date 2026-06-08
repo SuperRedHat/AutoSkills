@@ -367,11 +367,11 @@
         "npm --prefix mcp/project-manager run build",
         "npm --prefix mcp/project-manager test"
       ],
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-08T12:06:45.150Z",
-      "updated_at": "2026-06-08T12:06:45.150Z",
+      "updated_at": "2026-06-08T13:42:14.599Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "updateProjectProgress 改为加法持久化:保留 legacy 5 键(语义不变,in_progress 仍含 auto_verified)+ 新增 8 键(total_all/active_total/cancelled/superseded/closed_total/raw/active rate),复用 computeProgressMetrics。ProjectInfo.progress 新字段设为 optional(旧 project.json 仍可读)。characterization 的\"恰好5键\"断言按规则在同一改动里更新为\"legacy 5 键保留 + 新字段加入\"。2 新用例(双率拆分 raw0.25/active0.5、100%done 不假跌)。tsc 干净;45/45 绿。",
       "review_checklist": [],
       "stage_gate": false
     },

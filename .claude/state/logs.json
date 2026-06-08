@@ -255,6 +255,30 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-103 auto_verified → done"
+    },
+    {
+      "timestamp": "2026-06-08T13:41:17.095Z",
+      "type": "task_status_change",
+      "task_id": "PM-104",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-104 todo → in_progress"
+    },
+    {
+      "timestamp": "2026-06-08T13:42:11.815Z",
+      "type": "task_status_change",
+      "task_id": "PM-104",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-104 in_progress → auto_verified: updateProjectProgress 改为加法持久化:保留 legacy 5 键(语义不变,in_progress 仍含 auto_verified)+ 新增 8 键(total_all/active_total/cancelled/superseded/closed_total/raw/active rate),复用 computeProgressMetrics。ProjectInfo.progress 新字段设为 optional(旧 project.json 仍可读)。characterization 的\"恰好5键\"断言按规则在同一改动里更新为\"legacy 5 键保留 + 新字段加入\"。2 新用例(双率拆分 raw0.25/active0.5、100%done 不假跌)。tsc 干净;45/45 绿。"
+    },
+    {
+      "timestamp": "2026-06-08T13:42:14.632Z",
+      "type": "task_status_change",
+      "task_id": "PM-104",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-104 auto_verified → done"
     }
   ]
 }
