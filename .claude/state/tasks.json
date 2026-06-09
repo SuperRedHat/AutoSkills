@@ -1539,11 +1539,11 @@
       ],
       "stage_gate": false,
       "priority": 0,
-      "status": "awaiting_manual_acceptance",
+      "status": "done",
       "created_at": "2026-06-09T20:34:43.420Z",
-      "updated_at": "2026-06-09T22:57:18.152Z",
+      "updated_at": "2026-06-09T22:59:46.835Z",
       "commit_hash": "",
-      "notes": "acceptance_mode=manual（最高风险任务单独 review gate）→ 等用户人工验收。验收要点见 review_checklist。",
+      "notes": "用户「验收通过，继续 PM-606」= manual gate 人工验收通过。rename_task 实现 + 对抗审查(correctness clean) + review_checklist 全绿 + 151 测试通过，验收放行。",
       "replacement_task_id": null
     },
     {
@@ -1588,11 +1588,11 @@
       ],
       "stage_gate": true,
       "priority": 0,
-      "status": "todo",
+      "status": "awaiting_manual_acceptance",
       "created_at": "2026-06-09T20:34:43.420Z",
-      "updated_at": "2026-06-09T20:54:51.470Z",
+      "updated_at": "2026-06-09T23:12:54.210Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "acceptance_mode=milestone_manual + stage_gate=true → v1.5.0 发版里程碑 gate，等用户最终验收。验收要点见 review_checklist。",
       "replacement_task_id": null
     }
   ]

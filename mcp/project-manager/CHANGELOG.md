@@ -2,6 +2,49 @@
 
 All notable changes to the project-manager MCP server.
 
+## [1.5.0] — 2026-06-10 — edit_tasks + rename_task + reconcile autofix/cross-project (ADR-005)
+
+Additive, backward-compatible. Resolves ADR-004 §7's four deferred items. No
+`schema_version` bump (stays 1). Design:
+`AutoSkills/docs/adr-005-task-identity-rename-reconcile-safety-envelope.md`.
+
+### Added
+- **`edit_tasks`** — batch metadata patch. Per-item results
+  `{ id, success, error?, changed_fields?, noop? }` with partial success (mirrors
+  `close_tasks`/`update_tasks`); each entry validates against the latest state so a
+  later edit sees earlier edits' effects; reuses `edit_task`'s validation (whitelist /
+  E2 / E3) and writes a per-item `task_edited` audit with `source=edit_tasks`;
+  empty-diff entries are success no-ops. Never touches status. Active-project-only.
+- **`rename_task`** — change a task's `id` and cascade-rewrite every reference:
+  `dependencies[]`, `replacement_task_id`, and `focus.related_task_ids` (deduped).
+  Logs stay immutable; appends one `task_renamed` audit (old/new id, rewired counts,
+  `focus_rewritten`, `logs_preserved`). Validates the whole graph AFTER the rewrite
+  (`duplicate-id` / `dangling` / `self` / `dep-cycle` / `replacement missing-self-cycle`)
+  and aborts with **no partial write** on any breakage. Never touches
+  status/closed_at/close_reason; a terminal task may be renamed; `old==new` is a no-op.
+  Active-project-only.
+
+### Changed
+- **`reconcile`** gains two active-only field-cleanup auto-fixes: it now clears
+  `closed_at`/`close_reason` (`stale_close_fields_on_nonterminal`) and a stale
+  `replacement_task_id` (`stale_replacement_on_nonsuperseded`) on **active tasks only**
+  — terminal tasks stay report-only (frozen history) — with audit events
+  `reconcile_stale_close_fields_clear` / `reconcile_stale_replacement_clear`, idempotent.
+  `lint_state` marks those findings `autofixable` on active tasks only.
+- **`reconcile`** now accepts `project_dir` (+ `apply`/`dry_run`): a `project_dir`
+  resolving to the active project applies as before; a **foreign** project returns a
+  read-only **dry-run / fix-plan** (writes nothing); forcing a foreign write
+  (`apply:true` / `dry_run:false`) returns `cross_project_apply_requires_set_project_dir`
+  with `resolved_project_dir`. Honors the ADR-003/004 contract that writes only ever
+  touch the active project.
+
+### Notes
+- Internal refactor (PM-601): extracted shared `prepareTaskEdit`/`applyPreparedTaskEdit`,
+  `rewriteDependencyEdges`, and `validateReplacementGraph` helpers (zero behavior change)
+  so `edit_tasks` and `rename_task` reuse the high-risk logic instead of copying it.
+- Corrects an ADR-004 figure: `edit_task` has **14** editable fields (not 13).
+- 25 test files / 151 tests green.
+
 ## [1.4.0] — 2026-06-09 — edit_task + lint_state / reconcile (metadata patch + L8 drift)
 
 Additive, backward-compatible. Adds a metadata-patch entry point (the one thing that
@@ -21,9 +64,9 @@ three sources of truth — tasks / logs / project meta — silently drifting). D
   `verification_profile` is checked against the external policy (parity with `create_tasks`); only
   documentation fields are editable on a terminal task; no-op patches skip the write; writes a
   `task_edited` audit log with per-field `from→to`. Active-project-only (no `project_dir`).
-- **`lint_state`** — **read-only** consistency scan (new `src/lint.ts`, 24 checks across
+- **`lint_state`** — **read-only** consistency scan (new `src/lint.ts`, 25 checks across
   tasks / project.json / logs / focus): dependency-DAG (`dangling_dependency`, `self_dependency`,
-  `dependency_cycle`, `duplicate_task_id`, `runnable_dep_on_cancelled_deadend`,
+  `dependency_cycle`, `duplicate_task_id`, `blank_task_id`, `runnable_dep_on_cancelled_deadend`,
   `superseded_replacement_chain_broken`, `dep_on_superseded_husk_not_rewired`,
   `duplicate_dependency_id`); close/supersede integrity (`superseded_missing_replacement`,
   `replacement_target_missing`, `replacement_chain_cycle`, `stale_replacement_on_nonsuperseded`,

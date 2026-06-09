@@ -81,4 +81,26 @@ describe("reconcile field-cleanup autofix (PM-603)", () => {
     expect(r.fixed.some((f) => f.code === "self_dependency")).toBe(true);
     expect(sm.getTaskById("A")!.dependencies).toEqual([]);
   });
+
+  it("reconcilePlan previews only codes reconcile() actually applies (lint/reconcile lockstep)", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([
+      mkTask({ id: "A", dependencies: ["A"] }), // self_dependency (active)
+      mkTask({ id: "B", status: "in_progress", closed_at: "2020-01-01T00:00:00Z", close_reason: "x" }),
+      mkTask({ id: "C", status: "todo", replacement_task_id: "A" }), // stale_replacement (active)
+    ]);
+    const HANDLED = [
+      "progress_drift",
+      "self_dependency",
+      "stale_close_fields_on_nonterminal",
+      "stale_replacement_on_nonsuperseded",
+    ];
+    // dry-run never over-promises: every previewed-fixable code is one reconcile() handles
+    const plan = sm.reconcilePlan();
+    expect(plan.fixable.length).toBeGreaterThan(0);
+    expect(plan.fixable.every((f) => HANDLED.includes(f.code))).toBe(true);
+    // and reconcile() only ever reports fixing handled codes (lockstep guard)
+    const fixedCodes = sm.reconcile().fixed.map((f) => f.code);
+    expect(fixedCodes.every((c) => HANDLED.includes(c))).toBe(true);
+  });
 });

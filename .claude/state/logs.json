@@ -1394,6 +1394,42 @@
       "from_status": "auto_verified",
       "to_status": "awaiting_manual_acceptance",
       "message": "PM-605 auto_verified → awaiting_manual_acceptance: acceptance_mode=manual（最高风险任务单独 review gate）→ 等用户人工验收。验收要点见 review_checklist。"
+    },
+    {
+      "timestamp": "2026-06-09T22:59:46.868Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-605",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-605 awaiting_manual_acceptance → done: 用户「验收通过，继续 PM-606」= manual gate 人工验收通过。rename_task 实现 + 对抗审查(correctness clean) + review_checklist 全绿 + 151 测试通过，验收放行。"
+    },
+    {
+      "timestamp": "2026-06-09T23:00:10.450Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-606",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-606 todo → in_progress: 主控直接实现发版收口：ADR-005 flip Accepted + 复核 ADR-004 §7/13→14 + CHANGELOG/README + 版本 1.4.0→1.5.0 + 部署 ~/.claude/mcp-project-manager(备份 dist) + 多 agent review。milestone_manual+stage_gate → 完成后停 awaiting 等验收。"
+    },
+    {
+      "timestamp": "2026-06-09T23:12:50.094Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-606",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-606 in_progress → auto_verified: 主控发版收口完成。ADR-005 flip Accepted；ADR-004 §7 resolved + 13→14(4处)已复核；CHANGELOG[1.5.0] + README v1.5.0 工具(顺带勘误 lint 检查数 24→25，补 blank_task_id)；package.json + package-lock 1.5.0；部署到 ~/.claude/mcp-project-manager(备份 dist.bak-v140，验证 version 1.5.0 + rename_task/edit_tasks/cross_project 工具就绪)。2-agent 发版 review：无 blocker，已修 reconcilePlan/reconcile lockstep(新增 RECONCILE_AUTOFIX_CODES 单一真相源 + 防 over-promise + 守护测试)、统一 self_dependency filter 风格、editTasks O(N) docstring、lint 检查数文档勘误。build(tsc)干净 + 25 文件/152 测试全过(新增 lockstep 守护)。重新部署 review-fixed dist 已验证。"
+    },
+    {
+      "timestamp": "2026-06-09T23:12:54.240Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-606",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "PM-606 auto_verified → awaiting_manual_acceptance: acceptance_mode=milestone_manual + stage_gate=true → v1.5.0 发版里程碑 gate，等用户最终验收。验收要点见 review_checklist。"
     }
   ]
 }

@@ -215,6 +215,17 @@ const NON_DOC_EDITABLE_FIELDS = [
 
 const EDITABLE_FIELDS: readonly string[] = [...DOC_FIELDS, ...NON_DOC_EDITABLE_FIELDS];
 
+// The finding codes reconcile() can auto-fix. Single source of truth shared by
+// reconcile() (the apply path) and reconcilePlan() (the cross-project dry-run), so a
+// finding flagged autofixable in lint.ts can never be previewed as fixable unless the
+// apply path actually handles it. A test asserts reconcilePlan().fixable codes ⊆ this set.
+const RECONCILE_AUTOFIX_CODES: readonly string[] = [
+  "progress_drift",
+  "self_dependency",
+  "stale_close_fields_on_nonterminal",
+  "stale_replacement_on_nonsuperseded",
+];
+
 /** The metadata patch edit_task accepts (status / id / timestamps / audit-bypass fields excluded). */
 export type TaskEditPatch = Partial<
   Pick<
@@ -673,6 +684,8 @@ export class StateManager {
    * non-no-op edit saves then writes a task_edited audit log with
    * source="edit_tasks"; an empty diff is a success no-op that writes neither
    * tasks nor a log. NEVER touches status (same whitelist/E2/E3 as edit_task).
+   * Saves per item (O(N) whole-file writes for N edits) — intentional, so a later
+   * entry's failure never rolls back an earlier entry's durable success.
    */
   editTasks(
     edits: { id: string; patch: TaskEditPatch }[]
@@ -1537,7 +1550,7 @@ export class StateManager {
     const { findings } = this.lintState();
 
     // self_dependency: single-valued, deterministic (drop d === id). Skip terminal tasks.
-    const selfFixes = findings.filter((f) => f.code === "self_dependency");
+    const selfFixes = findings.filter((f) => f.code === "self_dependency" && f.autofixable);
     if (selfFixes.length) {
       const data = this.getTasks();
       if (data) {
@@ -1698,9 +1711,15 @@ export class StateManager {
    */
   reconcilePlan(): { fixable: Finding[]; remaining: Finding[] } {
     const all = this.lintState().findings;
+    // fixable = only what reconcile() actually applies (autofixable AND a handled code),
+    // so the dry-run never over-promises a finding the apply path would leave behind.
+    // remaining is the pre-apply snapshot (post-apply may differ slightly via cascading
+    // re-lint — this is a preview, not a transaction).
+    const isFixable = (f: Finding) =>
+      f.autofixable === true && RECONCILE_AUTOFIX_CODES.includes(f.code);
     return {
-      fixable: all.filter((f) => f.autofixable),
-      remaining: all.filter((f) => !f.autofixable),
+      fixable: all.filter(isFixable),
+      remaining: all.filter((f) => !isFixable(f)),
     };
   }
 

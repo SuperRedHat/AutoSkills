@@ -1,6 +1,6 @@
 # ADR-005：project-manager v1.5.0 — task identity rename + reconcile safety envelope
 
-- **状态**：Proposed —— 设计经主控（Claude Opus 4.8）对 `state.ts`/`lint.ts`/`index.ts` 逐函数核验 + CouncilFlow architect/planner 影响分析交叉确认，**等待用户 sign-off 后实现**
+- **状态**：Accepted —— 用户 sign-off；PM-601..606 全部实现并通过验证（25 测试文件 / 151 用例绿，含 rename_task 2-agent 对抗审查 correctness=clean），**v1.5.0 发布（2026-06-10）**
 - **日期**：2026-06-09
 - **作者**：Claude Code（Opus 4.8，主控）
 - **目标组件**：`AutoSkills/mcp/project-manager`（`src/state.ts` + `src/index.ts` + `src/lint.ts`）
