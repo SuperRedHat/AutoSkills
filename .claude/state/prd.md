@@ -20,3 +20,11 @@
 
 ## 依据
 反馈 `CouncilFlow/project-manager-feedback.md` v3；多模型讨论 `disc_20260608T082025646299Z`(claude+codex)；架构 ADR-001 `AutoSkills/docs/adr-001-project-manager-ops-capabilities.md`。
+
+## v1.5.0 范围（ADR-005，2026-06-09 立项）
+承接 ADR-004 §7，把 4 项 deferred 立项为下一个增量，全部加法式、**不 bump schema_version**：
+- **edit_tasks** 批量元数据补丁（逐条 result + 允许部分成功，复用 edit_task 校验 helper，不复制 E2/E3/E4）。
+- **rename_task** 改任务 id + 级联改写 dependencies/replacement_task_id/focus.related_task_ids；logs 不可变 + `task_renamed` 审计；落盘前全局后置校验；终态可 rename 但不动 status/close 字段。**最高风险，单独人工 review gate**。
+- **跨项目 reconcile** 安全包络：foreign project 只出 dry-run/fix-plan，apply foreign 返回 `cross_project_apply_requires_set_project_dir`，写仍须 `set_project_dir`（守住 ADR-003/004 显式上下文契约）。
+- **reconcile 字段清理 autofix**：仅 active 任务的 `stale_close_fields` / `stale_replacement`，跳终态。
+详见 ADR-005 `AutoSkills/docs/adr-005-task-identity-rename-reconcile-safety-envelope.md`。任务 PM-601..606（线性链）。顺带勘误 ADR-004「13 可编辑字段」→ 实为 14。

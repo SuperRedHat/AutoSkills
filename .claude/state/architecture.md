@@ -28,3 +28,14 @@ CouncilFlow Python 核心 state-agnostic(零硬编码任务状态)→ CF 侧只�
 - **Phase 0**(低 ripple 纯加法)：0.0 测试基建 → 0.1 characterization → 0.2 get_project_context 加法(含 schema_version/双率读时补算/blocked_reason/context_mode) → 0.3 current_focus → 0.4 add_log+getLogs → 0.5 project-resume 守卫。
 - **Phase 1**(状态机+迁移)：1.1 状态枚举 → 1.2 close_task → 1.3 G1 依赖语义 → 1.4 progress 持久化 → 1.5 migrate v0→v1 → 1.6 下游文档/技能/CF/README/manifest 同步 → 1.7 bootstrap 舰队迁移。
 - **Phase 2**(deferred)：多槽 focus、reopen_task、context_mode→CF handoff、L4/L5/L6/L9。
+
+## v1.5.0（ADR-005，2026-06-09）
+> ADR-001 之后又有 ADR-002（backlog）/ ADR-003（跨项目只读）/ ADR-004（edit_task + lint_state/reconcile，已发版 **v1.4.0**）/ ADR-005（**v1.5.0**）扩展，详见对应 `docs/adr-00X` 文件。本节是 v1.5.0 浓缩索引。
+
+落实 ADR-004 §7 的 4 项 deferred，全部加法、**不 bump schema_version（仍 1）**：
+- **R rename_task**：改 id + 级联改写 `dependencies[]`/`replacement_task_id`/`focus.related_task_ids`（去重）；复用 `closeTask` 改写逻辑(state.ts:872-879)；logs 不可变 + `task_renamed` 审计；落盘前全局后置校验（无重复 id/dangling/self/cycle/replacement 断链）；终态可 rename 但不动 status/close 字段；不接 `project_dir`。从 `validateReplacement`(state.ts:924) 抽"存在/非自身/无环"公共校验，close_task 仍保留"target 必须 active"。
+- **C 跨项目 reconcile**：foreign→dry-run/fix-plan only；apply foreign→`cross_project_apply_requires_set_project_dir`；复用 `selectState`(index.ts:46) 的 `active` 标志，仿 `lint_state`(index.ts:693-703)。
+- **B edit_tasks**：仿 `closeTasks`(state.ts:700)/`updateTasks`(state.ts:694) 逐条 `.map()` + per-item result + 部分成功；复用 `edit_task`(state.ts:454) 校验 helper（PM-601 抽出），空 diff 成功 noop。
+- **A reconcile 字段清理 autofix**：仅 active 任务 `stale_close_fields`/`stale_replacement`，跳终态，新审计 `reconcile_stale_*_clear`，幂等（`reconcile` state.ts:1263 现有 fix-block 模式扩展）。
+
+任务链：PM-601(抽 helper)→602(edit_tasks)→603(autofix)→604(跨项目)→605(rename_task,manual)→606(发版收口,milestone_manual+stage_gate)。

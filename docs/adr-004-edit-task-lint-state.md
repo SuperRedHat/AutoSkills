@@ -16,10 +16,10 @@
 
 | # | 决策 | 结论 |
 |---|---|---|
-| E1 | `edit_task` | 元数据补丁工具，**绝不碰 status**。13 字段可改，其余拒绝。写工具（不接 `project_dir`） |
+| E1 | `edit_task` | 元数据补丁工具，**绝不碰 status**。14 字段可改（勘误：原文写 13；实际 `DOC_FIELDS` 6 + `NON_DOC_EDITABLE_FIELDS` 8 = 14，见 ADR-005），其余拒绝。写工具（不接 `project_dir`） |
 | E2 | acceptance 耦合 | 改 `acceptance_mode` ↔ `needs_manual_review` **必须成对重算**（error 级，写进代码非文档） |
 | E3 | 依赖编辑 | 改 `dependencies` 需 存在性 + 无自环 + 无环 + 去重，**原子拒绝** |
-| E4 | 字段白名单 | Zod 只声明 13 可改字段、合并**解析后**对象、不 `.passthrough()` → 审计字段无法泄漏；schema 不得比 `create_tasks` 严 |
+| E4 | 字段白名单 | Zod 只声明 14 可改字段（勘误：原文 13）、合并**解析后**对象、不 `.passthrough()` → 审计字段无法泄漏；schema 不得比 `create_tasks` 严 |
 | L1 | `lint_state` | **只读**诊断，接 `project_dir`（跨项目巡检，仿 `get_portfolio` 逐项报错）。~22 检查，复用引擎自身走法 |
 | L2 | `reconcile` | **写**工具，**只动活动项目**（拒绝 `project_dir`）。**最小安全自动修复集**，逐条审计，幂等 |
 | L3 | autofix 范围 | 仅 `progress_drift`（委托 `updateProjectProgress`）+ `self_dependency`（去自环，跳终态）。其余只报告 |
@@ -42,7 +42,7 @@
 
 ### 2.1 字段权限矩阵
 
-**可编辑（13 个）**：
+**可编辑（14 个；勘误：原文写 13，实际为 `DOC_FIELDS` 6 + `NON_DOC_EDITABLE_FIELDS` 8 = 14 — 见 ADR-005）**：
 
 | 字段 | 类别 | 校验 | 终态任务 |
 |---|---|---|---|
@@ -67,7 +67,7 @@
 - **E2 acceptance 耦合**：`normalizeTask` 只在 `needs_manual_review` 非布尔时才从 mode 推导（state.ts:1043-1046）；持久化后它恒为布尔，单改 `acceptance_mode` 会让布尔说谎。进程内 gate 仍对（`requiresManualAcceptance`→`resolveAcceptanceMode` 优先 mode，state.ts:1056-1068），但**外部 reader/技能/看板按 `needs_manual_review` 判会误路由**，且违反 CLAUDE.md "`needs_manual_review==false` 等价 `acceptance_mode=auto`"。
   → 规则：任一被改，置 `needs_manual_review = (acceptance_mode !== 'auto')`；显式给出矛盾对则拒绝。
 - **E3 依赖无环**：依赖成环**不会卡死** `getNextTask`（seen-set 只护 replacement 链，runnable filter 不递归 deps），但会变"静默永久死锁 + `blocked_in_progress` 假原因"。校验仿 `validateReplacement`（state.ts:675-706）泛化到 dependency DAG。
-- **E4 字段白名单**：Zod 只声明 13 字段、合并 Zod **解析后**对象（绝不 spread 原始入参、不 `.passthrough()`/`.catchall()`）→ 审计字段无法泄漏。每个可改字段 schema **不得比 `create_tasks` 严**（priority `z.number()` 不加界、profile 自由 string、complexity enum），否则老任务变不可编辑。
+- **E4 字段白名单**：Zod 只声明 14 字段（勘误：原文 13）、合并 Zod **解析后**对象（绝不 spread 原始入参、不 `.passthrough()`/`.catchall()`）→ 审计字段无法泄漏。每个可改字段 schema **不得比 `create_tasks` 严**（priority `z.number()` 不加界、profile 自由 string、complexity enum），否则老任务变不可编辑。
 - **原子性 & 无噪声**：全字段先校验后整体落盘；空改动（值全等）跳过写入与日志。
 - **审计**：`addLog({ kind:'ops_event', event_type:'task_edited', source:'edit_task', task_id, entities:{ changes:[{field,from,to}] } })`，并 bump `updated_at`。不调 `updateProjectProgress`（元数据不改状态计数，同 `set_task_priority`）。
 - **priority**：edit_task **禁改**，路由 `set_task_priority`（单一职责，避免双审计轨）。
@@ -133,8 +133,11 @@
 ---
 
 ## 7. 非目标 / Deferred
-- edit_task 批量 `edit_tasks`（v1 单条；以后仿 update_tasks/close_tasks 加）。
-- `rename_task`（改 id + rewrite dependents）。
-- reconcile 的字段清理类 autofix（stale_replacement / stale_close_fields）—— 本轮只报告。
-- 跨项目**写** reconcile（写仍须显式 set_project_dir）。
-- `commit_hash` 的合法 setter。
+
+> **更新（2026-06-09）**：下列前 4 项已在 **ADR-005（v1.5.0）** 立项落实，详见 `docs/adr-005-task-identity-rename-reconcile-safety-envelope.md`。
+
+- ~~edit_task 批量 `edit_tasks`（v1 单条；以后仿 update_tasks/close_tasks 加）。~~ → **resolved by ADR-005 §4（B1）**
+- ~~`rename_task`（改 id + rewrite dependents）。~~ → **resolved by ADR-005 §2（R1-R4）**
+- ~~reconcile 的字段清理类 autofix（stale_replacement / stale_close_fields）—— 本轮只报告。~~ → **resolved by ADR-005 §5（A1，仅 active 任务）**
+- ~~跨项目**写** reconcile（写仍须显式 set_project_dir）。~~ → **部分 resolved by ADR-005 §3（C1/C2）：跨项目只放开 dry-run/fix-plan，写仍须 set_project_dir**
+- `commit_hash` 的合法 setter。 → 仍 deferred（ADR-005 §9）

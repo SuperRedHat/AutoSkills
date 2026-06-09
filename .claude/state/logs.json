@@ -1189,6 +1189,76 @@
       "from_status": null,
       "to_status": null,
       "message": "[收口 2026-06-09] project-manager v1.4.0 完成并发布。edit_task(元数据补丁不碰 status)+ lint_state(24 检查只读，L8)+ reconcile(最小安全 autofix)。设计 ADR-004 经 8-agent sweep + 3-adversary red-team 加固；实现 PM-501..504 分模块验证；多 agent review 6 必修+2 宜修全部修复并加回归测试(含修复一个 closeTask supersede 去重的历史遗留 bug)。21 文件/128 测试全过。已部署 v1.4.0 到 ~/.claude/mcp-project-manager(dist 重建，三工具就绪；备份 dist.bak-v130)。AutoSkills 自身 state 已 migrate 到 v1(lint 0 findings)。Deferred：批量 edit_tasks、rename_task、reconcile 字段清理类 autofix、跨项目 reconcile。下次新窗口 /project-resume 衔接。"
+    },
+    {
+      "timestamp": "2026-06-09T20:35:00.540Z",
+      "type": "decision",
+      "kind": "decision",
+      "event_type": "change_request_planned",
+      "tags": [
+        "pm-v150",
+        "adr-005",
+        "change-request"
+      ],
+      "source": "project-change",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "[变更立项 2026-06-09] project-manager v1.5.0 立项：落实 ADR-004 §7 的 4 项 deferred = edit_tasks 批量 / rename_task 改 id+级联引用改写 / 跨项目 reconcile 安全包络(foreign→dry-run only) / reconcile 字段清理 autofix(仅 active)。全部加法、不 bump schema_version(仍 1)。新增 ADR-005(Proposed, docs/adr-005-...md)，ADR-004 §7 标记 resolved by ADR-005 并勘误「13→14 可编辑字段」(DOC_FIELDS 6+NON_DOC 8)。PRD/架构索引已追加 v1.5.0 节，项目状态 completed→in_progress。任务 PM-601..606 线性链：601 抽公共 helper→602 edit_tasks→603 字段清理 autofix→604 跨项目 reconcile→605 rename_task(manual gate,L)→606 发版收口(milestone_manual+stage_gate)。流程说明：/project-change 的 architect/planner/synthesizer 三阶段最初按 .council/config.yaml 委派给 codex(均 completed)，主控 Claude Opus 4.8 已对 state.ts/lint.ts/index.ts 逐函数核验交叉确认；应用户明确要求「把任务全部交给主控做」，落盘(写 ADR-005、改 ADR-004、save_prd/architecture、create_tasks、本 log)全部由主控直接完成，不再委派。下一步 /project-next 执行 PM-601。"
+    },
+    {
+      "timestamp": "2026-06-09T20:54:49.080Z",
+      "type": "task_edited",
+      "kind": "ops_event",
+      "event_type": "task_edited",
+      "task_id": "PM-602",
+      "from_status": null,
+      "to_status": null,
+      "entities": {
+        "changes": [
+          {
+            "field": "description",
+            "from": "新增 StateManager.editTasks + MCP 工具 edit_tasks，沿用 closeTasks/updateTasks(state.ts:694/700) 的逐条 .map() result 与允许部分成功惯例，复用 PM-601 helper，绝不复制 E2/E3/E4 逻辑。ADR-005 §4(B1) / §8 PM-602。",
+            "to": "新增 StateManager.editTasks + MCP 工具 edit_tasks，沿用 closeTasks(state.ts:700)/updateTasks(state.ts:694) 的逐条 .map() result 与允许部分成功惯例，复用 PM-601 helper，绝不复制 E2/E3/E4 逻辑。ADR-005 §4(B1) / §8 PM-602。"
+          }
+        ]
+      },
+      "source": "edit_task",
+      "message": "PM-602 edited: description"
+    },
+    {
+      "timestamp": "2026-06-09T20:54:51.470Z",
+      "type": "task_edited",
+      "kind": "ops_event",
+      "event_type": "task_edited",
+      "task_id": "PM-606",
+      "from_status": null,
+      "to_status": null,
+      "entities": {
+        "changes": [
+          {
+            "field": "review_checklist",
+            "from": [
+              "确认 ADR-005 状态从 Proposed flip 为 Accepted，且明确声明 schema_version 不 bump",
+              "确认 ADR-004 §7 已标记 4 项 resolved by ADR-005、13→14 勘误已落（两处：E1 表格 + §2.1 标题）",
+              "确认 README/CHANGELOG 覆盖 edit_tasks、rename_task、reconcile autofix、cross-project dry-run/fix-plan 的用户语义与限制",
+              "确认 package.json 与 package-lock.json 版本从 1.4.0 升到 1.5.0",
+              "确认已部署到 ~/.claude/mcp-project-manager 且部署产物来自通过验证的构建（保留 dist 备份）",
+              "确认完成多 agent review，rename_task 与 cross-project reconcile 安全边界无未处理阻塞意见"
+            ],
+            "to": [
+              "确认 ADR-005 状态从 Proposed flip 为 Accepted，且明确声明 schema_version 不 bump",
+              "确认 ADR-004 §7 已标记 4 项 resolved by ADR-005；13→14 勘误已落实于全部 4 处（E1 表格 + E4 表格 + §2.1 标题 + §2.2 E4 规则）",
+              "确认 README/CHANGELOG 覆盖 edit_tasks、rename_task、reconcile autofix、cross-project dry-run/fix-plan 的用户语义与限制",
+              "确认 package.json 与 package-lock.json 版本从 1.4.0 升到 1.5.0",
+              "确认已部署到 ~/.claude/mcp-project-manager 且部署产物来自通过验证的构建（保留 dist 备份）",
+              "确认完成多 agent review，rename_task 与 cross-project reconcile 安全边界无未处理阻塞意见"
+            ]
+          }
+        ]
+      },
+      "source": "edit_task",
+      "message": "PM-606 edited: review_checklist"
     }
   ]
 }

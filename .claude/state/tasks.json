@@ -1334,6 +1334,266 @@
       "notes": "用户「全流程」放行 = 里程碑 gate 人工验收通过。v1.4.0 完成。",
       "review_checklist": [],
       "replacement_task_id": null
+    },
+    {
+      "id": "PM-601",
+      "title": "抽取 edit/rewrite/replacement 公共 helper",
+      "description": "纯重构（零行为变更）：抽取 edit_task 共享校验与应用 helper（prepareTaskEdit/applyPreparedTaskEdit）、任务引用改写 helper（泛化 closeTask superseded 的 dependents-rewrite，state.ts:872-879）、replacement graph 公共校验 helper（从 validateReplacement state.ts:924 抽出『存在/非自身/无环』，close_task 仍额外保留『target 必须 active』）。为后续 edit_tasks/rename_task 复用、避免复制高风险逻辑。ADR-005 §8 PM-601。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "抽出 prepareTaskEdit/applyPreparedTaskEdit，edit_task 继续共用字段白名单(14 键=DOC_FIELDS 6+NON_DOC 8)、acceptance 成对重算(E2)、依赖存在/自环/环校验(E3)、diff 计算与审计实体构造",
+        "edit_task 现有外部行为不变：空 patch {} 仍失败、终态任务只允许文档字段、E2/E3/E4 语义不回退",
+        "抽出引用 rewrite helper，close_task superseded 的 dependents dependencies 改写与 Set 去重行为(state.ts:872-879)保持不变",
+        "从 validateReplacement 抽出 replacement graph 的存在/非自身/无环公共校验；close_task 仍额外要求 replacement target 为 active",
+        "全量既有测试(21 文件/128 用例)通过，schema_version 仍为 1"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/edit_task.test.ts",
+        "mcp/project-manager/tests/deps_semantics.test.ts",
+        "mcp/project-manager/tests/close_task.test.ts",
+        "mcp/project-manager/tests/audit_fixes.test.ts",
+        "mcp/project-manager/tests/migration.test.ts"
+      ],
+      "module": "state-core",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [],
+      "stage_gate": false,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:34:43.420Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-602",
+      "title": "实现 edit_tasks 批量元数据补丁",
+      "description": "新增 StateManager.editTasks + MCP 工具 edit_tasks，沿用 closeTasks(state.ts:700)/updateTasks(state.ts:694) 的逐条 .map() result 与允许部分成功惯例，复用 PM-601 helper，绝不复制 E2/E3/E4 逻辑。ADR-005 §4(B1) / §8 PM-602。",
+      "dependencies": [
+        "PM-601"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "新增 StateManager.editTasks 与 MCP 工具 edit_tasks，返回每项 { id, success, error?, changed_fields?, noop? }",
+        "逐条按顺序校验并应用，允许部分成功；后一条基于前一条成功后的最新状态校验 DAG（最终仍无环）",
+        "每个成功且非 noop 的 edit 写 task_edited 审计日志、source 为 edit_tasks；有效 diff 为空时该条成功 noop 且不写 tasks/logs",
+        "禁止字段拒绝、acceptance_mode/needs_manual_review 成对重算、dependencies 校验/去重、终态编辑限制完全复用 PM-601 helper",
+        "单条 edit_task 行为与现有测试保持不变"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/edit_tasks.test.ts",
+        "mcp/project-manager/tests/edit_task.test.ts",
+        "mcp/project-manager/tests/batch.test.ts"
+      ],
+      "module": "task-edit",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [],
+      "stage_gate": false,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:54:49.080Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-603",
+      "title": "reconcile 增加 active stale 字段清理 autofix",
+      "description": "为 lint finding 增加 autofixable 标记，并让 reconcile 自动清理 active task 的 stale close/replacement 字段；终态任务只报告不自动改（沿用 reconcile state.ts:1263 的 fix-block 模式：save-first-then-log、跳终态、幂等）。ADR-005 §5(A1) / §8 PM-603。",
+      "dependencies": [
+        "PM-602"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "lint_state 对 active task 的 stale_close_fields_on_nonterminal 与 stale_replacement_on_nonsuperseded 标记 autofixable:true",
+        "reconcile 仅清理 active task 的 closed_at/close_reason 与 stale replacement_task_id，不改 status，不批量重规范化，不重写终态任务",
+        "terminal done/cancelled 上的 stale_replacement_on_nonsuperseded 保持只报告，不进入 autofix",
+        "每个实际清理分别写 ops_event：reconcile_stale_close_fields_clear 或 reconcile_stale_replacement_clear",
+        "reconcile 第二次运行 fixed 为空（幂等）；现有 progress_drift/self_dependency/dangling deps 行为不回退"
+      ],
+      "files": [
+        "mcp/project-manager/src/lint.ts",
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/reconcile_field_cleanup.test.ts",
+        "mcp/project-manager/tests/lint_state.test.ts",
+        "mcp/project-manager/tests/reconcile.test.ts"
+      ],
+      "module": "reconcile",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [],
+      "stage_gate": false,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:34:43.420Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-604",
+      "title": "reconcile 支持跨项目 dry-run/fix-plan",
+      "description": "扩展 reconcile(project_dir) 的安全边界：foreign project 只生成 dry-run/fix-plan，不允许直接落盘；apply foreign 返回结构化错误。复用 selectState(index.ts:46) 的 active 标志、resolveProjectDir，与 lint_state(index.ts:693-703) 一致。ADR-005 §3(C1/C2) / §8 PM-604。",
+      "dependencies": [
+        "PM-603"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "reconcile() 无参数时保持当前活动项目 apply 行为不变",
+        "reconcile({ project_dir }) 指向当前 active project（含绝对路径指向自身）时允许 apply，行为等同当前项目",
+        "reconcile({ project_dir }) 指向 foreign project 时默认只返回 dry-run/fix-plan，不写 tasks/project/logs",
+        "foreign project 携带 apply:true 或 dry_run:false 时返回 error code cross_project_apply_requires_set_project_dir，并包含 resolved_project_dir",
+        "目录解析与错误分类复用 selectState/resolveProjectDir，覆盖 not_a_project/state_unreadable 等既有模式"
+      ],
+      "files": [
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/project_dir.ts",
+        "mcp/project-manager/tests/cross_project_reconcile.test.ts",
+        "mcp/project-manager/tests/cross_project.test.ts",
+        "mcp/project-manager/tests/reconcile.test.ts"
+      ],
+      "module": "cross-project-reconcile",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [],
+      "stage_gate": false,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:34:43.420Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-605",
+      "title": "实现 rename_task 身份改名与引用级联",
+      "description": "新增 StateManager.renameTask + MCP 工具 rename_task，仅作用于当前活动项目，改写任务 id 及所有引用，保留历史 logs 不可变，并在完整 post-transform 校验后一次性原子落盘。最高风险，单独 review gate。ADR-005 §2(R1-R4) / §8 PM-605。",
+      "dependencies": [
+        "PM-604"
+      ],
+      "complexity": "L",
+      "acceptance_criteria": [
+        "新增 StateManager.renameTask 与 MCP 工具 rename_task，不接受 project_dir，只作用于当前活动项目",
+        "old_id 必须存在；new_id 必须非空且不与现有 id 冲突；old_id === new_id 为成功 noop 且不写审计",
+        "改写目标 task.id、所有 dependencies[]、所有 replacement_task_id、focus.related_task_ids，并对数组去重",
+        "不改写历史 logs；成功且非 noop 时追加 kind=ops_event,event_type=task_renamed，task_id 使用 new_id，entities 含 old_id/new_id/rewired counts/focus_rewritten/logs_preserved:true",
+        "落盘前执行全局后置校验：无重复 id、无 dangling/self/cycle dependency、无 replacement missing/self/cycle；失败时不部分写入",
+        "允许 terminal task rename，但不改变 status、closed_at、close_reason 或终态迁移规则",
+        "新增 rename_task.test.ts 全绿，且 current_focus/deps_semantics/logs 等既有测试不回退"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/rename_task.test.ts",
+        "mcp/project-manager/tests/current_focus.test.ts",
+        "mcp/project-manager/tests/deps_semantics.test.ts",
+        "mcp/project-manager/tests/logs.test.ts"
+      ],
+      "module": "task-identity",
+      "needs_manual_review": true,
+      "acceptance_mode": "manual",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [
+        "确认 old_id 不存在 / new_id 为空 / new_id 冲突 / old_id===new_id noop 的行为与文档一致",
+        "确认 rename 后不会产生重复 id、dangling dependency、self dependency 或 dependency cycle",
+        "确认 replacement chain 复用 PM-601 抽出的『存在/非自身/无环』公共校验，replacement target 的终态历史不被 close-time active 规则误拒",
+        "确认 dependencies、replacement_task_id、focus.json related_task_ids 均改写并去重",
+        "确认 logs.json 历史 task_id/message/entities 不被改写，rename 仅追加 task_renamed ops_event",
+        "确认终态 task 可 rename，但 status/closed_at/close_reason/终态迁移规则不被破坏",
+        "确认 rename replacement target / rename superseded source / rename cancelled task 的边界用例均覆盖"
+      ],
+      "stage_gate": false,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:34:43.420Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-606",
+      "title": "v1.5.0 ADR 收口 + 文档/版本/部署",
+      "description": "发版收口：finalize ADR-005（Proposed→Accepted）、复核 ADR-004 §7/13→14 勘误已落、更新 CHANGELOG/README、版本 1.4.0→1.5.0、部署到 ~/.claude/mcp-project-manager、完成多 agent review。milestone_manual + stage_gate。注：ADR-005 文档与 ADR-004 §7 更新已在 /project-change 立项时由 host 落盘（Proposed），本任务负责 flip 状态与发版动作。ADR-005 §8 PM-606。",
+      "dependencies": [
+        "PM-605"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "docs/adr-005-task-identity-rename-reconcile-safety-envelope.md 状态 flip 为 Accepted",
+        "复核 docs/adr-004-edit-task-lint-state.md：§7 已 resolved by ADR-005、13→14 勘误已落",
+        "更新 mcp/project-manager/CHANGELOG.md 与 README.md，记录 v1.5.0 新能力、限制、审计事件与 no schema_version bump",
+        "更新 package.json 与 package-lock.json 版本为 1.5.0",
+        "完成部署到 ~/.claude/mcp-project-manager，并保留人工验收所需的验证与 review 摘要",
+        "全量 build + test 通过（含 4 个新测试文件）"
+      ],
+      "files": [
+        "docs/adr-005-task-identity-rename-reconcile-safety-envelope.md",
+        "docs/adr-004-edit-task-lint-state.md",
+        "mcp/project-manager/CHANGELOG.md",
+        "mcp/project-manager/README.md",
+        "mcp/project-manager/package.json",
+        "mcp/project-manager/package-lock.json"
+      ],
+      "module": "release",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "npm --prefix mcp/project-manager run build",
+        "npm --prefix mcp/project-manager test"
+      ],
+      "review_checklist": [
+        "确认 ADR-005 状态从 Proposed flip 为 Accepted，且明确声明 schema_version 不 bump",
+        "确认 ADR-004 §7 已标记 4 项 resolved by ADR-005；13→14 勘误已落实于全部 4 处（E1 表格 + E4 表格 + §2.1 标题 + §2.2 E4 规则）",
+        "确认 README/CHANGELOG 覆盖 edit_tasks、rename_task、reconcile autofix、cross-project dry-run/fix-plan 的用户语义与限制",
+        "确认 package.json 与 package-lock.json 版本从 1.4.0 升到 1.5.0",
+        "确认已部署到 ~/.claude/mcp-project-manager 且部署产物来自通过验证的构建（保留 dist 备份）",
+        "确认完成多 agent review，rename_task 与 cross-project reconcile 安全边界无未处理阻塞意见"
+      ],
+      "stage_gate": true,
+      "priority": 0,
+      "status": "todo",
+      "created_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T20:54:51.470Z",
+      "commit_hash": "",
+      "notes": "",
+      "replacement_task_id": null
     }
   ]
 }
