@@ -27,3 +27,6 @@ __pycache__/
 # Local
 .env
 .env.local
+
+# CouncilFlow (multi-model discussion runtime artifacts)
+.council/
