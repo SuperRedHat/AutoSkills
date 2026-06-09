@@ -1286,6 +1286,33 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-601 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
+    },
+    {
+      "timestamp": "2026-06-09T22:34:08.748Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-602",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-602 todo → in_progress: 主控直接实现。editTasks 逐条复用 PM-601 的 prepareTaskEdit/applyPreparedTaskEdit，自带 source=edit_tasks 审计，逐条 save+log(仿 closeTasks)，部分成功，空 diff noop。"
+    },
+    {
+      "timestamp": "2026-06-09T22:37:07.833Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-602",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-602 in_progress → auto_verified: 主控直接实现+自验。StateManager.editTasks(逐条复用 prepareTaskEdit/applyPreparedTaskEdit，source=edit_tasks，逐条 save+log，部分成功，空 diff noop，后一条基于前一条最新状态校验 DAG) + edit_tasks MCP 工具。build(tsc)干净 + 22 文件/135 测试全过(新增 7 个 edit_tasks 测试)。复用 PM-601 helper 不复制 E2/E3/E4；单条 edit_task 15 测试零回归。"
+    },
+    {
+      "timestamp": "2026-06-09T22:37:28.452Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-602",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-602 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
     }
   ]
 }

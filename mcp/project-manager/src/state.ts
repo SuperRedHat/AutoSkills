@@ -665,6 +665,47 @@ export class StateManager {
   }
 
   /**
+   * Batch metadata patch (ADR-005 §4): apply an edit to each entry, reusing the
+   * shared prepare/apply helpers, with per-item results and partial success
+   * (mirrors closeTasks/updateTasks — never atomic-all-or-nothing). Each entry is
+   * validated against the latest in-memory state, so a later edit sees earlier
+   * edits' effects and cross-item dependency checks stay correct. A successful,
+   * non-no-op edit saves then writes a task_edited audit log with
+   * source="edit_tasks"; an empty diff is a success no-op that writes neither
+   * tasks nor a log. NEVER touches status (same whitelist/E2/E3 as edit_task).
+   */
+  editTasks(
+    edits: { id: string; patch: TaskEditPatch }[]
+  ): { id: string; success: boolean; error?: string; changed_fields?: string[]; noop?: boolean }[] {
+    const data = this.getTasks();
+    if (!data) return edits.map((e) => ({ id: e.id, success: false, error: "No tasks found" }));
+    return edits.map((e) => {
+      const task = data.tasks.find((t) => t.id === e.id);
+      if (!task) return { id: e.id, success: false, error: `Task ${e.id} not found` };
+      const prepared = this.prepareTaskEdit(task, e.patch, data.tasks);
+      if (!prepared.success) return { id: e.id, success: false, error: prepared.error };
+      if (prepared.changes.length === 0) {
+        return { id: e.id, success: true, changed_fields: [], noop: true };
+      }
+      this.applyPreparedTaskEdit(task, prepared.changes);
+      this.saveTasks(data);
+      this.addLog({
+        timestamp: task.updated_at,
+        type: "task_edited",
+        kind: "ops_event",
+        event_type: "task_edited",
+        task_id: e.id,
+        from_status: null,
+        to_status: null,
+        entities: { changes: prepared.changes },
+        source: "edit_tasks",
+        message: `${e.id} edited (batch): ${prepared.changes.map((c) => c.field).join(", ")}`,
+      });
+      return { id: e.id, success: true, changed_fields: prepared.changes.map((c) => c.field) };
+    });
+  }
+
+  /**
    * Audited reverse of close_task: bring a TERMINAL task (done/cancelled/superseded)
    * back to an active state. Management bypass — does not use VALID_TRANSITIONS.
    * Reopening a superseded task clears its replacement_task_id, but the dependents

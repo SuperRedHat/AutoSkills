@@ -649,6 +649,49 @@ server.tool(
   }
 );
 
+server.tool(
+  "edit_tasks",
+  "批量元数据补丁（逐条走 edit_task 的校验与应用，绝不碰 status；允许部分成功，逐条返回 { id, success, error?, changed_fields?, noop? }）。可改字段同 edit_task；改 acceptance_mode 会同步 needs_manual_review；改 dependencies 校验存在/自环/环并去重；终态任务只许改纯文档字段；空改动跳过。每条成功且非空各写一条 source=edit_tasks 审计日志。后一条基于前一条成功后的最新状态校验。仅作用于当前活动项目（不接 project_dir）。",
+  {
+    edits: z
+      .array(
+        z.object({
+          id: z.string().describe("Task ID"),
+          title: z.string().optional(),
+          description: z.string().optional(),
+          notes: z.string().optional(),
+          acceptance_criteria: z.array(z.string()).optional(),
+          review_checklist: z.array(z.string()).optional(),
+          files: z.array(z.string()).optional(),
+          dependencies: z.array(z.string()).optional(),
+          complexity: z.enum(["S", "M", "L"]).optional(),
+          module: z.string().optional(),
+          acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
+          needs_manual_review: z.boolean().optional(),
+          stage_gate: z.boolean().optional(),
+          verification_profile: z
+            .string()
+            .optional()
+            .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
+          verification_commands: z.array(z.string()).optional(),
+        })
+      )
+      .describe("批量元数据补丁"),
+  },
+  async ({ edits }) => {
+    // Strip undefined keys per entry so audit-only fields can never reach editTasks
+    // (z.object already strips undeclared keys; this drops omitted optionals).
+    const calls = edits.map((e) => {
+      const { id, ...rest } = e;
+      const patch: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rest)) if (v !== undefined) patch[k] = v;
+      return { id, patch: patch as Parameters<typeof state.editTask>[1] };
+    });
+    const r = state.editTasks(calls);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
 server.tool("get_verification_profiles", "获取共享 verification profile 定义", {}, async () => {
   const verificationProfilesPath = path.join(
     workflowCoreDir,
