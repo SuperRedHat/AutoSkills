@@ -90,4 +90,16 @@ describe("close_task", () => {
     const r = sm.closeTask("A", "cancelled", "scrapped");
     expect(r.affected_dependents?.slice().sort()).toEqual(["B", "C"]);
   });
+
+  it("supersede rewrite dedupes a dependent that already depends on the replacement", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([
+      mkTask({ id: "A" }),
+      mkTask({ id: "B" }),
+      mkTask({ id: "C", dependencies: ["A", "B"] }),
+    ]);
+    const r = sm.closeTask("A", "superseded", "replaced by B", "B");
+    expect(r.success).toBe(true);
+    expect(sm.getTaskById("C")!.dependencies).toEqual(["B"]); // not ["B","B"]
+  });
 });

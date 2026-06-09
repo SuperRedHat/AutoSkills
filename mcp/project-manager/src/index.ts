@@ -55,6 +55,25 @@ function selectState(dir?: string): StateSelection {
   }
   const r = resolveProjectDir(dir);
   if (!r.ok) return r;
+  // An explicit project_dir that canonically equals the active project IS the active
+  // project — reuse the global state and keep active:true, so cross-project suppression
+  // (e.g. lint_state's machine-local checks) does not silently weaken a lint of one's
+  // own project addressed by absolute path.
+  let activeResolved: string;
+  try {
+    activeResolved = fs.realpathSync(projectDir);
+  } catch {
+    activeResolved = path.resolve(projectDir);
+  }
+  if (r.resolved === activeResolved) {
+    return {
+      ok: true,
+      state,
+      resolved: projectDir,
+      state_path: path.join(projectDir, ".claude", "state"),
+      active: true,
+    };
+  }
   return {
     ok: true,
     state: new StateManager(r.resolved),
@@ -574,6 +593,51 @@ server.tool(
   }
 );
 
+server.tool(
+  "edit_task",
+  "编辑任务元数据（绝不碰 status）。可改 title/description/notes/acceptance_criteria/review_checklist/files/dependencies/complexity/module/acceptance_mode/needs_manual_review/stage_gate/verification_profile/verification_commands；status 请用 update_task_status/close_task/reopen_task，id/时间戳/commit_hash/replacement_task_id/closed_at/close_reason 不可改。改 acceptance_mode 会同步 needs_manual_review；改 dependencies 校验存在/自环/环并去重；终态任务只许改纯文档字段；空改动跳过。写一条 task_edited 审计日志。仅作用于当前活动项目（不接 project_dir）。",
+  {
+    id: z.string().describe("Task ID"),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    notes: z.string().optional(),
+    acceptance_criteria: z.array(z.string()).optional(),
+    review_checklist: z.array(z.string()).optional(),
+    files: z.array(z.string()).optional(),
+    dependencies: z.array(z.string()).optional(),
+    complexity: z.enum(["S", "M", "L"]).optional(),
+    module: z.string().optional(),
+    acceptance_mode: z.enum(["auto", "manual", "milestone_manual"]).optional(),
+    needs_manual_review: z.boolean().optional(),
+    stage_gate: z.boolean().optional(),
+    verification_profile: z
+      .string()
+      .optional()
+      .describe("profile 名（运行时按外置 verification-profiles.json 校验）"),
+    verification_commands: z.array(z.string()).optional(),
+  },
+  async ({ id, ...rest }) => {
+    // Forward only fields the caller actually supplied (Zod gives undefined for omitted
+    // keys, and z.object strips anything not declared above — so audit-only fields can
+    // never reach editTask through this tool).
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(rest)) if (v !== undefined) patch[k] = v;
+    const r = state.editTask(id, patch as Parameters<typeof state.editTask>[1]);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.success
+            ? r.noop
+              ? `Task ${id}: no changes (all provided values already current).`
+              : `Task ${id} edited: ${(r.changed_fields ?? []).join(", ")}.`
+            : `Error: ${r.error}`,
+        },
+      ],
+    };
+  }
+);
+
 server.tool("get_verification_profiles", "获取共享 verification profile 定义", {}, async () => {
   const verificationProfilesPath = path.join(
     workflowCoreDir,
@@ -611,6 +675,30 @@ server.tool(
         },
       ],
     };
+  }
+);
+
+server.tool(
+  "lint_state",
+  "只读一致性检查（L8）：交叉核对 tasks/project/logs/focus 四处真相，报告漂移 findings（{code,severity:error|warning|info,message,task_id?,entities?,autofixable?}）+ 计数汇总。可接 project_dir 跨项目只读巡检（仿 get_portfolio，机器本地检查如 schema/profile 自动抑制）。纯读，不改任何状态。",
+  { project_dir: PROJECT_DIR_PARAM },
+  async ({ project_dir }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    // An explicit project_dir is treated as a cross-project read (suppresses
+    // machine-local checks); the active project (no project_dir) lints fully.
+    const r = sel.state.lintState({ crossProject: !sel.active });
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "reconcile",
+  "对当前活动项目应用安全确定性自动修复（L8）：仅修 progress_drift（调既有 updateProjectProgress 重算 project.json.progress）+ self_dependency（去自环，跳过终态任务），各写一条 reconcile_* 审计日志；其余 findings 原样作为 remaining 返回，请用 edit_task 手修。幂等。不接 project_dir（写只动活动项目；要修别的项目请先 set_project_dir 切过去）。",
+  {},
+  async () => {
+    const r = state.reconcile();
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
   }
 );
 

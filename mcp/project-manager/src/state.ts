@@ -1,5 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
+import { findUnknownProfiles, loadProfileNames } from "./profiles.js";
+import { runLint, type LintResult, type Finding } from "./lint.js";
 
 // ---------- Types ----------
 
@@ -186,6 +188,54 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   done: [],
 };
 
+// ---------- edit_task field policy (ADR-004 §2.1) ----------
+
+// Pure-documentation fields: no state-machine / DAG invariant depends on them, so
+// they are editable even on a TERMINAL task (the "fix a note on a done task" case).
+const DOC_FIELDS = [
+  "title",
+  "description",
+  "notes",
+  "acceptance_criteria",
+  "review_checklist",
+  "files",
+] as const;
+
+// Editable but flow/gate/DAG-relevant: only on ACTIVE (non-terminal) tasks.
+const NON_DOC_EDITABLE_FIELDS = [
+  "dependencies",
+  "complexity",
+  "module",
+  "acceptance_mode",
+  "needs_manual_review",
+  "stage_gate",
+  "verification_profile",
+  "verification_commands",
+] as const;
+
+const EDITABLE_FIELDS: readonly string[] = [...DOC_FIELDS, ...NON_DOC_EDITABLE_FIELDS];
+
+/** The metadata patch edit_task accepts (status / id / timestamps / audit-bypass fields excluded). */
+export type TaskEditPatch = Partial<
+  Pick<
+    Task,
+    | "title"
+    | "description"
+    | "notes"
+    | "acceptance_criteria"
+    | "review_checklist"
+    | "files"
+    | "dependencies"
+    | "complexity"
+    | "module"
+    | "acceptance_mode"
+    | "needs_manual_review"
+    | "stage_gate"
+    | "verification_profile"
+    | "verification_commands"
+  >
+>;
+
 // ---------- State Manager ----------
 
 export class StateManager {
@@ -238,22 +288,23 @@ export class StateManager {
     this.writeJSON("project.json", info);
   }
 
-  updateProjectProgress(): void {
-    const info = this.getProjectInfo();
-    const tasks = this.getTasks();
-    if (!info || !tasks) return;
-
-    const t = tasks.tasks;
-    const metrics = this.computeProgressMetrics(t);
-    info.progress = {
+  /**
+   * Build the canonical progress object from tasks WITHOUT persisting. Single source
+   * of truth for both the writer (updateProjectProgress) and the read-only drift check
+   * (lint_state's progress_drift) — so "expected" can never disagree with what a real
+   * write would have produced.
+   */
+  computeProgressObject(tasks: Task[]): ProjectInfo["progress"] {
+    const metrics = this.computeProgressMetrics(tasks);
+    return {
       // legacy keys — semantics unchanged (in_progress still counts auto_verified):
-      total: t.length,
+      total: tasks.length,
       done: metrics.done,
-      in_progress: t.filter(
+      in_progress: tasks.filter(
         (x) => x.status === "in_progress" || x.status === "auto_verified"
       ).length,
-      awaiting_acceptance: t.filter((x) => x.status === "awaiting_manual_acceptance").length,
-      todo: t.filter((x) => x.status === "todo").length,
+      awaiting_acceptance: tasks.filter((x) => x.status === "awaiting_manual_acceptance").length,
+      todo: tasks.filter((x) => x.status === "todo").length,
       // additive dual-rate fields (D4):
       total_all: metrics.total_all,
       active_total: metrics.active_total,
@@ -263,6 +314,13 @@ export class StateManager {
       raw_completion_rate: metrics.raw_completion_rate,
       active_completion_rate: metrics.active_completion_rate,
     };
+  }
+
+  updateProjectProgress(): void {
+    const info = this.getProjectInfo();
+    const tasks = this.getTasks();
+    if (!info || !tasks) return;
+    info.progress = this.computeProgressObject(tasks.tasks);
     this.saveProjectInfo(info);
   }
 
@@ -380,6 +438,195 @@ export class StateManager {
       message: `${id} priority ${old} → ${priority}`,
     });
     return { success: true };
+  }
+
+  /**
+   * edit_task (ADR-004 §2): partial metadata patch that NEVER touches status.
+   * Only whitelisted metadata fields are writable; status / id / timestamps and the
+   * audit-bypass fields (replacement_task_id / closed_at / close_reason / commit_hash)
+   * are rejected. Validates the whole patch atomically before writing, keeps
+   * acceptance_mode <-> needs_manual_review coherent (acceptance_mode is the source of
+   * truth), guards dependency edits (existence / no self / no cycle / dedupe), and
+   * writes a task_edited audit log. A no-op patch (every value already current) skips
+   * both the write and the log. Does NOT call updateProjectProgress (metadata edits
+   * never change status counts — same as set_task_priority).
+   */
+  editTask(
+    id: string,
+    patch: TaskEditPatch
+  ): {
+    success: boolean;
+    error?: string;
+    task_id?: string;
+    changed_fields?: string[];
+    noop?: boolean;
+  } {
+    const data = this.getTasks();
+    if (!data) return { success: false, error: "No tasks found" };
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, error: `Task ${id} not found` };
+
+    const p = patch as Record<string, unknown>;
+    const provided = Object.keys(p).filter((k) => p[k] !== undefined);
+
+    // Reject forbidden/unknown keys explicitly (never silently drop) so a caller
+    // cannot mistake an ignored `status`/`id` for an applied change.
+    const forbidden = provided.filter((k) => !EDITABLE_FIELDS.includes(k));
+    if (forbidden.length) {
+      return {
+        success: false,
+        error: `edit_task cannot change: ${forbidden.join(", ")}. Route status -> update_task_status/close_task/reopen_task; id/created_at/updated_at/commit_hash/replacement_task_id/closed_at/close_reason are not editable.`,
+      };
+    }
+    if (provided.length === 0) {
+      return { success: false, error: "edit_task requires at least one field to change." };
+    }
+
+    // Terminal tasks: only pure-documentation fields (no gate/flow/DAG fields).
+    const isTerminal = ["done", "cancelled", "superseded"].includes(task.status);
+    if (isTerminal) {
+      const blocked = provided.filter((k) => !(DOC_FIELDS as readonly string[]).includes(k));
+      if (blocked.length) {
+        return {
+          success: false,
+          error: `Task ${id} is terminal (${task.status}); only documentation fields (${DOC_FIELDS.join(", ")}) are editable on a closed task. Rejected: ${blocked.join(", ")}.`,
+        };
+      }
+    }
+
+    // ----- per-field validation (all-or-nothing: nothing is written until all pass) -----
+    // Array-typed fields must be arrays (defensive for direct callers; the MCP Zod layer
+    // already enforces this for tool calls). dependencies has its own deeper checks below.
+    for (const af of ["acceptance_criteria", "review_checklist", "files", "verification_commands"]) {
+      if (provided.includes(af) && !Array.isArray(p[af])) {
+        return { success: false, error: `${af} must be an array of strings.` };
+      }
+    }
+    if (provided.includes("title") && (typeof patch.title !== "string" || !patch.title.trim())) {
+      return { success: false, error: "title must be a non-empty string." };
+    }
+    if (provided.includes("module") && (typeof patch.module !== "string" || !patch.module.trim())) {
+      return { success: false, error: "module must be a non-empty string." };
+    }
+    if (provided.includes("complexity") && !["S", "M", "L"].includes(patch.complexity as string)) {
+      return { success: false, error: "complexity must be one of S | M | L." };
+    }
+    if (
+      provided.includes("acceptance_mode") &&
+      !["auto", "manual", "milestone_manual"].includes(patch.acceptance_mode as string)
+    ) {
+      return {
+        success: false,
+        error: "acceptance_mode must be one of auto | manual | milestone_manual.",
+      };
+    }
+    // E2: an explicit (acceptance_mode, needs_manual_review) pair must not contradict.
+    if (provided.includes("acceptance_mode") && provided.includes("needs_manual_review")) {
+      const expected = patch.acceptance_mode !== "auto";
+      if (patch.needs_manual_review !== expected) {
+        return {
+          success: false,
+          error: `Contradictory acceptance pair: acceptance_mode=${patch.acceptance_mode} implies needs_manual_review=${expected}, got ${patch.needs_manual_review}.`,
+        };
+      }
+    }
+    // verification_profile validated against the external policy (parity with create_tasks;
+    // lenient when the policy file is missing — findUnknownProfiles returns []).
+    if (provided.includes("verification_profile") && patch.verification_profile) {
+      const { unknown, valid } = findUnknownProfiles([patch.verification_profile]);
+      if (unknown.length) {
+        return {
+          success: false,
+          error: `unknown verification_profile "${unknown[0]}". Valid: ${valid.join(", ")}. (Add it to ~/.workflow-core/policies/verification-profiles.json — no code change needed.)`,
+        };
+      }
+    }
+    // E3: dependency edit — existence + no self + no cycle + dedupe (atomic reject).
+    let normalizedDeps: string[] | undefined;
+    if (provided.includes("dependencies")) {
+      if (!Array.isArray(patch.dependencies)) {
+        return { success: false, error: "dependencies must be an array of task ids." };
+      }
+      normalizedDeps = [...new Set(patch.dependencies)];
+      if (normalizedDeps.includes(id)) {
+        return { success: false, error: `dependencies cannot include the task itself (${id}).` };
+      }
+      const byId = new Map(data.tasks.map((t) => [t.id, t]));
+      const missing = normalizedDeps.filter((d) => !byId.has(d));
+      if (missing.length) {
+        return {
+          success: false,
+          error: `dependencies reference unknown task(s): ${missing.join(", ")}.`,
+        };
+      }
+      // Adding edge id->d closes a cycle iff d can already reach id via dependencies.
+      const reaches = (from: string, target: string): boolean => {
+        const seen = new Set<string>();
+        const stack = [from];
+        while (stack.length) {
+          const cur = stack.pop()!;
+          if (cur === target) return true;
+          if (seen.has(cur)) continue;
+          seen.add(cur);
+          const t = byId.get(cur);
+          if (t) for (const dd of t.dependencies) stack.push(dd);
+        }
+        return false;
+      };
+      const cyclic = normalizedDeps.filter((d) => reaches(d, id));
+      if (cyclic.length) {
+        return {
+          success: false,
+          error: `dependency edit would create a cycle through: ${cyclic.join(", ")}.`,
+        };
+      }
+    }
+
+    // ----- resolve final values, with acceptance coupling realign (E2) -----
+    const next: Record<string, unknown> = {};
+    for (const k of provided) next[k] = k === "dependencies" ? normalizedDeps : p[k];
+    if (provided.includes("acceptance_mode")) {
+      // acceptance_mode is source of truth: keep needs_manual_review in lockstep.
+      next.needs_manual_review = patch.acceptance_mode !== "auto";
+    } else if (provided.includes("needs_manual_review")) {
+      const curMode = task.acceptance_mode ?? (task.needs_manual_review ? "manual" : "auto");
+      const consistent = patch.needs_manual_review === (curMode !== "auto");
+      // Only realign mode when the boolean contradicts it — this preserves an
+      // existing milestone_manual when needs_manual_review stays true.
+      if (!consistent) next.acceptance_mode = patch.needs_manual_review ? "manual" : "auto";
+    }
+
+    // ----- diff: only fields whose value actually changes -----
+    const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const changes: { field: string; from: unknown; to: unknown }[] = [];
+    for (const k of Object.keys(next)) {
+      const before = (task as unknown as Record<string, unknown>)[k];
+      const after = next[k];
+      if (!eq(before, after)) changes.push({ field: k, from: before, to: after });
+    }
+    if (changes.length === 0) {
+      return { success: true, task_id: id, changed_fields: [], noop: true };
+    }
+
+    // ----- apply atomically + audit -----
+    for (const c of changes) (task as unknown as Record<string, unknown>)[c.field] = c.to;
+    task.updated_at = new Date().toISOString();
+    this.saveTasks(data);
+
+    this.addLog({
+      timestamp: task.updated_at,
+      type: "task_edited",
+      kind: "ops_event",
+      event_type: "task_edited",
+      task_id: id,
+      from_status: null,
+      to_status: null,
+      entities: { changes },
+      source: "edit_task",
+      message: `${id} edited: ${changes.map((c) => c.field).join(", ")}`,
+    });
+
+    return { success: true, task_id: id, changed_fields: changes.map((c) => c.field) };
   }
 
   /**
@@ -624,7 +871,9 @@ export class StateManager {
       // (superseded already validated replacementTaskId is present, above).
       for (const t of data.tasks) {
         if (t.id !== id && t.dependencies.includes(id)) {
-          t.dependencies = t.dependencies.map((d) => (d === id ? replacementTaskId : d));
+          // Dedupe: a dependent that already listed BOTH the husk and the replacement
+          // would otherwise end up with the replacement twice (a duplicate edge).
+          t.dependencies = [...new Set(t.dependencies.map((d) => (d === id ? replacementTaskId : d)))];
           rewired.push(t.id);
         }
       }
@@ -972,6 +1221,116 @@ export class StateManager {
       next_task: nt ? { id: nt.id, title: nt.title } : null,
       next_task_blocked_reason: ctx.tasks_summary.next_task_blocked_reason,
     };
+  }
+
+  /**
+   * lint_state (ADR-004 §3): read-only consistency scan over tasks/project/logs/focus.
+   * The IO boundary — gathers raw + normalized data and an "expected" progress object
+   * (built by the SAME computeProgressObject the writer uses), then delegates to the
+   * pure runLint. Never mutates. `crossProject` suppresses machine-local checks
+   * (profiles / schema / etc.) when linting a foreign project read-only.
+   */
+  lintState(opts: { crossProject?: boolean } = {}): LintResult {
+    const tasksRaw = this.readJSON<TasksData>("tasks.json")?.tasks ?? [];
+    const tasks = this.getTasks()?.tasks ?? [];
+    const info = this.getProjectInfo();
+    return runLint({
+      tasksRaw,
+      tasks,
+      actualProgress: info?.progress ?? null,
+      expectedProgress: info ? this.computeProgressObject(tasks) : null,
+      projectStatus: info?.status ?? null,
+      schemaVersion: info?.schema_version ?? 0,
+      currentSchemaVersion: CURRENT_SCHEMA_VERSION,
+      logs: this.getLogs(),
+      focus: this.readJSON<CurrentFocus>("focus.json"),
+      validProfiles: loadProfileNames(),
+      crossProject: !!opts.crossProject,
+    });
+  }
+
+  /**
+   * reconcile (ADR-004 §3.4): apply ONLY the safe, deterministic auto-fixes for the
+   * current active project, audit each, and return what was fixed + what remains for
+   * a human. The auto-fix set is intentionally minimal:
+   *   - progress_drift     -> updateProjectProgress() (the existing single source of truth)
+   *   - self_dependency    -> drop the self edge, but ONLY on active tasks (never rewrite
+   *                           frozen terminal history)
+   * Everything else is reported as `remaining` (fix it via edit_task). Idempotent: a
+   * second run with no new drift fixes nothing. Active-project-only — there is no
+   * project_dir param (silent cross-project writes would break the ADR-003 contract).
+   */
+  reconcile(): {
+    fixed: { code: string; task_id: string | null; detail: string }[];
+    remaining: Finding[];
+  } {
+    const fixed: { code: string; task_id: string | null; detail: string }[] = [];
+    const { findings } = this.lintState();
+
+    // self_dependency: single-valued, deterministic (drop d === id). Skip terminal tasks.
+    const selfFixes = findings.filter((f) => f.code === "self_dependency");
+    if (selfFixes.length) {
+      const data = this.getTasks();
+      if (data) {
+        const applied: { id: string; ts: string }[] = [];
+        for (const f of selfFixes) {
+          const t = data.tasks.find((x) => x.id === f.task_id);
+          if (!t || ["done", "cancelled", "superseded"].includes(t.status)) continue;
+          if (!t.dependencies.includes(t.id)) continue;
+          t.dependencies = t.dependencies.filter((d) => d !== t.id);
+          t.updated_at = new Date().toISOString();
+          applied.push({ id: t.id, ts: t.updated_at });
+        }
+        // Save FIRST, then log — so a saveTasks failure never leaves orphan audit
+        // entries asserting a fix that did not land (matches updateTaskStatus/closeTask).
+        if (applied.length) {
+          this.saveTasks(data);
+          for (const a of applied) {
+            this.addLog({
+              timestamp: a.ts,
+              type: "reconcile",
+              kind: "ops_event",
+              event_type: "reconcile_self_dependency",
+              task_id: a.id,
+              from_status: null,
+              to_status: null,
+              entities: { removed_dependency: a.id },
+              source: "reconcile",
+              message: `reconcile: removed self-dependency on ${a.id}`,
+            });
+            fixed.push({ code: "self_dependency", task_id: a.id, detail: "removed self-dependency edge" });
+          }
+        }
+      }
+    }
+
+    // progress_drift: recompute via the audited single source of truth (only when drifted).
+    const prog = findings.find((f) => f.code === "progress_drift");
+    if (prog) {
+      const before = this.getProjectInfo()?.progress ?? null;
+      this.updateProjectProgress();
+      const after = this.getProjectInfo()?.progress ?? null;
+      this.addLog({
+        timestamp: new Date().toISOString(),
+        type: "reconcile",
+        kind: "ops_event",
+        event_type: "reconcile_progress_recompute",
+        task_id: null,
+        from_status: null,
+        to_status: null,
+        entities: {
+          before,
+          after,
+          drifted_fields: (prog.entities as Record<string, unknown> | undefined)?.drifted_fields,
+        },
+        source: "reconcile",
+        message: "reconcile: recomputed project.json.progress",
+      });
+      fixed.push({ code: "progress_drift", task_id: null, detail: "recomputed project.json.progress" });
+    }
+
+    // remaining = a fresh lint AFTER the safe fixes (manual items + anything left).
+    return { fixed, remaining: this.lintState().findings };
   }
 
   migrateTaskSchema(): {
