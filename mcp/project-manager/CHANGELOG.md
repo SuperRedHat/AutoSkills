@@ -2,6 +2,58 @@
 
 All notable changes to the project-manager MCP server.
 
+## [1.4.0] — 2026-06-09 — edit_task + lint_state / reconcile (metadata patch + L8 drift)
+
+Additive, backward-compatible. Adds a metadata-patch entry point (the one thing that
+forced hand-editing `tasks.json`) and the missing consistency layer (feedback **L8**:
+three sources of truth — tasks / logs / project meta — silently drifting). Design:
+`AutoSkills/docs/adr-004-edit-task-lint-state.md`. No `schema_version` bump.
+
+### Added
+- **`edit_task`** — partial metadata patch that **never touches status**. Editable: `title`,
+  `description`, `notes`, `acceptance_criteria`, `review_checklist`, `files`, `dependencies`,
+  `complexity`, `module`, `acceptance_mode`, `needs_manual_review`, `stage_gate`,
+  `verification_profile`, `verification_commands`. Rejected (routed to their owners):
+  `status` (→ update_task_status / close_task / reopen_task), `id`, `created_at`/`updated_at`,
+  `commit_hash`, and the audit-bypass fields `replacement_task_id`/`closed_at`/`close_reason`.
+  Enforced rules: editing `acceptance_mode` re-derives `needs_manual_review` (and a contradictory
+  pair is rejected); dependency edits validate existence / no-self / no-cycle / dedupe atomically;
+  `verification_profile` is checked against the external policy (parity with `create_tasks`); only
+  documentation fields are editable on a terminal task; no-op patches skip the write; writes a
+  `task_edited` audit log with per-field `from→to`. Active-project-only (no `project_dir`).
+- **`lint_state`** — **read-only** consistency scan (new `src/lint.ts`, 24 checks across
+  tasks / project.json / logs / focus): dependency-DAG (`dangling_dependency`, `self_dependency`,
+  `dependency_cycle`, `duplicate_task_id`, `runnable_dep_on_cancelled_deadend`,
+  `superseded_replacement_chain_broken`, `dep_on_superseded_husk_not_rewired`,
+  `duplicate_dependency_id`); close/supersede integrity (`superseded_missing_replacement`,
+  `replacement_target_missing`, `replacement_chain_cycle`, `stale_replacement_on_nonsuperseded`,
+  `stale_close_fields_on_nonterminal`, `terminal_missing_close_audit`); progress/meta
+  (**`progress_drift`** — `project.json.progress` vs a fresh recompute, the headline L8 case;
+  `project_status_vs_tasks_inconsistent`, `acceptance_fields_internal_contradiction`,
+  `unknown_status_value`, `schema_version_behind`, `unknown_verification_profile`); logs/focus
+  (`terminal_status_vs_last_log_drift`, `terminal_task_missing_close_log`,
+  `timestamp_monotonicity_violation`, `focus_related_task_missing`). Returns
+  `{ findings:[{code,severity,message,task_id?,entities?,autofixable?}], summary }`. Accepts an
+  optional `project_dir` for cross-project read-only lint (machine-local checks are suppressed).
+  Detection mirrors the engine's own `depSatisfied` / `endsCancelled` / `validateReplacement`
+  walks — a healthy `superseded → done` chain is never flagged.
+- **`reconcile`** — **active-project-only** writer that applies only the safe, deterministic
+  auto-fixes — `progress_drift` (via the existing `updateProjectProgress`) and `self_dependency`
+  (drop the self edge on active tasks only) — each with a `reconcile_*` audit log; everything else
+  is returned as `remaining` for `edit_task`. Idempotent. **Refuses `project_dir`** (a foreign-project
+  write would break the cross-project no-implicit-context contract; `set_project_dir` first).
+- New module `src/lint.ts` (pure `runLint`) + `StateManager.editTask` / `lintState` / `reconcile`,
+  and `computeProgressObject` (extracted single source of truth shared by the writer and `progress_drift`).
+
+### Compatibility
+- Fully backward compatible: no `schema_version` bump, no on-disk field added; legacy
+  `updateProjectProgress` output (5 legacy keys + 8 dual-rate) is byte-identical. Cross-project
+  lint is read-only; `reconcile` writes only the active project.
+
+### Deferred
+- Batch `edit_tasks`, `rename_task` (id change), reconcile field-clearing auto-fixes
+  (`stale_replacement` / `stale_close_fields` are reported only), cross-project `reconcile`.
+
 ## [1.3.0] — 2026-06-08 — cross-project / portfolio (read-only)
 
 Additive, backward-compatible. Addresses feedback L6 (module-global active project;

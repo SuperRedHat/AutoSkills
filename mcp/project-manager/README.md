@@ -42,6 +42,7 @@ npm run build
 - `update_task_status` — 更新任务状态（强制校验合法迁移路径）。前向状态机不变：`todo -> in_progress -> auto_verified -> {done | awaiting_manual_acceptance}`，`awaiting_manual_acceptance -> {done | in_progress}`。`done` 仍为需走完整验收的终态。该工具不再接受 `cancelled`/`superseded`，传入会被拒绝并提示改用 `close_task`
 - `close_task` — 受审计的管理旁路，把非终态任务关闭到 `cancelled` 或 `superseded`（不走前向状态机；反向恢复改用 `reopen_task`）。`cancelled` 需 `reason`；`superseded` 需 `reason` + `replacement_task_id`（校验存在/非自身/非已关闭/替代链无环）。写入一条 `task_closed` 审计日志（kind=task_transition，event_type=task_closed，source=close_task）。`superseded` 会把被关闭任务的每条下游依赖边改指向其替代任务（保持 DAG 可运行）；`cancelled` 若仍有下游依赖，会发出 `dependents_blocked_by_cancel` ops_event 以便控制器重新指向或关闭它们
 - `set_task_priority` — 调整单个任务的优先级（数字，越大越紧急）
+- `edit_task` — 编辑任务**元数据**（绝不碰 `status`）。可改 `title`/`description`/`notes`/`acceptance_criteria`/`review_checklist`/`files`/`dependencies`/`complexity`/`module`/`acceptance_mode`/`needs_manual_review`/`stage_gate`/`verification_profile`/`verification_commands`；`status` 请用 `update_task_status`/`close_task`/`reopen_task`，`id`/时间戳/`commit_hash`/`replacement_task_id`/`closed_at`/`close_reason` 不可改。改 `acceptance_mode` 会同步重算 `needs_manual_review`（矛盾对拒绝）；改 `dependencies` 校验存在/自环/环并去重（原子拒绝）；`verification_profile` 按外部策略校验（与 `create_tasks` 一致）；终态任务只许改纯文档字段；空改动跳过写入；写一条 `task_edited` 审计日志（per-field from→to）。仅作用于当前活动项目（不接 `project_dir`）——这是"改个 notes/依赖也得手搓 tasks.json"痛点的正解
 - `update_tasks` — 批量前向推进状态 `[{id, status, notes?}]`：逐项处理、允许部分成功，每项仍走完整的前向状态机校验；不接受 `cancelled`/`superseded`（改用 `close_tasks`）
 - `close_tasks` — `close_task` 的批量版本 `[{id, status, reason, replacement_task_id?}]`
 - `archive_module` — 归档整个模块：把该模块下所有非终态任务批量 `close_task` 到 `cancelled`，需 `reason`
@@ -63,6 +64,10 @@ npm run build
 ### 上下文恢复
 - `get_project_context` — 一次性返回完整项目上下文（向后兼容、增量扩展）。除原有内容外，现在还返回：完整的 `in_progress_tasks`；`tasks_summary.metrics`（`total_all`、`active_total`、`done`、`cancelled`、`superseded`、`closed_total`、`raw_completion_rate`、`active_completion_rate` 双速率指标）；`tasks_summary.next_task_blocked_reason`（none | all_done | blocked_in_progress | blocked_by_cancelled_dep）；`current_focus`（可能为 null，附 `is_stale`）；`schema_version`。新增可选参数：`context_mode`（build | ops | hybrid，仅为展示提示，不作为过滤或权限——各模式下任务集合完全一致）、`max_recent_events`、`include_full_in_progress`
 - `get_current_focus` / `set_current_focus` — 读取/写入单槽位的 ops 关注点快照，存储在 `.claude/state/focus.json`。这是辅助性的 ops 级状态、可能过期，并非任务状态；任务 status 仍是权威
+
+### 一致性检查 / 修复（lint，1.4.0+）
+- `lint_state` — **只读**一致性扫描（L8）：交叉核对 tasks / project.json / logs / focus 四处真相，返回 `{ findings:[{code, severity:error|warning|info, message, task_id?, entities?, autofixable?}], summary }`。共 24 个检查，分四族：依赖 DAG（dangling/self/cycle/重复 id/cancelled 死链/superseded 断链/husk 未改写/重复依赖）、close-supersede 字段完整性（superseded 缺替代/替代缺失/替代链环/非 superseded 残留替代/非终态残留 close 字段/终态缺 close 审计）、进度元信息（**`progress_drift`**＝`project.json.progress` 与重算不符，L8 头牌；status 与任务不符/acceptance 字段矛盾/未知 status/schema 落后/未知 profile）、日志-focus（status 与最近日志不符/终态缺 close 日志/时间戳逆序/focus 引用已删任务）。检测复用引擎自身的 `depSatisfied`/`endsCancelled`/`validateReplacement` 走法——健康的 `superseded → done` 链不会误报。可接 `project_dir` 跨项目只读巡检（机器本地检查如 schema/profile 自动抑制）。纯读不改。
+- `reconcile` — **仅当前活动项目**的安全确定性自动修复：只修 `progress_drift`（调既有 `updateProjectProgress` 重算）与 `self_dependency`（去自环，跳过终态任务），各写一条 `reconcile_*` 审计日志；其余 findings 原样作为 `remaining` 返回，交由 `edit_task` 手修。幂等。**拒绝 `project_dir`**（写另一项目会破坏跨项目"无隐式上下文"契约——请先 `set_project_dir` 切过去）。
 
 ### 迁移
 - `migrate_tasks_schema` — v0 -> v1 迁移，幂等；从不改动任务 status，回填日志的 `kind`/`event_type`，并写入 `schema_version=1`

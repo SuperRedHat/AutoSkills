@@ -59,4 +59,19 @@ describe("persisted dual-rate progress", () => {
     expect(p.raw_completion_rate).toBe(1);
     expect(p.active_completion_rate).toBe(1);
   });
+
+  it("legacy in_progress counts in_progress + auto_verified (characterization lock)", () => {
+    const sm = new StateManager(emptyProject());
+    seedProject(sm);
+    sm.createTasks([
+      mkTask({ id: "I", status: "in_progress" }),
+      mkTask({ id: "V", status: "auto_verified" }),
+      mkTask({ id: "W", status: "awaiting_manual_acceptance" }),
+      mkTask({ id: "T", status: "todo" }),
+    ]);
+    const p = sm.getProjectInfo()!.progress;
+    expect(p.in_progress).toBe(2); // in_progress + auto_verified, NOT just in_progress
+    expect(p.awaiting_acceptance).toBe(1);
+    expect(p.todo).toBe(1);
+  });
 });
