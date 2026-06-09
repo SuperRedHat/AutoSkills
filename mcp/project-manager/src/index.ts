@@ -748,11 +748,62 @@ server.tool(
 
 server.tool(
   "reconcile",
-  "对当前活动项目应用安全确定性自动修复（L8）：仅修 progress_drift（调既有 updateProjectProgress 重算 project.json.progress）+ self_dependency（去自环，跳过终态任务），各写一条 reconcile_* 审计日志；其余 findings 原样作为 remaining 返回，请用 edit_task 手修。幂等。不接 project_dir（写只动活动项目；要修别的项目请先 set_project_dir 切过去）。",
-  {},
-  async () => {
-    const r = state.reconcile();
-    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  "应用安全确定性自动修复（L8）：修 progress_drift + self_dependency + active task 的 stale_close_fields/stale_replacement（跳终态、逐条 reconcile_* 审计、幂等）；其余 findings 作为 remaining 返回，请用 edit_task 手修。默认只动当前活动项目。可接 project_dir：解析为当前活动项目时照常 apply；解析为 foreign 项目时**只返回 dry-run/fix-plan（不落盘）**——要真正修别的项目请先 set_project_dir 切过去（对 foreign 传 apply:true 或 dry_run:false 会被拒，返回 cross_project_apply_requires_set_project_dir + resolved_project_dir）。",
+  {
+    project_dir: PROJECT_DIR_PARAM,
+    apply: z
+      .boolean()
+      .optional()
+      .describe("对 foreign 项目强制落盘（会被拒，提示先 set_project_dir）；活动项目恒落盘，可省"),
+    dry_run: z
+      .boolean()
+      .optional()
+      .describe("显式 dry_run；foreign 默认即 dry-run，对 foreign 传 false 强制落盘会被拒"),
+  },
+  async ({ project_dir, apply, dry_run }) => {
+    const sel = selectState(project_dir);
+    if (!sel.ok) return selErr(sel);
+    if (sel.active) {
+      // Active project (no project_dir, or a project_dir canonically equal to it): apply.
+      const r = sel.state.reconcile();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ mode: "applied", resolved_project_dir: sel.resolved, ...r }, null, 2),
+          },
+        ],
+      };
+    }
+    // Foreign project: dry-run only. An explicit request to write it is refused —
+    // writes must go through the active project (set_project_dir first).
+    if (apply === true || dry_run === false) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                error: "cross_project_apply_requires_set_project_dir",
+                message: `reconcile will not write a foreign project. Run set_project_dir("${sel.resolved}") to make it active, then reconcile.`,
+                resolved_project_dir: sel.resolved,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    const plan = sel.state.reconcilePlan();
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ mode: "dry_run", resolved_project_dir: sel.resolved, ...plan }, null, 2),
+        },
+      ],
+    };
   }
 );
 

@@ -1539,6 +1539,20 @@ export class StateManager {
     return { fixed, remaining: this.lintState().findings };
   }
 
+  /**
+   * Read-only reconcile plan (PM-604 cross-project dry-run): the findings reconcile
+   * WOULD auto-fix, plus what would remain — WITHOUT writing anything. Lets a foreign
+   * project's reconcile be previewed without violating the ADR-003/004 contract that
+   * writes only ever touch the active project.
+   */
+  reconcilePlan(): { fixable: Finding[]; remaining: Finding[] } {
+    const all = this.lintState().findings;
+    return {
+      fixable: all.filter((f) => f.autofixable),
+      remaining: all.filter((f) => !f.autofixable),
+    };
+  }
+
   migrateTaskSchema(): {
     migrated: number;
     logs_migrated: number;

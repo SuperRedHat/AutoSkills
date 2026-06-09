@@ -1340,6 +1340,33 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-603 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
+    },
+    {
+      "timestamp": "2026-06-09T22:41:54.931Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-604",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-604 todo → in_progress: 主控直接实现。reconcile 工具接 project_dir：active→apply；foreign→dry-run/fix-plan(不落盘)；foreign+apply/dry_run=false→cross_project_apply_requires_set_project_dir。复用 selectState 的 active 标志 + selErr。state 加只读 reconcilePlan()。"
+    },
+    {
+      "timestamp": "2026-06-09T22:44:30.926Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-604",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-604 in_progress → auto_verified: 主控直接实现+自验。reconcile 工具接 project_dir + apply/dry_run：active→reconcile() apply；foreign→reconcilePlan() dry-run/fix-plan 不落盘；foreign+apply:true/dry_run:false→结构化错误 cross_project_apply_requires_set_project_dir + resolved_project_dir。复用 selectState 的 active 标志 + selErr(not_a_project/state_unreadable)。state 加只读 reconcilePlan()(fixable/remaining 分类、零写入)。build(tsc)干净 + 24 文件/142 测试全过(新 3 个 cross_project_reconcile：dry-run 不写、foreign 只读、not_a_project guard)；reconcile/cross_project 现有用例零回归。"
+    },
+    {
+      "timestamp": "2026-06-09T22:44:37.264Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-604",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-604 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
     }
   ]
 }
