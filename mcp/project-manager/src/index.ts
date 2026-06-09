@@ -98,9 +98,20 @@ const PROJECT_DIR_PARAM = z
     "可选：跨项目只读，定位另一个项目（含 .claude/state 的目录）；不传=当前活动项目，且不会切换活动项目"
   );
 
+// Self-reported MCP server version — read from package.json so the handshake never
+// drifts from the real release (falls back to a literal if the file can't be read).
+let pkgVersion = "1.4.0";
+try {
+  pkgVersion = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")
+  ).version;
+} catch {
+  // keep the fallback
+}
+
 const server = new McpServer({
   name: "project-manager",
-  version: "1.0.0",
+  version: pkgVersion,
 });
 
 // ==================== Set Project Directory ====================
