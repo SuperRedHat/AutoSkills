@@ -1588,11 +1588,11 @@
       ],
       "stage_gate": true,
       "priority": 0,
-      "status": "awaiting_manual_acceptance",
+      "status": "done",
       "created_at": "2026-06-09T20:34:43.420Z",
-      "updated_at": "2026-06-09T23:12:54.210Z",
+      "updated_at": "2026-06-09T23:16:06.827Z",
       "commit_hash": "",
-      "notes": "acceptance_mode=milestone_manual + stage_gate=true → v1.5.0 发版里程碑 gate，等用户最终验收。验收要点见 review_checklist。",
+      "notes": "用户「验收通过，v1.5.0 完成」= milestone_manual + stage_gate 人工验收通过。v1.5.0(ADR-005) 发布。",
       "replacement_task_id": null
     }
   ]

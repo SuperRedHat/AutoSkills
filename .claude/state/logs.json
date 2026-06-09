@@ -1430,6 +1430,32 @@
       "from_status": "auto_verified",
       "to_status": "awaiting_manual_acceptance",
       "message": "PM-606 auto_verified → awaiting_manual_acceptance: acceptance_mode=milestone_manual + stage_gate=true → v1.5.0 发版里程碑 gate，等用户最终验收。验收要点见 review_checklist。"
+    },
+    {
+      "timestamp": "2026-06-09T23:16:06.858Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-606",
+      "from_status": "awaiting_manual_acceptance",
+      "to_status": "done",
+      "message": "PM-606 awaiting_manual_acceptance → done: 用户「验收通过，v1.5.0 完成」= milestone_manual + stage_gate 人工验收通过。v1.5.0(ADR-005) 发布。"
+    },
+    {
+      "timestamp": "2026-06-09T23:16:21.505Z",
+      "type": "note",
+      "kind": "note",
+      "event_type": "release_closeout",
+      "tags": [
+        "pm-v150",
+        "release",
+        "v1.5.0",
+        "adr-005"
+      ],
+      "source": "project-next",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "[收口 2026-06-10] project-manager v1.5.0 (ADR-005) 完成并发布。4 项能力：edit_tasks 批量元数据补丁 + rename_task(改 id + 级联改写 deps/replacement/focus，logs 不可变 + 全局后置校验 abort 不部分写) + reconcile 字段清理 autofix(仅 active 任务 stale_close_fields/stale_replacement) + 跨项目 reconcile dry-run/fix-plan(foreign 不落盘，apply 须 set_project_dir)。PM-601(抽公共 helper)→606 分模块实现+逐任务验证。全程主控 Claude 本地执行(应用户要求，无 codex 委派)；多轮 Claude 对抗审查(计划审计 3-agent / rename_task 专项 2-agent correctness-clean / 发版终审 2-agent)findings 全修(含 reconcilePlan over-promise→RECONCILE_AUTOFIX_CODES 单一真相源+守护测试)。25 文件/152 测试全过，不 bump schema_version(仍 1)。已部署 v1.5.0 到 ~/.claude/mcp-project-manager(备份 dist.bak-v140，验证新工具)。文档：ADR-005 Accepted、ADR-004 §7 resolved+13→14 勘误、CHANGELOG/README 更新(lint 检查数 24→25 勘误)。期间顺带：①.council/ 入 gitignore；②CouncilFlow 升 0.2.0 加 controller sentinel(roles.<x>:controller 跟随当前主控本地执行、不起 sidecar，默认模板改为 controller，对 codex/claude/gemini 对称，commit 4786157)。下次新窗口 /project-resume 衔接。"
     }
   ]
 }
