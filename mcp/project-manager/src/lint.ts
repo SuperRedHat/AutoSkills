@@ -307,6 +307,9 @@ export function runLint(b: LintBundle): LintResult {
         task_id: t.id,
         message: `Task ${t.id} (status ${t.status}) carries a stale replacement_task_id "${t.replacement_task_id}" — only superseded tasks should.`,
         entities: { stale_replacement_task_id: t.replacement_task_id, status: t.status },
+        // autofixable only on ACTIVE tasks — clearing the pointer on a done/cancelled
+        // task would rewrite frozen terminal history (PM-603 / ADR-005 §5).
+        autofixable: ACTIVE.includes(t.status),
       });
     }
     const hasCloseFields = t.closed_at != null || (t.close_reason != null && String(t.close_reason).trim() !== "");
@@ -317,6 +320,8 @@ export function runLint(b: LintBundle): LintResult {
         task_id: t.id,
         message: `Active task ${t.id} (status ${t.status}) still has close fields (closed_at/close_reason) — leftover from an un-audited reactivation.`,
         entities: { stale_closed_at: t.closed_at ?? null, stale_close_reason: t.close_reason ?? null },
+        // only fires on ACTIVE tasks (guarded above) -> always safe to auto-clear.
+        autofixable: true,
       });
     }
     if (

@@ -1447,6 +1447,94 @@ export class StateManager {
       fixed.push({ code: "progress_drift", task_id: null, detail: "recomputed project.json.progress" });
     }
 
+    // stale_close_fields_on_nonterminal: clear closed_at/close_reason on ACTIVE tasks
+    // (leftover from an un-audited reactivation). autofixable is set only for active
+    // tasks; the terminal guard below is belt-and-suspenders so terminal history is
+    // never rewritten. Save FIRST, then log (no orphan audit on a failed save).
+    const closeFieldFixes = findings.filter(
+      (f) => f.code === "stale_close_fields_on_nonterminal" && f.autofixable
+    );
+    if (closeFieldFixes.length) {
+      const data = this.getTasks();
+      if (data) {
+        const applied: { id: string; ts: string }[] = [];
+        for (const f of closeFieldFixes) {
+          const t = data.tasks.find((x) => x.id === f.task_id);
+          if (!t || ["done", "cancelled", "superseded"].includes(t.status)) continue;
+          if (t.closed_at == null && !(t.close_reason && String(t.close_reason).trim())) continue;
+          t.closed_at = null;
+          t.close_reason = null;
+          t.updated_at = new Date().toISOString();
+          applied.push({ id: t.id, ts: t.updated_at });
+        }
+        if (applied.length) {
+          this.saveTasks(data);
+          for (const a of applied) {
+            this.addLog({
+              timestamp: a.ts,
+              type: "reconcile",
+              kind: "ops_event",
+              event_type: "reconcile_stale_close_fields_clear",
+              task_id: a.id,
+              from_status: null,
+              to_status: null,
+              entities: { cleared: ["closed_at", "close_reason"] },
+              source: "reconcile",
+              message: `reconcile: cleared stale close fields on active task ${a.id}`,
+            });
+            fixed.push({
+              code: "stale_close_fields_on_nonterminal",
+              task_id: a.id,
+              detail: "cleared closed_at/close_reason",
+            });
+          }
+        }
+      }
+    }
+
+    // stale_replacement_on_nonsuperseded: clear replacement_task_id on ACTIVE tasks
+    // only (autofixable guards this; terminal done/cancelled keep their stale pointer
+    // as report-only — frozen history). Save FIRST, then log.
+    const replFixes = findings.filter(
+      (f) => f.code === "stale_replacement_on_nonsuperseded" && f.autofixable
+    );
+    if (replFixes.length) {
+      const data = this.getTasks();
+      if (data) {
+        const applied: { id: string; ts: string }[] = [];
+        for (const f of replFixes) {
+          const t = data.tasks.find((x) => x.id === f.task_id);
+          if (!t || ["done", "cancelled", "superseded"].includes(t.status)) continue;
+          if (t.replacement_task_id == null) continue;
+          t.replacement_task_id = null;
+          t.updated_at = new Date().toISOString();
+          applied.push({ id: t.id, ts: t.updated_at });
+        }
+        if (applied.length) {
+          this.saveTasks(data);
+          for (const a of applied) {
+            this.addLog({
+              timestamp: a.ts,
+              type: "reconcile",
+              kind: "ops_event",
+              event_type: "reconcile_stale_replacement_clear",
+              task_id: a.id,
+              from_status: null,
+              to_status: null,
+              entities: { cleared: "replacement_task_id" },
+              source: "reconcile",
+              message: `reconcile: cleared stale replacement_task_id on active task ${a.id}`,
+            });
+            fixed.push({
+              code: "stale_replacement_on_nonsuperseded",
+              task_id: a.id,
+              detail: "cleared replacement_task_id",
+            });
+          }
+        }
+      }
+    }
+
     // remaining = a fresh lint AFTER the safe fixes (manual items + anything left).
     return { fixed, remaining: this.lintState().findings };
   }

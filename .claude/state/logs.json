@@ -1313,6 +1313,33 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-602 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
+    },
+    {
+      "timestamp": "2026-06-09T22:37:53.278Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-603",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-603 todo → in_progress: 主控直接实现。lint 给 active task 的 stale_close_fields/stale_replacement 标 autofixable；reconcile 仅清 active task 这些字段(跳终态、不改 status)，各写 reconcile_stale_*_clear 审计，幂等。"
+    },
+    {
+      "timestamp": "2026-06-09T22:40:47.715Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-603",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-603 in_progress → auto_verified: 主控直接实现+自验。lint 给 active task 的 stale_close_fields/stale_replacement 标 autofixable(terminal stale_replacement 标 false)；reconcile 两个 fix-block 仅清 active task 的 closed_at/close_reason + replacement_task_id，跳终态、不改 status、save-first-then-log、各写 reconcile_stale_*_clear 审计、幂等。build(tsc)干净 + 23 文件/139 测试全过(新 4 个 reconcile_field_cleanup)；reconcile/lint_state 现有用例零回归。"
+    },
+    {
+      "timestamp": "2026-06-09T22:40:51.055Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-603",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-603 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
     }
   ]
 }

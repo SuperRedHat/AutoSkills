@@ -1447,11 +1447,11 @@
       "review_checklist": [],
       "stage_gate": false,
       "priority": 0,
-      "status": "todo",
+      "status": "done",
       "created_at": "2026-06-09T20:34:43.420Z",
-      "updated_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T22:40:51.023Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "acceptance_mode=auto → 自动验收通过，done。",
       "replacement_task_id": null
     },
     {
