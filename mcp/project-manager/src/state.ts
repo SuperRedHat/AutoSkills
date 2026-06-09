@@ -466,6 +466,50 @@ export class StateManager {
     const task = data.tasks.find((t) => t.id === id);
     if (!task) return { success: false, error: `Task ${id} not found` };
 
+    const prepared = this.prepareTaskEdit(task, patch, data.tasks);
+    if (!prepared.success) return { success: false, error: prepared.error };
+
+    // No-op patch (every resolved value already current): skip the write and the log.
+    if (prepared.changes.length === 0) {
+      return { success: true, task_id: id, changed_fields: [], noop: true };
+    }
+
+    // ----- apply atomically + audit -----
+    this.applyPreparedTaskEdit(task, prepared.changes);
+    this.saveTasks(data);
+
+    this.addLog({
+      timestamp: task.updated_at,
+      type: "task_edited",
+      kind: "ops_event",
+      event_type: "task_edited",
+      task_id: id,
+      from_status: null,
+      to_status: null,
+      entities: { changes: prepared.changes },
+      source: "edit_task",
+      message: `${id} edited: ${prepared.changes.map((c) => c.field).join(", ")}`,
+    });
+
+    return { success: true, task_id: id, changed_fields: prepared.changes.map((c) => c.field) };
+  }
+
+  /**
+   * Validate an edit patch against a task and compute the resulting field changes,
+   * WITHOUT mutating, saving, or logging. Pure decision logic shared by edit_task and
+   * the edit_tasks batch: field whitelist (14 editable keys), terminal-task doc-only
+   * rule, per-field type/enum checks, E2 acceptance_mode<->needs_manual_review coupling,
+   * E3 dependency existence/self/cycle/dedupe, and the final diff. Returns an error OR
+   * the changes array (empty array = no-op). `allTasks` is the full task set used for
+   * dependency existence / cycle checks.
+   */
+  private prepareTaskEdit(
+    task: Task,
+    patch: TaskEditPatch,
+    allTasks: Task[]
+  ):
+    | { success: false; error: string }
+    | { success: true; changes: { field: string; from: unknown; to: unknown }[] } {
     const p = patch as Record<string, unknown>;
     const provided = Object.keys(p).filter((k) => p[k] !== undefined);
 
@@ -489,7 +533,7 @@ export class StateManager {
       if (blocked.length) {
         return {
           success: false,
-          error: `Task ${id} is terminal (${task.status}); only documentation fields (${DOC_FIELDS.join(", ")}) are editable on a closed task. Rejected: ${blocked.join(", ")}.`,
+          error: `Task ${task.id} is terminal (${task.status}); only documentation fields (${DOC_FIELDS.join(", ")}) are editable on a closed task. Rejected: ${blocked.join(", ")}.`,
         };
       }
     }
@@ -548,10 +592,10 @@ export class StateManager {
         return { success: false, error: "dependencies must be an array of task ids." };
       }
       normalizedDeps = [...new Set(patch.dependencies)];
-      if (normalizedDeps.includes(id)) {
-        return { success: false, error: `dependencies cannot include the task itself (${id}).` };
+      if (normalizedDeps.includes(task.id)) {
+        return { success: false, error: `dependencies cannot include the task itself (${task.id}).` };
       }
-      const byId = new Map(data.tasks.map((t) => [t.id, t]));
+      const byId = new Map(allTasks.map((t) => [t.id, t]));
       const missing = normalizedDeps.filter((d) => !byId.has(d));
       if (missing.length) {
         return {
@@ -573,7 +617,7 @@ export class StateManager {
         }
         return false;
       };
-      const cyclic = normalizedDeps.filter((d) => reaches(d, id));
+      const cyclic = normalizedDeps.filter((d) => reaches(d, task.id));
       if (cyclic.length) {
         return {
           success: false,
@@ -604,29 +648,20 @@ export class StateManager {
       const after = next[k];
       if (!eq(before, after)) changes.push({ field: k, from: before, to: after });
     }
-    if (changes.length === 0) {
-      return { success: true, task_id: id, changed_fields: [], noop: true };
-    }
+    return { success: true, changes };
+  }
 
-    // ----- apply atomically + audit -----
+  /**
+   * Apply a prepared edit's changes to the task in place and stamp `updated_at`. The
+   * caller owns saveTasks + the audit log (edit_task uses source="edit_task";
+   * edit_tasks will use source="edit_tasks").
+   */
+  private applyPreparedTaskEdit(
+    task: Task,
+    changes: { field: string; from: unknown; to: unknown }[]
+  ): void {
     for (const c of changes) (task as unknown as Record<string, unknown>)[c.field] = c.to;
     task.updated_at = new Date().toISOString();
-    this.saveTasks(data);
-
-    this.addLog({
-      timestamp: task.updated_at,
-      type: "task_edited",
-      kind: "ops_event",
-      event_type: "task_edited",
-      task_id: id,
-      from_status: null,
-      to_status: null,
-      entities: { changes },
-      source: "edit_task",
-      message: `${id} edited: ${changes.map((c) => c.field).join(", ")}`,
-    });
-
-    return { success: true, task_id: id, changed_fields: changes.map((c) => c.field) };
   }
 
   /**
@@ -867,16 +902,8 @@ export class StateManager {
       task.replacement_task_id = replacementTaskId;
       // Rewrite dependents to point at the replacement so the DAG stays runnable
       // (the work moved; dependents should now wait on the replacement, not the husk).
-      // The `&& replacementTaskId` guard also narrows the type — no cast needed
-      // (superseded already validated replacementTaskId is present, above).
-      for (const t of data.tasks) {
-        if (t.id !== id && t.dependencies.includes(id)) {
-          // Dedupe: a dependent that already listed BOTH the husk and the replacement
-          // would otherwise end up with the replacement twice (a duplicate edge).
-          t.dependencies = [...new Set(t.dependencies.map((d) => (d === id ? replacementTaskId : d)))];
-          rewired.push(t.id);
-        }
-      }
+      // The shared rewrite helper skips the husk itself and dedupes.
+      rewired.push(...this.rewriteDependencyEdges(data.tasks, id, replacementTaskId, { skipId: id }));
     }
 
     this.saveTasks(data);
@@ -921,7 +948,39 @@ export class StateManager {
     return { success: true, task_id: id, affected_dependents, rewired };
   }
 
-  private validateReplacement(
+  /**
+   * Rewrite every `dependencies[]` edge pointing at `fromId` to `toId` across all
+   * tasks (optionally skipping one id, e.g. the husk being superseded / the task being
+   * renamed), de-duplicating so a dependent that listed BOTH ends with a single edge.
+   * Mutates the passed task objects in place; performs no save/log. Returns the ids of
+   * tasks whose dependency list changed.
+   * (Extracted from close_task's superseded dependents-rewrite; reused by rename_task.)
+   */
+  private rewriteDependencyEdges(
+    tasks: Task[],
+    fromId: string,
+    toId: string,
+    opts?: { skipId?: string }
+  ): string[] {
+    const rewired: string[] = [];
+    for (const t of tasks) {
+      if (opts?.skipId !== undefined && t.id === opts.skipId) continue;
+      if (!t.dependencies.includes(fromId)) continue;
+      t.dependencies = [...new Set(t.dependencies.map((d) => (d === fromId ? toId : d)))];
+      rewired.push(t.id);
+    }
+    return rewired;
+  }
+
+  /**
+   * Structural replacement-graph check shared by close_task (via validateReplacement)
+   * and rename_task: the replacement is not the source itself, the target exists, and
+   * the replacement chain from it does not cycle back to the source. Does NOT enforce
+   * the close-time "target must be active" rule — rename_task must accept a chain that
+   * legitimately terminates in a done/active task.
+   * (Extracted from validateReplacement so rename_task can reuse exists/non-self/no-cycle.)
+   */
+  private validateReplacementGraph(
     sourceId: string,
     replacementId: string,
     tasks: Task[]
@@ -929,15 +988,8 @@ export class StateManager {
     if (replacementId === sourceId) {
       return { valid: false, error: "replacement_task_id cannot be the task itself." };
     }
-    const target = tasks.find((t) => t.id === replacementId);
-    if (!target) {
+    if (!tasks.find((t) => t.id === replacementId)) {
       return { valid: false, error: `replacement_task_id ${replacementId} does not exist.` };
-    }
-    if (["cancelled", "superseded", "done"].includes(target.status)) {
-      return {
-        valid: false,
-        error: `replacement_task_id ${replacementId} is terminal (${target.status}); a replacement must be an active task. If the work is already complete, cancel the source instead of superseding it.`,
-      };
     }
     // Cycle check: follow the replacement chain from the target; reaching the
     // source means closing it would form a cycle.
@@ -952,6 +1004,31 @@ export class StateManager {
       cursor = next?.replacement_task_id ?? null;
     }
     return { valid: true };
+  }
+
+  private validateReplacement(
+    sourceId: string,
+    replacementId: string,
+    tasks: Task[]
+  ): { valid: boolean; error?: string } {
+    // Preserve the original error precedence (self -> exists -> terminal -> cycle):
+    // run the close-time "must be active" check before delegating the structural
+    // self/exists/cycle checks to the shared graph validator. self/exists are cheap
+    // and re-run inside the graph check; terminal is still reported before any cycle.
+    if (replacementId === sourceId) {
+      return { valid: false, error: "replacement_task_id cannot be the task itself." };
+    }
+    const target = tasks.find((t) => t.id === replacementId);
+    if (!target) {
+      return { valid: false, error: `replacement_task_id ${replacementId} does not exist.` };
+    }
+    if (["cancelled", "superseded", "done"].includes(target.status)) {
+      return {
+        valid: false,
+        error: `replacement_task_id ${replacementId} is terminal (${target.status}); a replacement must be an active task. If the work is already complete, cancel the source instead of superseding it.`,
+      };
+    }
+    return this.validateReplacementGraph(sourceId, replacementId, tasks);
   }
 
   getAllTasks(filter?: { status?: Task["status"] }): Task[] {

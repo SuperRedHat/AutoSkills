@@ -1259,6 +1259,33 @@
       },
       "source": "edit_task",
       "message": "PM-606 edited: review_checklist"
+    },
+    {
+      "timestamp": "2026-06-09T21:00:33.525Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-601",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-601 todo → in_progress: 主控直接实现（用户指定，本会话 Claude 本地执行，非 council 委派）。纯重构：抽 edit 校验/应用 helper + 引用 rewrite helper + replacement graph 公共校验，零行为变更。"
+    },
+    {
+      "timestamp": "2026-06-09T21:11:03.045Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-601",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-601 in_progress → auto_verified: 主控直接实现+自验(用户指定本地执行)。抽出 3 个私有 helper：prepareTaskEdit/applyPreparedTaskEdit(editTask 复用，行为不变)、rewriteDependencyEdges(closeTask superseded rewrite 复用)、validateReplacementGraph(validateReplacement 复用，terminal-before-cycle 错误优先级原样保留)。tester：build(tsc)干净 + 21 文件/128 测试全过，零回归。reviewer：AC1-5 全满足，仅 state.ts +121/-44，schema_version 仍 1，无新增 on-disk 字段。"
+    },
+    {
+      "timestamp": "2026-06-09T21:11:06.332Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-601",
+      "from_status": "auto_verified",
+      "to_status": "done",
+      "message": "PM-601 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
     }
   ]
 }
