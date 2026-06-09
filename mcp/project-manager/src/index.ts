@@ -807,6 +807,19 @@ server.tool(
   }
 );
 
+server.tool(
+  "rename_task",
+  "重命名任务 id 并级联改写所有引用（dependencies[]/replacement_task_id/focus.related_task_ids，去重）。old_id 必须存在；new_id 非空且不与现有 id 冲突；old_id===new_id 为成功 noop。落盘前做全局后置校验（无重复 id / dangling / self / 依赖环 / replacement 缺失或成环），失败则整体拒绝、不部分写入。logs 不可变，仅追加一条 task_renamed 审计（含 old_id/new_id/rewired 计数/focus_rewritten/logs_preserved）。终态任务可 rename（不改 status/closed_at/close_reason）。仅作用于当前活动项目（不接 project_dir）。",
+  {
+    old_id: z.string().describe("现有任务 id"),
+    new_id: z.string().describe("新任务 id（非空、不与现有 id 冲突）"),
+  },
+  async ({ old_id, new_id }) => {
+    const r = state.renameTask(old_id, new_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
 // ==================== Logs ====================
 
 server.tool(

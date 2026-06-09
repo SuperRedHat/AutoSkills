@@ -706,6 +706,157 @@ export class StateManager {
   }
 
   /**
+   * rename_task (ADR-005 §2): change a task's id and cascade-rewrite every reference
+   * to it across the active project — dependencies[], replacement_task_id, and
+   * focus.related_task_ids (deduped). Logs are immutable (kept verbatim); a single
+   * task_renamed ops_event is appended. The whole graph is validated AFTER the
+   * rewrite and the rename ABORTS with no partial write on any breakage. NEVER
+   * changes status / closed_at / close_reason; a terminal task may be renamed
+   * (identity maintenance, not a transition). old_id===new_id is a success no-op.
+   * Active-project-only (no project_dir).
+   */
+  renameTask(
+    oldId: string,
+    newId: string
+  ): {
+    success: boolean;
+    error?: string;
+    task_id?: string;
+    noop?: boolean;
+    rewired_dependencies?: string[];
+    rewired_replacements?: string[];
+    focus_rewritten?: boolean;
+  } {
+    const data = this.getTasks();
+    if (!data) return { success: false, error: "No tasks found" };
+    if (!newId || !newId.trim()) {
+      return { success: false, error: "rename_task requires a non-empty new_id." };
+    }
+    const target = data.tasks.find((t) => t.id === oldId);
+    if (!target) return { success: false, error: `Task ${oldId} not found.` };
+    if (oldId === newId) {
+      // identity unchanged — success no-op, no rewrite, no audit (mirrors edit_task).
+      return { success: true, task_id: oldId, noop: true };
+    }
+    if (data.tasks.some((t) => t.id === newId)) {
+      return { success: false, error: `new_id ${newId} already exists — choose a unique id.` };
+    }
+
+    // ----- rewrite in memory (data is a fresh read; nothing hits disk until saveTasks) -----
+    const ts = new Date().toISOString();
+    target.id = newId;
+    target.updated_at = ts;
+    const rewired_dependencies = this.rewriteDependencyEdges(data.tasks, oldId, newId);
+    const rewired_replacements: string[] = [];
+    for (const t of data.tasks) {
+      if (t.replacement_task_id === oldId) {
+        t.replacement_task_id = newId;
+        rewired_replacements.push(t.id);
+      }
+    }
+    const focus = this.readJSON<CurrentFocus>("focus.json");
+    let focus_rewritten = false;
+    if (focus && Array.isArray(focus.related_task_ids) && focus.related_task_ids.includes(oldId)) {
+      focus.related_task_ids = [
+        ...new Set(focus.related_task_ids.map((r) => (r === oldId ? newId : r))),
+      ];
+      focus_rewritten = true;
+    }
+
+    // ----- post-transform whole-graph validation: abort with NO partial write -----
+    const graphError = this.validateTaskGraph(data.tasks);
+    if (graphError) {
+      return {
+        success: false,
+        error: `rename_task aborted (would corrupt the task graph): ${graphError}`,
+      };
+    }
+
+    // ----- persist tasks (+ focus), then audit. logs stay immutable. -----
+    this.saveTasks(data);
+    if (focus_rewritten && focus) this.writeJSON("focus.json", focus);
+    this.addLog({
+      timestamp: ts,
+      type: "task_renamed",
+      kind: "ops_event",
+      event_type: "task_renamed",
+      task_id: newId,
+      from_status: null,
+      to_status: null,
+      entities: {
+        old_id: oldId,
+        new_id: newId,
+        rewired_dependencies,
+        rewired_replacements,
+        focus_rewritten,
+        logs_preserved: true,
+      },
+      source: "rename_task",
+      message: `Renamed ${oldId} → ${newId} (deps rewired: ${rewired_dependencies.length}, replacements rewired: ${rewired_replacements.length}${focus_rewritten ? ", focus rewritten" : ""})`,
+    });
+    return {
+      success: true,
+      task_id: newId,
+      rewired_dependencies,
+      rewired_replacements,
+      focus_rewritten,
+    };
+  }
+
+  /**
+   * Whole-graph integrity check used as rename_task's post-transform guard: no
+   * duplicate id, no dangling/self dependency, no dependency cycle, and every
+   * replacement_task_id resolves with no self/cycle (reuses validateReplacementGraph).
+   * Returns the first problem found, or null when the graph is sound.
+   */
+  private validateTaskGraph(tasks: Task[]): string | null {
+    const ids = tasks.map((t) => t.id);
+    for (let i = 0; i < ids.length; i++) {
+      if (ids.indexOf(ids[i]) !== i) return `duplicate task id "${ids[i]}"`;
+    }
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    for (const t of tasks) {
+      for (const d of t.dependencies) {
+        if (d === t.id) return `task ${t.id} depends on itself`;
+        if (!byId.has(d)) return `task ${t.id} has a dangling dependency "${d}"`;
+      }
+    }
+    // dependency cycle (DFS over dependency edges; a GRAY back-edge is a cycle)
+    const WHITE = 0, GRAY = 1, BLACK = 2;
+    const color = new Map<string, number>();
+    const visit = (id: string): string | null => {
+      color.set(id, GRAY);
+      const t = byId.get(id);
+      if (t) {
+        for (const d of t.dependencies) {
+          const c = color.get(d) ?? WHITE;
+          if (c === GRAY) return `dependency cycle at ${d}`;
+          if (c === WHITE) {
+            const r = visit(d);
+            if (r) return r;
+          }
+        }
+      }
+      color.set(id, BLACK);
+      return null;
+    };
+    for (const t of tasks) {
+      if ((color.get(t.id) ?? WHITE) === WHITE) {
+        const r = visit(t.id);
+        if (r) return r;
+      }
+    }
+    // replacement integrity (exists / non-self / no cycle)
+    for (const t of tasks) {
+      if (t.replacement_task_id != null) {
+        const g = this.validateReplacementGraph(t.id, t.replacement_task_id, tasks);
+        if (!g.valid) return g.error ?? `invalid replacement on ${t.id}`;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Audited reverse of close_task: bring a TERMINAL task (done/cancelled/superseded)
    * back to an active state. Management bypass — does not use VALID_TRANSITIONS.
    * Reopening a superseded task clears its replacement_task_id, but the dependents

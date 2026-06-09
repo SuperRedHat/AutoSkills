@@ -1,7 +1,7 @@
 {
   "name": "project-manager ops/管理能力优化 (ADR-001)",
   "created_at": "2026-06-08T12:03:25.266Z",
-  "updated_at": "2026-06-09T22:44:37.264Z",
+  "updated_at": "2026-06-09T22:57:18.183Z",
   "status": "in_progress",
   "tech_stack": [
     "TypeScript",
@@ -14,8 +14,8 @@
     "total": 42,
     "done": 40,
     "in_progress": 0,
-    "awaiting_acceptance": 0,
-    "todo": 2,
+    "awaiting_acceptance": 1,
+    "todo": 1,
     "total_all": 42,
     "active_total": 42,
     "cancelled": 0,

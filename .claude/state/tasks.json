@@ -1539,11 +1539,11 @@
       ],
       "stage_gate": false,
       "priority": 0,
-      "status": "todo",
+      "status": "awaiting_manual_acceptance",
       "created_at": "2026-06-09T20:34:43.420Z",
-      "updated_at": "2026-06-09T20:34:43.420Z",
+      "updated_at": "2026-06-09T22:57:18.152Z",
       "commit_hash": "",
-      "notes": "",
+      "notes": "acceptance_mode=manual（最高风险任务单独 review gate）→ 等用户人工验收。验收要点见 review_checklist。",
       "replacement_task_id": null
     },
     {

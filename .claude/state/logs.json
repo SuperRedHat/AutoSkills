@@ -1367,6 +1367,33 @@
       "from_status": "auto_verified",
       "to_status": "done",
       "message": "PM-604 auto_verified → done: acceptance_mode=auto → 自动验收通过，done。"
+    },
+    {
+      "timestamp": "2026-06-09T22:46:47.703Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-605",
+      "from_status": "todo",
+      "to_status": "in_progress",
+      "message": "PM-605 todo → in_progress: 主控直接实现。renameTask：改 id + 级联改写 dependencies[]/replacement_task_id/focus.related_task_ids(去重，复用 rewriteDependencyEdges)，logs 不可变 + task_renamed 审计，落盘前 validateTaskGraph 全局后置校验(无重复id/dangling/self/cycle/replacement断裂)失败不写，终态可 rename 但不改 status/close 字段。acceptance_mode=manual → 会停在 awaiting_manual_acceptance 等人工验收。"
+    },
+    {
+      "timestamp": "2026-06-09T22:57:14.325Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-605",
+      "from_status": "in_progress",
+      "to_status": "auto_verified",
+      "message": "PM-605 in_progress → auto_verified: 主控直接实现+自验+对抗审查。renameTask 改 id + 级联改写 dependencies[]/replacement_task_id/focus.related_task_ids(去重，复用 rewriteDependencyEdges)；logs 不可变 + task_renamed 审计(old/new/rewired 计数/focus_rewritten/logs_preserved)；落盘前 validateTaskGraph 全局后置校验(重复id/dangling/self/dep-cycle/replacement missing-self-cycle，复用 validateReplacementGraph)失败整体拒绝不部分写；终态可 rename 不改 status/closed_at/close_reason；old===new noop。build(tsc)干净 + 25 文件/151 测试全过(rename_task 9 个，含 abort/no-partial-write + rename-induced self-dep + e2e husk链解析+lint干净)。2-agent 对抗审查 correctness=clean(实证 abort 时 tasks.json/focus.json byte-identical、无 audit)、invariants 确认 getNextTask/lint/progress 三不变量正确，已按建议补齐 abort/e2e 覆盖；2 nit(success 路径多文件非原子写、id 不 trim)均 codebase-wide 非本任务特有，记为 deferred。"
+    },
+    {
+      "timestamp": "2026-06-09T22:57:18.183Z",
+      "type": "task_status_change",
+      "kind": "task_transition",
+      "task_id": "PM-605",
+      "from_status": "auto_verified",
+      "to_status": "awaiting_manual_acceptance",
+      "message": "PM-605 auto_verified → awaiting_manual_acceptance: acceptance_mode=manual（最高风险任务单独 review gate）→ 等用户人工验收。验收要点见 review_checklist。"
     }
   ]
 }
