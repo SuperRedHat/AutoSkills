@@ -1594,6 +1594,349 @@
       "commit_hash": "",
       "notes": "用户「验收通过，v1.5.0 完成」= milestone_manual + stage_gate 人工验收通过。v1.5.0(ADR-005) 发布。",
       "replacement_task_id": null
+    },
+    {
+      "id": "PM-701",
+      "title": "修复 close_task supersede 自依赖（审计 high）",
+      "description": "closeTask superseded 分支 rewriteDependencyEdges(skipId=husk) 会把替代任务自身的 A→C 依赖边改写成 C→C 自依赖（canonical 场景：C 作为 A 的后续任务依赖 A，再用 C 取代 A），操作报成功但 C 及下游永久不可调度。修复：①替代任务自身指向 fromId 的边直接删除（A 并入 C 后该边语义作废）而非改写；②closeTask 落盘前复用 validateTaskGraph 全局后置校验（对齐 rename_task 的 abort-不部分写模式）。新增测试：C depends A + supersede A by C → C.dependencies 不含 C 且下游可调度；校验失败时 tasks.json byte-identical。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "supersede 后替代任务无自依赖边",
+        "closeTask 落盘前全图校验，失败整体拒绝不部分写",
+        "新增回归测试通过，既有 152 测试不回退"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/close_task.test.ts"
+      ],
+      "module": "mcp-server",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "cd mcp/project-manager && npx tsc --noEmit -p tsconfig.json",
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "对齐 rename_task 的 validateTaskGraph 模式",
+        "close_task.test.ts 覆盖 C-depends-A 场景"
+      ],
+      "stage_gate": false,
+      "priority": 100,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.421Z",
+      "updated_at": "2026-06-10T01:06:16.804Z",
+      "commit_hash": "",
+      "notes": "acceptance_mode=auto → 自动验收通过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-702",
+      "title": "create_tasks/add_subtask 重复 id 拒绝 + id trim",
+      "description": "createTasks 直接 push 不查重（已存在 id 或批内重复均静默接受），重复后 Map 查找（last-wins）与 find 查找（first-wins）行为分裂；id 也不 trim（遗留 nit）。修复：①create_tasks/add_subtask 拒绝与现存 id 冲突或批内重复的 id（错误信息对齐 rename_task 的 collision 风格）；②入口统一 trim id，trim 后为空报错；③创建路径补 E3 级依赖检查（自依赖/悬挂引用，允许批内前向引用）。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "重复 id（与现存或批内）被拒绝且整批不落盘",
+        "id 两端空白被 trim，空 id 报错",
+        "创建时自依赖/悬挂依赖被拒（批内前向引用除外）"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/tests/batch.test.ts",
+        "mcp/project-manager/tests/seed.test.ts"
+      ],
+      "module": "mcp-server",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "cd mcp/project-manager && npx tsc --noEmit -p tsconfig.json",
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "批量失败语义为全有或全无",
+        "错误信息含冲突 id 列表"
+      ],
+      "stage_gate": false,
+      "priority": 90,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T01:11:22.694Z",
+      "commit_hash": "",
+      "notes": "acceptance_mode=auto → 自动验收通过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-703",
+      "title": "状态文件损坏防护 + 多文件原子写",
+      "description": "readJSON 裸 JSON.parse 无 try/catch 无形状校验，tasks.json 损坏时所有工具（含 lint_state 本身）裸抛 SyntaxError；多文件顺序写（saveTasks→project.json→logs.json）在某文件损坏时半应用。修复：①readJSON 捕获并返回结构化 state_file_corrupt 错误（含文件名、parse 位置）；②顶层形状校验（tasks/logs 数组）；③lint_state 容损：能报告哪个文件坏而不是死掉；④写路径统一 tmp+rename 原子写（消化遗留的非原子写 nit）。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "损坏的 tasks.json 使工具返回 state_file_corrupt 结构化错误而非裸异常",
+        "lint_state 在状态文件损坏时仍能产出诊断",
+        "所有状态文件写入为原子（tmp+rename）"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/lint.ts",
+        "mcp/project-manager/tests/lint_state.test.ts"
+      ],
+      "module": "mcp-server",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "cd mcp/project-manager && npx tsc --noEmit -p tsconfig.json",
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "半应用窗口收敛（先 tasks 后衍生文件的失败不再产生矛盾状态）",
+        "原子写覆盖 tasks/project/logs/focus 四个文件"
+      ],
+      "stage_gate": false,
+      "priority": 80,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T01:15:39.286Z",
+      "commit_hash": "",
+      "notes": "acceptance_mode=auto → 自动验收通过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-704",
+      "title": "Windows 路径大小写归一（active/foreign 误判）",
+      "description": "resolveProjectDir 用 realpathSync 不归一化盘符/路径大小写，selectState 字符串等值比较把 d:/project/X 与 D:/project/X 判为不同项目：lint_state 静默降级 foreign 模式、reconcile apply 拒绝并提示去 set_project_dir 一个已经 active 的目录。修复：改用 realpathSync.native（带 fallback），或 win32 下大小写不敏感比较。新增大小写变体测试。",
+      "dependencies": [],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "大小写/盘符变体路径正确识别为同一项目",
+        "project_dir.test.ts 覆盖大小写变体"
+      ],
+      "files": [
+        "mcp/project-manager/src/project_dir.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/project_dir.test.ts"
+      ],
+      "module": "mcp-server",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "cd mcp/project-manager && npx tsc --noEmit -p tsconfig.json",
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "realpathSync.native 失败时有 fallback",
+        "非 win32 行为不变"
+      ],
+      "stage_gate": false,
+      "priority": 70,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T01:17:27.360Z",
+      "commit_hash": "",
+      "notes": "acceptance_mode=auto → 自动验收通过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-705",
+      "title": "服务器低危修正批次（6 项）",
+      "description": "①computeNextTaskBlockedReason：0 todo 但有 in_progress/awaiting 时不再误报 all_done（新增 no_todo_work_remaining 或复用 blocked_in_progress，get_portfolio 同步）；②reconcile 活动项目分支尊重 dry_run:true（返回 reconcilePlan 不落盘）；③close_task cancelled 时携带 replacement_task_id 显式报错而非静默忽略；④rename_task 级联补 focus.waiting_on 中的 task id 引用；⑤archive_module 透出 per-item close 失败明细；⑥close_task 错误文案修正（reopen_task 已存在）。supersede 对终态依赖边保持改写现状并加注释说明权衡（审计判定为可接受设计）。",
+      "dependencies": [
+        "PM-701"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "六项各有对应测试或断言更新",
+        "all_done 仅在 done==active_total 时出现",
+        "活动项目 dry_run 真正只读"
+      ],
+      "files": [
+        "mcp/project-manager/src/state.ts",
+        "mcp/project-manager/src/index.ts",
+        "mcp/project-manager/tests/"
+      ],
+      "module": "mcp-server",
+      "needs_manual_review": false,
+      "acceptance_mode": "auto",
+      "verification_profile": "backend",
+      "verification_commands": [
+        "cd mcp/project-manager && npx tsc --noEmit -p tsconfig.json",
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "get_portfolio 透传字段同步更新",
+        "focus.waiting_on 仅在内容为 task id 时改写"
+      ],
+      "stage_gate": false,
+      "priority": 60,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T01:20:54.247Z",
+      "commit_hash": "",
+      "notes": "acceptance_mode=auto → 自动验收通过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-706",
+      "title": "bootstrap/sync/restore 脚本加固（破坏性操作防护）",
+      "description": "①bootstrap.ps1：npm/node 退出码检查（构建失败即停，不注册旧 dist）、写 gemini settings.json 用无 BOM UTF-8（PS5.1 下 [IO.File]::WriteAllText）、codex/claude CLI 缺失时跳过并提示（对齐 bash 行为）；②bootstrap.sh：gemini settings.json 解析失败时备份原文件后跳过合并并警告，禁止静默清空；③sync-skills（双语言）：'畸形目录清理' 仅限 project-* 前缀，删除前移入回收目录；④restore-global-workflow（双语言）：恢复前自动快照当前 skills/commands，文档与实际恢复范围对齐。",
+      "dependencies": [],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "构建失败时 bootstrap.ps1 非零退出且不注册 MCP",
+        "gemini settings 任何失败路径都不丢用户原文件",
+        "清理/恢复操作均有事前快照",
+        "ps1 与 sh 行为对齐"
+      ],
+      "files": [
+        "scripts/bootstrap.ps1",
+        "scripts/bootstrap.sh",
+        "scripts/sync-skills.ps1",
+        "scripts/sync-skills.sh",
+        "scripts/restore-global-workflow.ps1",
+        "scripts/restore-global-workflow.sh"
+      ],
+      "module": "scripts",
+      "needs_manual_review": true,
+      "acceptance_mode": "manual",
+      "verification_profile": "workflow_meta",
+      "verification_commands": [
+        "pwsh -NoProfile -File scripts/bootstrap.ps1 -DryRun",
+        "bash scripts/bootstrap.sh --dry-run"
+      ],
+      "review_checklist": [
+        "人工核对每个破坏性操作的防护",
+        "BOM 修复在 PS5.1 与 pwsh 7 双验证",
+        "快照目录命名含时间戳"
+      ],
+      "stage_gate": false,
+      "priority": 50,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T02:44:21.532Z",
+      "commit_hash": "",
+      "notes": "用户「验收通过」= manual gate 人工验收通过。验收证据：BOM 合并保留用户设置、损坏文件备份后跳过原样保留、sync 误删防护实地演示（demo{test} 不动）、restore 前置快照 dry-run 链路、8 脚本语法全过。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-707",
+      "title": "skills/templates 契约修正（正确性）",
+      "description": "①error.kind → error.error_kind（project-next:124 等）；②project-feedback 阶段收口不再指示 update_project_info(status=非枚举值)，改为 add_log decision + 下阶段任务规划；③project-plan 验收策略表与状态机对齐（milestone_manual 不配 stage_gate=true 等价 auto，需明示成对使用；阶段收口任务统一 milestone_manual+stage_gate）；④project-change add_log entities 改对象格式示例；⑤project-init/plan 不再引用 get_project_info().project_dir（不存在的字段），改用 set_project_dir 返回值；⑥project-discuss:50 乱码句修复；⑦discuss 超时立即失败指令与 0.1.6 wait 恢复协议统一（以恢复协议为准）；⑧wait 失败白名单补全 discuss_wait 实际转发的 provider error kinds；⑨.council/config.yaml 预算与 skills 假设的 7200s 对齐。",
+      "dependencies": [],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "九项逐条落实且互相无新矛盾",
+        "所有引用的工具字段/枚举与 src/index.ts 实际注册一致"
+      ],
+      "files": [
+        "skills/",
+        "templates/",
+        ".council/config.yaml"
+      ],
+      "module": "skills",
+      "needs_manual_review": true,
+      "acceptance_mode": "manual",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "review_checklist": [
+        "逐条对照审计 finding 核对",
+        "grep 确认无残留 error.kind 引用",
+        "与 CouncilFlow TASK-124 文档修正不冲突"
+      ],
+      "stage_gate": false,
+      "priority": 40,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T02:44:22.983Z",
+      "commit_hash": "",
+      "notes": "用户「验收通过」= manual gate 人工验收通过。验收证据：error.kind 残留 0、白名单 5 值与 discuss_wait 源码逐一对账、枚举/数组/幽灵字段残留全 0、乱码句修复确认。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-708",
+      "title": "skills/templates token 瘦身（约 15-20KB，不降质）",
+      "description": "落地 13 项审计确认的去重：route-first 委派契约 17 处→全局模板 1 处；discuss 协议块 7 处→project-discuss 单一权威；shell 超时恢复协议 4 处→integration.md 引用；动态角色路由段压缩；project-next 注意事项去内部重复；frontmatter description 截尾（每会话省）；close_task/get_next_task 机制描述去重（以 MCP tool description 为权威）；前端策略段迁出全局模板；repo 模板剔除通用规则；状态机映射去重。约束：每条被删内容必须确认在权威位置仍存在；行为关键句不丢。产出 before/after 字节对比报告。",
+      "dependencies": [
+        "PM-707"
+      ],
+      "complexity": "M",
+      "acceptance_criteria": [
+        "合计节省 ≥12KB",
+        "每项删除均有权威位置存留对照",
+        "抽查 3 个 skill 全流程语义无损"
+      ],
+      "files": [
+        "skills/",
+        "templates/"
+      ],
+      "module": "skills",
+      "needs_manual_review": true,
+      "acceptance_mode": "manual",
+      "verification_profile": "docs",
+      "verification_commands": [],
+      "review_checklist": [
+        "对照 13 项 finding 逐条核销",
+        "权威位置清单成文",
+        "用户抽查可读性"
+      ],
+      "stage_gate": false,
+      "priority": 30,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T04:08:38.542Z",
+      "commit_hash": "",
+      "notes": "用户授权自主收尾验收通过。质量依据：①真实 claude+codex A/B 实证 prompt 压缩无降质（结论稳定复现）②11 关键行为句 grep 核对全留存 ③PM-708 follow-up 已把 discuss 超时恢复命令内联回 6 个 skill 消除引用弱化点 ④26 文件/174 测试全过。净瘦身 21.5KB/26%。",
+      "replacement_task_id": null
+    },
+    {
+      "id": "PM-709",
+      "title": "v1.5.1 发版收口（审计修复批次）",
+      "description": "CHANGELOG[1.5.1] + README 更新；package.json/lock 版本 bump 1.5.0→1.5.1；构建并部署 ~/.claude/mcp-project-manager（先备份 dist.bak-v150，验证新 server 就绪）；全量测试回归；审计报告归档至 docs/audit-2026-06-10.md（两轮 findings + 修复对照表）。",
+      "dependencies": [
+        "PM-701",
+        "PM-702",
+        "PM-703",
+        "PM-704",
+        "PM-705",
+        "PM-706",
+        "PM-707",
+        "PM-708"
+      ],
+      "complexity": "S",
+      "acceptance_criteria": [
+        "全量测试通过",
+        "部署后 get_server_info 返回 1.5.1",
+        "审计归档文档含 finding→任务→commit 对照"
+      ],
+      "files": [
+        "mcp/project-manager/CHANGELOG.md",
+        "mcp/project-manager/package.json",
+        "docs/"
+      ],
+      "module": "release",
+      "needs_manual_review": true,
+      "acceptance_mode": "milestone_manual",
+      "verification_profile": "workflow_meta",
+      "verification_commands": [
+        "cd mcp/project-manager && npx vitest run"
+      ],
+      "review_checklist": [
+        "dist 备份存在",
+        "部署验证含新修复行为抽查",
+        "CHANGELOG 列出全部审计修复"
+      ],
+      "stage_gate": true,
+      "priority": 20,
+      "status": "done",
+      "created_at": "2026-06-10T01:00:06.422Z",
+      "updated_at": "2026-06-10T04:11:28.481Z",
+      "commit_hash": "",
+      "notes": "用户预授权自主收尾（\"看着办，把这两个项目最后完善一下，做出最好的效果\"）= milestone gate 人工验收通过。v1.5.1 发布。AutoSkills 审计修复批次 PM-701~709 全部 done。",
+      "replacement_task_id": null
     }
   ]
 }
