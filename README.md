@@ -15,7 +15,7 @@
 
 | 目录 / 文件 | 作用 |
 |---|---|
-| `skills/project-*/` | 11 个 `project-*` 工作流 skills 源（init / design / plan / next / review / change / ask / feedback / status / resume / discuss） |
+| `skills/project-*/` | 11 个 `project-*` 工作流 skills 源——逐个作用与用法见下方 [Skills 一览](#skills-一览11-个-project--工作流) |
 | `mcp/project-manager/` | `project-manager` MCP server（Node/TypeScript 工程），bootstrap 时构建并向三端注册 |
 | `mcp-manifest.json` | MCP 注册 manifest（单一真源），bootstrap 时消费 |
 | `templates/` | 全局 `CLAUDE.md` / `AGENTS.md` 模板（Claude + Codex） |
@@ -28,6 +28,32 @@
 | `docs/mcp-migration-report.md` | MCP server 搬迁审计（TASK-066 产出） |
 | `docs/adr-001..005-*.md` | project-manager ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查 / 任务身份与 reconcile 安全包络（ADR） |
 | `mcp/project-manager/CHANGELOG.md` | project-manager 版本变更日志（当前 **v1.5.1**） |
+
+---
+
+## Skills 一览（11 个 `project-*` 工作流）
+
+每个 skill 是一段驱动「当前主控 AI」的工作流提示词，部署后在任一主控里用 `/<skill 名>` 触发（或说出触发短语）。它们共享同一套约定：先 `set_project_dir` → 用 `project-manager` MCP 读写状态 → 需要别的模型时按项目级 `.council/config.yaml` 路由到 CouncilFlow。
+
+把它们按一个项目的生命周期串起来最好理解：
+
+> **`init` →（可选 `discuss`）→ `design` → `plan` → `next` ×N →（`review` / `feedback`）**，过程中随时 `ask` / `status` / `resume`，需求变了走 `change`。
+
+| Skill | 触发（典型说法） | 作用 | 怎么用 / 产出 |
+|---|---|---|---|
+| **project-init** | "开始项目"、"需求分析"、"写 PRD" | 需求澄清并生成 PRD | 对话澄清边界 → 经 `planner`/`synthesizer` 路由 → 用户确认后 `save_prd` 落盘，并为新项目落 repo-local `AGENTS.md`/`CLAUDE.md` |
+| **project-design** | "开始设计"、"架构设计"、"系统设计" | 基于已确认 PRD 出架构文档 | 读 PRD → `architect`/`synthesizer` 路由 → 含技术选型/目录结构/接口/数据模型/Mermaid 图 → 确认后 `save_architecture` |
+| **project-plan** | "拆任务"、"任务规划"、"plan" | 把 PRD+架构拆成带验收字段的原子任务 | 拓扑拆解 → 每个任务写 `acceptance_mode`/`verification_*`/`stage_gate`/`priority` → 确认后 `create_tasks` |
+| **project-next** | "下一个任务"、"继续开发"、"next" | 执行下一个可执行任务（核心循环） | `get_next_task` → 阶段机 `implementer→tester→reviewer→[fixer↻]→synthesizer` → 按验收字段自动验证 → 状态流转 + 独立 commit |
+| **project-review** | "审查代码"、"review"、"code review" | 对最近完成任务做代码审查 | 收集 done 任务文件 → `reviewer` 路由 → 分级报告（🚨/⚠️/💡/✅）→ 严重问题自动 `add_subtask` 建修复任务 |
+| **project-change** | "需求变更"、"改需求"、"加功能" | 评估变更影响、更新文档、追加任务 | `architect→planner→synthesizer` 评估 → 更新 PRD/架构 → 追加新任务；作废的旧任务用 `close_task(superseded/cancelled)` |
+| **project-ask** | "这个怎么实现"、"XX和YY哪个好"、"ask" | 纯顾问模式答疑 | **只读**，绝不改文件/不跑写命令 → `advisor`/`synthesizer` 路由 → 结合项目上下文给方案对比与建议 |
+| **project-feedback** | （任务停在 `awaiting_manual_acceptance` 时）"验收"、"通过"、"返工" | 处理人工验收与阶段 gate 收口 | 验收通过 → `done`（含 `milestone_manual+stage_gate` 阶段收口）；返工 → 回 `in_progress` 走 route-first；不做 → `close_task`；误关 → `reopen_task` |
+| **project-status** | "进度"、"看板"、"还剩多少"、"status" | 展示项目进度看板 | 读 metrics → ASCII 看板：双完成率（raw/active）+ 各状态任务分组 |
+| **project-resume** | "继续项目"、"恢复上下文"、"resume"、"上次做到哪" | 新会话快速恢复上下文 | 先 `set_project_dir` → `get_project_context` → 输出"现在在哪/在等谁/为何卡住/下一个干什么"摘要 |
+| **project-discuss** | "讨论一下"、"多模型讨论"、"让其他模型看看" | 独立多模型讨论入口 | 整理 `initial_position` → `council discuss` 引入其他模型评论 → 当前主控综合收敛成可执行结论（**discuss 协议的权威定义在此 skill**，其余 skill 的 discuss 旁路引用它） |
+
+**说明**：上面除 `project-discuss` / `project-ask` 外，主体阶段（planner/architect/synthesizer/implementer/tester/reviewer/fixer）都走 CouncilFlow「route-first」——目标模型若等于当前主控就本地执行（`local_execution`），否则派给 sidecar（`delegated`）；没装 CouncilFlow 时退回主控直接执行。每个 skill 的完整阶段契约、失败上报与超时恢复协议见各自的 `skills/<name>/SKILL.md`。
 
 ---
 
