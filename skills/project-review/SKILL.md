@@ -26,7 +26,7 @@ description: 代码审查。当用户说"审查代码"、"review"、"代码检�
 如果需要多视角审查或对复杂逻辑进行深度确认：
 
 - `council discuss "这段核心逻辑的安全性与效率如何？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）
-- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / 超时恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
+- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / 超时恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置
 
 ### 第三步：进入 reviewer 阶段
 如果 `council` 可用，必须先按项目配置路由审查角色：

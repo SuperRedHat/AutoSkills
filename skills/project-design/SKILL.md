@@ -28,7 +28,7 @@ description: 系统架构设计。当用户说"开始设计"、"架构设计"、
 如果遇到复杂的技术选型或架构争议：
 
 - `council discuss "关于 XX 的技术选型争议" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`），结论纳入最终架构设计
-- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
+- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置
 
 ### 第三步：进入显式阶段机
 把 `project-design` 视为：

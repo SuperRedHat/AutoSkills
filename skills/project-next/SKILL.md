@@ -12,7 +12,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
 3. 如果检测到 `council` 可用，则把项目目录下的 `.council/config.yaml` 视为自动分发真源；文件缺失时 CouncilFlow 会在首次调用时自动生成模板。
 4. 如当前任务方案存在明显不确定，且用户显式要求 `discuss`，先走一轮多模型讨论：
    - `council discuss "这个任务应该如何实现最稳妥？" --controller-position "<主控本地立场>"`（用户显式给模型时加 `--models ...`）
-   - 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**；这一步一旦进入即硬前置
+   - 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；这一步一旦进入即硬前置
 5. 把任务视为一个显式阶段机，而不是"实现完后主控自己顺手测一下"：
    - `implementer -> tester -> reviewer -> [fixer -> tester -> reviewer]* -> synthesizer`
 

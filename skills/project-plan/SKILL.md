@@ -73,7 +73,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 
 如果任务拆解方案或复杂度评估存在争议：
 
-- **讨论**：`council discuss "如何拆解 XX 模块的任务？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）。协议细节（default_models / min_rounds / summary_path 读取 / 超时恢复 / 确认失败才停）**遵循 project-discuss 的规范段**；一旦进入即硬前置。
+- **讨论**：`council discuss "如何拆解 XX 模块的任务？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）。协议细节（default_models / min_rounds / summary_path 读取 / 超时恢复 / 确认失败才停）**遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置。
 - **委派调研**（按上方委派契约）：`council delegate --role architect --objective "调研 XX 方案的复杂度" --task-summary "架构调研"`
 
 ## 项目目录状态判定

@@ -23,7 +23,7 @@ council discuss "关于 XX 的实现方案应该怎么选？" --controller-posit
 ```
 
 - 显式给模型时加 `--models ...`
-- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
+- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置
 - discuss 失败（含恢复路径确认失败）时，**如实告知用户当前无法完成这轮多模型咨询**，不要伪装
 - `project-ask` 即使调用 discuss，也仍然是顾问模式，不修改任何文件
 

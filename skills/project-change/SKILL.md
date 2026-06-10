@@ -56,7 +56,7 @@ description: 评估需求变更影响，更新文档，并追加带结构化验�
 如果用户显式要求 `discuss <models>`，或影响评估本身存在明显争议，可在 `architect` 阶段前后嵌入一轮讨论：
 
 - `council discuss "此变更对现有系统架构的影响有哪些？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）
-- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
+- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置
 
 ## 注意事项
 

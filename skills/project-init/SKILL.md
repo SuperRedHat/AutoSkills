@@ -10,7 +10,7 @@ description: 需求分析与 PRD 生成。PRD 确认后落盘到 project-manager
 1. 通过对话澄清项目背景、目标用户、核心功能、非功能要求、技术偏好和验收标准。
 2. 如果用户显式要求 `discuss <models>`，或需求边界存在明显争议，可先走一轮多模型讨论：
    - `council discuss "这个项目的需求边界应该如何定义？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）
-   - 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
+   - 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 失败白名单 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；一旦进入即硬前置
    - 讨论结论只作为补充输入，不能替代用户确认
 3. 把 `project-init` 视为显式阶段机，而不是"主控聊完就直接写 PRD"：
    - `planner -> synthesizer -> persistence`
