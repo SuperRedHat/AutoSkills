@@ -1,6 +1,6 @@
 ---
 name: project-review
-description: 代码审查。当用户说"审查代码"、"review"、"代码检查"、"code review"，或完成一批任务后用户要求审查时触发。对最近完成的任务做自动 Code Review，输出 review 报告，严重问题自动创建修复任务。
+description: 代码审查。当用户说"审查代码"、"review"、"代码检查"、"code review"，或完成一批任务后用户要求审查时触发。输出 review 报告，严重问题自动创建修复任务。
 ---
 
 # /project-review — 代码审查
@@ -15,7 +15,7 @@ description: 代码审查。当用户说"审查代码"、"review"、"代码检�
 
 如果检测到 `council` 可用，则把项目目录下的 `.council/config.yaml` 视为自动分发真源；如文件缺失，CouncilFlow 会在首次调用时自动生成项目本地配置。
 
-把 `project-review` 视为单阶段的 `reviewer` workflow，而不是“主控先审完再找 reviewer 背书”。
+把 `project-review` 视为单阶段的 `reviewer` workflow，而不是"主控先审完再找 reviewer 背书"。
 
 ### 第二步：逐文件审查
 
@@ -23,30 +23,23 @@ description: 代码审查。当用户说"审查代码"、"review"、"代码检�
 
 #### 多模型协作（可选）
 
-如果需要多视角审查或对复杂逻辑进行深度确认，可调用 CouncilFlow：
+如果需要多视角审查或对复杂逻辑进行深度确认：
 
-- 先由当前主控本地整理一句简短 `initial_position`
-- 用户显式给了模型：`council discuss "这段核心逻辑的安全性与效率如何？" --controller-position "<initial_position>" --models claude,gemini`
-- 用户没给模型：`council discuss "这段核心逻辑的安全性与效率如何？" --controller-position "<initial_position>"`
-- 不写 `--models` 时，CouncilFlow 会自动读取项目级 `discussion.default_models`
-- `--controller-position` 用来把当前主控的本地立场显式交给 CouncilFlow，避免同模型自嵌套
-- CouncilFlow 会把这版立场交给外部模型评论；最终审查判断仍由当前主控综合
-- 只有达到项目级 `discussion.min_rounds` 后，讨论才允许提前收敛
-- 一旦决定进入 discuss，这就是硬前置步骤；如果 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-- **读取结论**：优先使用命令返回 JSON 中的 `data.summary_path`；如需手动定位，再读取 `.council/discuss/<discussion_id>/summary.md`
+- `council discuss "这段核心逻辑的安全性与效率如何？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）
+- 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / 超时恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**；一旦进入即硬前置
 
 ### 第三步：进入 reviewer 阶段
-如果 `council` 可用，必须先按项目配置调用 CouncilFlow 路由审查角色：
+如果 `council` 可用，必须先按项目配置路由审查角色：
 
 ```bash
 council delegate --role reviewer --objective "审查最近完成任务的代码质量与风险" --task-summary "代码审查"
 ```
 
-- 不传 `--model`，让 CouncilFlow 从项目级 `roles.reviewer` 读取目标模型
-- 只有在返回 `status = local_execution` 时，当前主控才允许继续本地审查
-- 如果返回 `status = delegated`，则先读取 `.council/delegations/...` 产物，再生成审查结论
-- 如果 `council delegate` 返回错误、缺少 handoff/result artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-- 只有在 `council` 明确缺失或不可调用时，才允许降级到纯主控审查，并且必须显式说明正在降级
+- 不传 `--model`，目标模型由项目级 `roles.reviewer` 决定（含动态路由 list 形式，0.1.3+；`error.error_kind = routing_no_match` 按失败上报协议处理）
+- `status = local_execution` → 当前主控继续本地审查
+- `status = delegated` → 先读取 `.council/delegations/<id>/` 产物，再生成审查结论
+- 返回错误、缺少 handoff/result artifact，或无法完成调用 → **停止当前 workflow 并报告失败**
+- 仅当 `council` 明确缺失或不可调用时，才允许降级到纯主控审查，并显式说明正在降级
 
 ### 第四步：生成报告
 问题分级：
@@ -64,23 +57,5 @@ council delegate --role reviewer --objective "审查最近完成任务的代码�
 - 不要鸡蛋里挑骨头
 - 严重问题必须给具体修复建议
 - 做得好的地方也要肯定
-- 有 CouncilFlow 时，不要在未获得 `local_execution` 前就把 reviewer 工作留在主控本地
 - 引用讨论结论时，优先摘取 `initial_position`、`current_controller_position`、`min_rounds` 等显式字段，而不是把外部模型原文直接当最终判断
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON 并调用 `project-manager` MCP `add_log(type="workflow_failure", ...)`，再停止当前 workflow
-
-
-## 动态角色路由（0.1.3+）
-
-如果项目 `.council/config.yaml` 配置了动态角色路由（`roles.<role>` 为 list
-形式而非简写 string），`council delegate` 返回的 target model 由 CouncilFlow
-的路由引擎（`role_router.resolve`）按顺序匹配 `when` 表达式决定；skill 层
-**不干预** 路由决策。
-
-一旦拿到 `council delegate` 返回：
-
-- `status = local_execution` → 按现有流程在当前主控本地执行
-- `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
-- `error.error_kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
-  Report Protocol` 停止 workflow 并上报
-
-动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。

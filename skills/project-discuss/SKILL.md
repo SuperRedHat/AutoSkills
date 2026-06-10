@@ -1,6 +1,6 @@
 ---
 name: project-discuss
-description: 独立多模型讨论入口。当用户说"讨论一下"、"多模型讨论"、"project-discuss"、"先让其他模型一起看看"等时触发。通过 CouncilFlow 发起正式讨论，再由当前主控输出结论并建议下一步。
+description: 独立多模型讨论入口。当用户说"讨论一下"、"多模型讨论"、"project-discuss"、"先让其他模型一起看看"等时触发。
 ---
 
 # /project-discuss — 独立多模型讨论

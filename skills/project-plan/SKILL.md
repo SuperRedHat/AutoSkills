@@ -11,22 +11,20 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 2. 按拓扑顺序拆解原子任务。
 3. 把 `project-plan` 视为显式阶段机，而不是"主控直接拆任务后顺手保存"：
    - `planner -> synthesizer -> persistence`
-4. 先进入 `planner` 阶段。
-   - 如果 `council` 可用，必须先按项目配置调用：
-     `council delegate --role planner --objective "基于 PRD 与架构文档拆解可执行任务" --task-summary "任务拆解"`
-   - 不传 `--model`，让 CouncilFlow 从项目级 `roles.planner` 读取目标模型
-   - 只有在返回 `status = local_execution` 时，当前主控才允许本地完成任务拆解
-   - 如果返回 `status = delegated`，则先读取 `.council/delegations/...` 产物，再进入 `synthesizer`
-   - 如果返回错误、缺少 handoff/result artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-   - 只有在 `council` 明确缺失或不可调用时，才允许显式降级到主控本地拆解
-5. 再进入 `synthesizer` 阶段。
-   - 如果 `council` 可用，必须先按项目配置调用：
-     `council delegate --role synthesizer --objective "综合 planner 产物并整理为最终任务清单（仅产出 markdown / JSON 草案，不要调用 save_prd/create_tasks/add_log 等 MCP 写入工具；host 主控会在拿到 result.md 后负责落盘）" --task-summary "任务清单综合整理（artifact-first，0.1.5+）" --required-artifact planner_result="<planner 的 result artifact>"`
-   - 不传 `--model`，让 CouncilFlow 从项目级 `roles.synthesizer` 读取目标模型
-   - 只有在返回 `status = local_execution` 时，当前主控才允许本地整理最终待确认的任务列表
-   - 如果返回 `status = delegated`，则先读取 `.council/delegations/<id>/result.md` 产物，再进入用户确认；**不要**假设 sidecar 已经通过 MCP 写入任务清单
-   - 如果返回错误、缺少 handoff/result artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-   - 只有在 `council` 明确缺失或不可调用时，才允许显式降级到主控本地综合
+
+### 委派契约（适用于本 skill 所有 `council delegate` 调用）
+
+- 不传 `--model`，目标模型由项目级 `roles.<role>` 决定
+- `status = local_execution` → 当前主控本地完成该阶段
+- `status = delegated` → 先读取 `.council/delegations/<id>/` 产物再进入下一阶段
+- 返回错误、缺少 handoff/result artifact，或无法完成调用 → **停止当前 workflow 并报告失败**
+- 仅当 `council` 明确缺失或不可调用时，才允许显式降级到主控本地执行
+
+4. 先进入 `planner` 阶段（按委派契约）：
+   - `council delegate --role planner --objective "基于 PRD 与架构文档拆解可执行任务" --task-summary "任务拆解"`
+5. 再进入 `synthesizer` 阶段（按委派契约）：
+   - `council delegate --role synthesizer --objective "综合 planner 产物并整理为最终任务清单（仅产出 markdown / JSON 草案，不要调用 save_prd/create_tasks/add_log 等 MCP 写入工具；host 主控会在拿到 result.md 后负责落盘）" --task-summary "任务清单综合整理（artifact-first，0.1.5+）" --required-artifact planner_result="<planner 的 result artifact>"`
+   - `delegated` 时**不要**假设 sidecar 已经通过 MCP 写入任务清单
 
 ### Synthesizer artifact-first 契约（0.1.5+）
 
@@ -49,7 +47,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
   "module": "模块名",
   "needs_manual_review": true,
   "acceptance_mode": "auto|manual|milestone_manual",
-  "verification_profile": "backend|frontend_unit|frontend_browser|frontend_visual|docs|workflow_meta（名称来自外部策略文件，不限于这 6 个）",
+  "verification_profile": "backend",
   "verification_commands": ["command"],
   "review_checklist": ["人工检查项"],
   "stage_gate": false,
@@ -63,7 +61,7 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
    - 普通前端任务：`auto + frontend_browser`
    - 高风险视觉任务：`milestone_manual` **且必须配 `stage_gate=true`**（`milestone_manual` 不配 stage_gate 时行为等同 `auto`，不会产生人工 gate）
    - 阶段收口任务：`milestone_manual + stage_gate=true`（这样才会停在 awaiting_manual_acceptance 并触发 project-feedback 的阶段收口逻辑；单任务级强制人工 review 才用 `manual`）
-   - 任务可选携带 `priority`（数字，默认 0，越大越紧急）；`get_next_task` 会优先派发优先级最高的可执行任务，同优先级按创建顺序，但 `priority` 永远不会越过依赖门控。需要插队时给关键任务设较高 `priority` 即可，不必靠调整依赖或创建顺序。
+   - 需要插队的关键任务设较高 `priority`（数字，默认 0），不必靠调整依赖或创建顺序
 8. 展示任务列表并等待用户确认。
 9. 用户确认后，**host 主控**（不是 sidecar）调用 MCP：
    - 如果 synthesizer 走了 `status=delegated`：先读 `.council/delegations/<id>/result.md`，在它的基础上整理最终任务清单 JSON，再调 `create_tasks`
@@ -73,22 +71,10 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 
 ## 多模型协作（可选）
 
-如果任务拆解方案或复杂度评估存在争议，可调用 CouncilFlow 进行讨论或委派研究：
+如果任务拆解方案或复杂度评估存在争议：
 
-- **先本地整理一句简短 `initial_position`**
-- **验证方案（显式模型）**：`council discuss "如何拆解 XX 模块的任务？" --controller-position "<initial_position>" --models claude,gemini`
-- **验证方案（项目默认）**：`council discuss "如何拆解 XX 模块的任务？" --controller-position "<initial_position>"`
-- **读取结论**：优先使用命令返回 JSON 中的 `data.summary_path`；如需手动定位，再读取 `.council/discuss/<discussion_id>/summary.md`
-- `--controller-position` 用来把当前主控的本地立场显式交给 CouncilFlow，避免同模型自嵌套。
-- CouncilFlow 会把这版立场交给外部模型评论；最终任务拆解仍由当前主控综合。
-- 只有达到项目级 `discussion.min_rounds` 后，讨论才允许提前收敛。
-- 一旦决定进入 discuss，这就是硬前置步骤；如果 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-- **委派调研**：`council delegate --role architect --objective "调研 XX 方案的复杂度" --task-summary "架构调研"`
-- 不传 `--model`，让 CouncilFlow 从项目级 `roles.architect` 读取目标模型
-- 如果返回 `status = local_execution`，当前主控才允许继续本地完成这段调研
-- 如果返回 `status = delegated`，则先读取 `.council/delegations/...` 产物，再继续任务拆解
-- 如果 `council delegate` 返回错误、缺少 handoff/result artifact，或无法完成调用，则**停止当前 workflow 并报告失败**
-- 如果项目下缺少 `.council/config.yaml`，CouncilFlow 会在首次调用时自动创建项目本地配置模板
+- **讨论**：`council discuss "如何拆解 XX 模块的任务？" --controller-position "<主控本地立场>"`（显式给模型时加 `--models ...`）。协议细节（default_models / min_rounds / summary_path 读取 / 超时恢复 / 确认失败才停）**遵循 project-discuss 的规范段**；一旦进入即硬前置。
+- **委派调研**（按上方委派契约）：`council delegate --role architect --objective "调研 XX 方案的复杂度" --task-summary "架构调研"`
 
 ## 项目目录状态判定
 
@@ -107,13 +93,9 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 
 ## 注意事项
 
-- 不再只写 `needs_manual_review`
-- `needs_manual_review` 仅作为兼容字段保留
+- 不再只写 `needs_manual_review`（仅作兼容字段保留）
 - `review_checklist` 只在需要人工确认时填写
-- `verification_profile` 的可选名称来自外部策略文件 `~/.workflow-core/policies/verification-profiles.json`，运行时按该文件校验；新增一个 profile 只需编辑这个 JSON 文件，无需改代码，也不必局限于原来的 6 个内置名称（未知名称会被拒绝，仅当文件缺失时才放宽）
-- 规划阶段只创建 `todo` 任务，不在此处设置终态：`cancelled` / `superseded` 属于创建后的终态关闭，由 `project-next` / `project-feedback` / `project-change` 通过 `close_task` 处理，不在 plan 时设定
-- 有 CouncilFlow 时，不要在未获得 `local_execution` 或委派产物前直接跳过 route-first 步骤
+- `verification_profile` 的可选名称来自外部策略文件 `~/.workflow-core/policies/verification-profiles.json`，运行时按该文件校验；新增 profile 只需编辑该 JSON（未知名称会被拒绝，仅当文件缺失时才放宽）
+- 规划阶段只创建 `todo` 任务：`cancelled` / `superseded` 属于创建后的终态关闭，由 `project-next` / `project-feedback` / `project-change` 通过 `close_task` 处理
 - `planner` / `synthesizer` 都属于硬前置阶段；不要把任务拆解或最终清单综合静默留在主控本地
 - 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON 并调用 `project-manager` MCP `add_log(type="workflow_failure", ...)`，再停止当前 workflow
-
-
