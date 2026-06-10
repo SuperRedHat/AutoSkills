@@ -548,11 +548,21 @@ server.tool(
   },
   async ({ module, reason }) => {
     const r = state.archiveModule(module, reason);
+    // PM-705: per-item close failures were silently dropped from the response.
+    const failed = r.results.filter((x) => !x.success);
+    const failureText = failed.length
+      ? ` ${failed.length} task(s) FAILED to close: ${failed
+          .map((f) => `${f.id} (${f.error ?? "unknown error"})`)
+          .join("; ")}.`
+      : "";
     return {
       content: [
         {
           type: "text" as const,
-          text: `Archived module "${module}": cancelled ${r.closed.length} task(s)${r.closed.length ? " (" + r.closed.join(", ") + ")" : ""}.`,
+          text:
+            `Archived module "${module}": cancelled ${r.closed.length} task(s)` +
+            `${r.closed.length ? " (" + r.closed.join(", ") + ")" : ""}.` +
+            failureText,
         },
       ],
     };
@@ -756,12 +766,29 @@ server.tool(
     dry_run: z
       .boolean()
       .optional()
-      .describe("显式 dry_run；foreign 默认即 dry-run，对 foreign 传 false 强制落盘会被拒"),
+      .describe("显式 dry_run；foreign 默认即 dry-run，对 foreign 传 false 强制落盘会被拒；active 项目传 true 则只返回 fix-plan 不落盘"),
   },
   async ({ project_dir, apply, dry_run }) => {
     const sel = selectState(project_dir);
     if (!sel.ok) return selErr(sel);
     if (sel.active) {
+      // PM-705: an explicit dry_run:true is honored for the active project too
+      // (it was previously accepted and silently ignored — writes happened).
+      if (dry_run === true && apply !== true) {
+        const plan = sel.state.reconcilePlan();
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { mode: "dry_run", resolved_project_dir: sel.resolved, ...plan },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
       // Active project (no project_dir, or a project_dir canonically equal to it): apply.
       const r = sel.state.reconcile();
       return {

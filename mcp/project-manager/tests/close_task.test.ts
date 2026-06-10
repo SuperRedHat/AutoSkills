@@ -37,6 +37,17 @@ describe("close_task", () => {
     expect(log.source).toBe("close_task");
   });
 
+  // PM-705: a replacement on cancel was silently ignored — caller almost
+  // certainly meant superseded.
+  it("rejects cancelled with a replacement_task_id instead of silently ignoring it", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "A" }), mkTask({ id: "B" })]);
+    const r = sm.closeTask("A", "cancelled", "nope", "B");
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/supersede/);
+    expect(sm.getTaskById("A")!.status).toBe("todo"); // untouched
+  });
+
   it("requires a non-empty reason", () => {
     const sm = new StateManager(emptyProject());
     sm.createTasks([mkTask({ id: "A" })]);

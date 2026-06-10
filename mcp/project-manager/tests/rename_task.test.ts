@@ -68,6 +68,16 @@ describe("rename_task (PM-605)", () => {
     expect(sm.getCurrentFocus()!.related_task_ids.slice().sort()).toEqual(["A2", "B"]);
   });
 
+  // PM-705: waiting_on holds task ids too — exact matches follow the rename.
+  it("rewrites focus.waiting_on entries that are task ids, leaving free text alone", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "A" })]);
+    sm.setCurrentFocus({ summary: "f", waiting_on: ["A", "客户回邮件"] });
+    const r = sm.renameTask("A", "A2");
+    expect(r.focus_rewritten).toBe(true);
+    expect(sm.getCurrentFocus()!.waiting_on.slice().sort()).toEqual(["A2", "客户回邮件"]);
+  });
+
   it("keeps logs immutable and appends exactly one task_renamed audit", () => {
     const sm = new StateManager(emptyProject());
     sm.createTasks([mkTask({ id: "A" })]);

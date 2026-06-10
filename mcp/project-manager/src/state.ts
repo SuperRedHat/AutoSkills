@@ -859,6 +859,13 @@ export class StateManager {
       ];
       focus_rewritten = true;
     }
+    // PM-705: waiting_on is documented to hold task ids too — rewrite exact matches.
+    if (focus && Array.isArray(focus.waiting_on) && focus.waiting_on.includes(oldId)) {
+      focus.waiting_on = [
+        ...new Set(focus.waiting_on.map((w) => (w === oldId ? newId : w))),
+      ];
+      focus_rewritten = true;
+    }
 
     // ----- post-transform whole-graph validation: abort with NO partial write -----
     const graphError = this.validateTaskGraph(data.tasks);
@@ -1165,7 +1172,7 @@ export class StateManager {
     if (["done", "cancelled", "superseded"].includes(task.status)) {
       return {
         success: false,
-        error: `Task ${id} is already terminal (${task.status}); cannot close. (No reopen/un-complete in v1.)`,
+        error: `Task ${id} is already terminal (${task.status}); cannot close. (Use reopen_task to bring it back to an active state first.)`,
       };
     }
     if (!reason || !reason.trim()) {
@@ -1177,6 +1184,15 @@ export class StateManager {
       }
       const check = this.validateReplacement(id, replacementTaskId, data.tasks);
       if (!check.valid) return { success: false, error: check.error };
+    }
+    // PM-705: silently ignoring a replacement on cancel hid a caller mistake —
+    // they almost certainly meant superseded.
+    if (closeStatus === "cancelled" && replacementTaskId) {
+      return {
+        success: false,
+        error:
+          "cancelled does not take replacement_task_id (replacement is supersede semantics). Use status=superseded, or omit replacement_task_id.",
+      };
     }
 
     const oldStatus = task.status;
@@ -1513,7 +1529,15 @@ export class StateManager {
   ): NextTaskBlockedReason {
     if (nextTask) return "none";
     const todos = tasks.filter((t) => t.status === "todo");
-    if (todos.length === 0) return "all_done";
+    if (todos.length === 0) {
+      // PM-705: "all_done" ONLY when nothing active remains. With 0 todo but
+      // tasks still in_progress / auto_verified / awaiting acceptance, work is
+      // in flight — reporting all_done here misled get_portfolio consumers.
+      const activeNonTodo = ["in_progress", "auto_verified", "awaiting_manual_acceptance"];
+      return tasks.some((t) => activeNonTodo.includes(t.status))
+        ? "blocked_in_progress"
+        : "all_done";
+    }
     const byId = new Map(tasks.map((t) => [t.id, t]));
     // Resolve a dependency through superseded->replacement chains and report
     // whether it bottoms out in a cancelled task — the true dead-end blocker.

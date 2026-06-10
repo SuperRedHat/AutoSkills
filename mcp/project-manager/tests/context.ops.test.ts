@@ -74,6 +74,23 @@ describe("next_task_blocked_reason diagnostic", () => {
     expect(ctx.tasks_summary.next_task_blocked_reason).toBe("blocked_in_progress");
   });
 
+  // PM-705: 0 todo but work still in flight is NOT all_done.
+  it("blocked_in_progress (not all_done) with zero todos but tasks still in flight", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "A" }), mkTask({ id: "B", status: "done" })]);
+    sm.updateTaskStatus("A", "in_progress");
+    const ctx = sm.getProjectContext();
+    expect(ctx.tasks_summary.next_task).toBeNull();
+    expect(ctx.tasks_summary.next_task_blocked_reason).toBe("blocked_in_progress");
+  });
+
+  it("all_done only when every task is terminal", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "A", status: "done" }), mkTask({ id: "B", status: "cancelled" })]);
+    const ctx = sm.getProjectContext();
+    expect(ctx.tasks_summary.next_task_blocked_reason).toBe("all_done");
+  });
+
   it("none when a runnable next task exists", () => {
     const sm = new StateManager(emptyProject());
     sm.createTasks([mkTask({ id: "A" })]);
