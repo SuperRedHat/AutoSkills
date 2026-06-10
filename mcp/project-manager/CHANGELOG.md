@@ -2,6 +2,54 @@
 
 All notable changes to the project-manager MCP server.
 
+## [1.5.1] — 2026-06-10 — audit fix batch (reliability + correctness hardening)
+
+Additive, backward-compatible. No `schema_version` bump (stays 1). Outcome of a
+two-round multi-agent audit (security / bug / logic / token) with controller
+verification; see `AutoSkills/docs/audit-2026-06-10.md`. 26 files / 174 tests pass.
+
+### Fixed
+- **`close_task` supersede self-dependency (audit high)** — when the replacement
+  task itself depended on the superseded task (canonical follow-up: C depends on A,
+  then A is superseded by C), the shared edge-rewrite turned C's `A` edge into a
+  `C→C` self-dependency, silently deadlocking C and its whole downstream subtree
+  while reporting success. supersede now DROPS the replacement's own edge to the
+  husk, and `close_task` runs the same whole-graph post-validation as `rename_task`,
+  aborting with **no partial write** on any corruption.
+- **`create_tasks` / `add_subtask` id hygiene** — ids are trimmed and rejected when
+  empty or colliding (with existing tasks or within the batch); duplicates previously
+  slipped through and made Map-lookups (last-wins) and find-lookups (first-wins)
+  diverge on the same id. All-or-nothing.
+- **State-file corruption guard + atomic writes** — `readJSON` surfaces a structured
+  `state_file_corrupt` error naming the file (was a raw `SyntaxError` from whichever
+  tool touched it first); `lint_state` survives corrupt files and reports them; all
+  state writes go through tmp-sibling + rename (atomic); multi-file mutators
+  preflight-parse derived files so corruption fails before `tasks.json` is written
+  (no half-applied transitions).
+- **Windows path-case canonicalization** — `d:/x` vs `D:/X` no longer misclassifies
+  the active project as foreign (which silently weakened lint and blocked reconcile);
+  uses `realpathSync.native` with case-insensitive comparison on win32.
+- **Low-severity batch** — `next_task_blocked_reason` reports `blocked_in_progress`
+  (not `all_done`) when work is still in flight; `reconcile({dry_run:true})` on the
+  active project returns a fix-plan without writing; `close_task(cancelled, …,
+  replacement)` is rejected instead of silently dropping the replacement;
+  `rename_task` cascade also rewrites `focus.waiting_on`; `archive_module` surfaces
+  per-item close failures; terminal-close error message points at `reopen_task`.
+
+### Hardened (scripts)
+- `bootstrap.ps1` checks npm/node exit codes (a failed build no longer registers a
+  stale dist) and skips missing optional CLIs gracefully; gemini settings written
+  BOM-free. `bootstrap.sh` gemini-merge tolerates a BOM and, on a real parse failure,
+  backs up the file and skips the merge (never wipes user settings to `{}`).
+  `sync-skills` malformed-dir cleanup scoped to `project-*` names. `restore-global-
+  workflow` takes an automatic pre-restore safety snapshot.
+
+### Docs / token
+- `skills/` + templates deduped (−21.5 KB / 26%, behavior-preserving; report:
+  `docs/token-slim-report-2026-06-10.md`); skills↔CLI contract corrections (9 items:
+  `error.error_kind`, milestone_manual+stage_gate pairing, entities-as-object, etc.);
+  README refreshed with a per-skill 用法 table.
+
 ## [1.5.0] — 2026-06-10 — edit_tasks + rename_task + reconcile autofix/cross-project (ADR-005)
 
 Additive, backward-compatible. Resolves ADR-004 §7's four deferred items. No
