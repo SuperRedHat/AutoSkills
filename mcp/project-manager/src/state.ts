@@ -1105,10 +1105,29 @@ export class StateManager {
 
     if (closeStatus === "superseded" && replacementTaskId) {
       task.replacement_task_id = replacementTaskId;
+      // The replacement frequently depends on the task it supersedes (follow-up
+      // pattern: C was created to continue A, then A folds into C). Rewriting that
+      // edge would produce a C→C self-dependency, so it is dropped instead — once
+      // the husk's work moves into the replacement, the prerequisite is void.
+      const replacement = data.tasks.find((t) => t.id === replacementTaskId);
+      if (replacement && replacement.dependencies.includes(id)) {
+        replacement.dependencies = replacement.dependencies.filter((d) => d !== id);
+        rewired.push(replacement.id);
+      }
       // Rewrite dependents to point at the replacement so the DAG stays runnable
       // (the work moved; dependents should now wait on the replacement, not the husk).
       // The shared rewrite helper skips the husk itself and dedupes.
       rewired.push(...this.rewriteDependencyEdges(data.tasks, id, replacementTaskId, { skipId: id }));
+    }
+
+    // Post-transform whole-graph validation (same guard as rename_task): abort
+    // with no partial write rather than persist a corrupt graph.
+    const graphError = this.validateTaskGraph(data.tasks);
+    if (graphError) {
+      return {
+        success: false,
+        error: `close_task aborted (would corrupt the task graph): ${graphError}`,
+      };
     }
 
     this.saveTasks(data);

@@ -102,4 +102,62 @@ describe("close_task", () => {
     expect(r.success).toBe(true);
     expect(sm.getTaskById("C")!.dependencies).toEqual(["B"]); // not ["B","B"]
   });
+
+  // PM-701: the canonical follow-up pattern — C was created to continue A and
+  // depends on it, then A is superseded by C. The A→C edge on C must be DROPPED
+  // (not rewritten into a C→C self-dependency that deadlocks C and its subtree).
+  it("supersede drops the replacement's own edge to the husk instead of self-rewriting it", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([
+      mkTask({ id: "A", status: "in_progress" }),
+      mkTask({ id: "C", dependencies: ["A"] }),
+      mkTask({ id: "D", dependencies: ["C"] }),
+    ]);
+    const r = sm.closeTask("A", "superseded", "folded into C", "C");
+    expect(r.success).toBe(true);
+    expect(r.rewired).toContain("C");
+
+    const c = sm.getTaskById("C")!;
+    expect(c.dependencies).toEqual([]); // edge dropped, no self-dependency
+
+    // C (and therefore its subtree) stays schedulable.
+    const next = sm.getNextTask();
+    expect(next?.id).toBe("C");
+  });
+
+  it("supersede drops the husk edge but keeps the replacement's other dependencies", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([
+      mkTask({ id: "A" }),
+      mkTask({ id: "B", status: "done" }),
+      mkTask({ id: "C", dependencies: ["A", "B"] }),
+    ]);
+    const r = sm.closeTask("A", "superseded", "folded into C", "C");
+    expect(r.success).toBe(true);
+    expect(sm.getTaskById("C")!.dependencies).toEqual(["B"]);
+  });
+
+  // PM-701: closeTask now runs the same whole-graph post-validation as rename_task.
+  // On abort nothing is persisted (no partial write, no audit log).
+  it("aborts with no partial write when the post-transform graph is invalid", () => {
+    const dir = emptyProject();
+    const sm = new StateManager(dir);
+    sm.createTasks([
+      mkTask({ id: "A" }),
+      mkTask({ id: "C", dependencies: ["A"] }),
+    ]);
+    // Corrupt the graph on disk AFTER creation: give D a dangling dependency so
+    // any post-transform validation must fail, then attempt the supersede.
+    const tasksPath = path.join(dir, ".claude", "state", "tasks.json");
+    const data = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+    data.tasks.push({ ...data.tasks[0], id: "D", dependencies: ["GHOST"] });
+    fs.writeFileSync(tasksPath, JSON.stringify(data, null, 2));
+    const before = fs.readFileSync(tasksPath, "utf-8");
+
+    const r = sm.closeTask("A", "superseded", "folded into C", "C");
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/would corrupt the task graph/);
+    expect(fs.readFileSync(tasksPath, "utf-8")).toBe(before); // byte-identical
+    expect(sm.getLogs({ event_type: "task_closed" }).length).toBe(0);
+  });
 });
