@@ -3,12 +3,14 @@
   Snapshot the current user's workflow state before bootstrap / reinstall.
 
 .DESCRIPTION
-  Writes a timestamped backup to ~/.workflow-core-backups/<ISO8601>/ covering:
-    - ~/.codex/skills/project-*
-    - ~/.claude/skills/project-*
-    - ~/.gemini/skills/project-*
-    - ~/.claude/commands/project-*.md
-    - ~/.gemini/settings.json (mcpServers section)
+  Writes a timestamped backup to ~/.workflow-core-backups/<ISO8601>/ covering
+  (FULL directories, not just project-* entries — restore is a wholesale
+  point-in-time rollback of these paths):
+    - ~/.codex/skills/        (entire dir)
+    - ~/.claude/skills/       (entire dir)
+    - ~/.gemini/skills/       (entire dir)
+    - ~/.claude/commands/     (entire dir)
+    - ~/.gemini/settings.json (whole file)
     - Output of `codex mcp get project-manager`
     - Output of `claude mcp get project-manager -s user`
 

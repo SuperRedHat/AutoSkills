@@ -79,9 +79,11 @@ foreach ($targetRoot in $targets) {
         Invoke-Action "remove orphan $($_.FullName)" { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
       }
 
-    # Remove malformed (brace expansion artifacts)
+    # Remove malformed (brace expansion artifacts). PM-706: scoped to names that
+    # also contain 'project-' — an unrelated user skill whose name happens to
+    # contain { } or , must never be deleted by our cleanup.
     Get-ChildItem -Path $targetRoot -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '[\{\}\,]' } |
+      Where-Object { $_.Name -match '[\{\}\,]' -and $_.Name -like '*project-*' } |
       ForEach-Object {
         Invoke-Action "remove malformed $($_.FullName)" { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
       }

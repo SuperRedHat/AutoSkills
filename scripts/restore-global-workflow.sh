@@ -29,6 +29,17 @@ USER_HOME="${HOME}"
 echo "[restore] snapshot = $SNAPSHOT_PATH"
 [[ $DRY_RUN -eq 1 ]] && echo "[restore] DRY-RUN mode"
 
+# PM-706: restore REPLACES the target dirs wholesale (everything added after the
+# snapshot is removed). Snapshot the CURRENT state first so a mistaken restore
+# is itself reversible.
+echo "[restore] pre-restore safety snapshot of current state:"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $DRY_RUN -eq 1 ]]; then
+  bash "$SCRIPT_DIR/backup-global-workflow.sh" --dry-run
+else
+  bash "$SCRIPT_DIR/backup-global-workflow.sh"
+fi
+
 invoke() {
   local desc="$1"; shift
   if [[ $DRY_RUN -eq 1 ]]; then

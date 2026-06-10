@@ -162,15 +162,23 @@ else
   # shell-interpolated into the Python source (no injection, no triple-quote break).
   MCP_ARGS_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${MCP_ARGS[@]}")"
   PM_GEMINI_SETTINGS="$GEMINI_SETTINGS" PM_MCP_COMMAND="$MCP_COMMAND" PM_MCP_ARGS_JSON="$MCP_ARGS_JSON" PM_TRUST_GEMINI="$TRUST_GEMINI" python3 - <<'PYEOF'
-import json, os
+import json, os, shutil, sys, time
 path = os.environ['PM_GEMINI_SETTINGS']
 data = {}
 if os.path.isfile(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        try:
+    # PM-706: utf-8-sig tolerates the BOM that Windows PowerShell 5.1 used to
+    # write. On a REAL parse failure, back the file up and SKIP the merge —
+    # never silently replace the user's settings with an empty object.
+    try:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
-        except Exception:
-            data = {}
+    except Exception as exc:
+        backup = path + '.bak-' + time.strftime('%Y%m%dT%H%M%S')
+        shutil.copy2(path, backup)
+        print('[warn]    ' + path + ' is not valid JSON (' + str(exc) + ');')
+        print('[warn]    backed it up to ' + backup + ' and SKIPPING gemini registration.')
+        print('[warn]    Fix the file, then re-run bootstrap to register the MCP server for gemini.')
+        sys.exit(0)
 data.setdefault('mcpServers', {})
 data['mcpServers']['project-manager'] = {
     'command': os.environ['PM_MCP_COMMAND'],

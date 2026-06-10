@@ -36,6 +36,13 @@ $userHome = $env:USERPROFILE
 Write-Output "[restore] snapshot = $SnapshotPath"
 if ($DryRun) { Write-Output "[restore] DRY-RUN mode" }
 
+# PM-706: restore REPLACES the target dirs wholesale (everything added after the
+# snapshot is removed). Snapshot the CURRENT state first so a mistaken restore
+# is itself reversible.
+Write-Output "[restore] pre-restore safety snapshot of current state:"
+$preBackupScript = Join-Path (Split-Path -Parent $PSCommandPath) 'backup-global-workflow.ps1'
+if ($DryRun) { & $preBackupScript -DryRun } else { & $preBackupScript }
+
 function Invoke-Action {
   param([string]$Desc, [scriptblock]$Action)
   if ($DryRun) { Write-Output "[dry-run] $Desc" } else { Write-Output "[action]  $Desc"; & $Action }

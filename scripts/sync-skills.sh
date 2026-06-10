@@ -84,10 +84,15 @@ for TARGET_ROOT in "${TARGETS[@]}"; do
         invoke "remove orphan $d" rm -rf "$d"
       fi
     done
-    # Malformed braces cleanup
+    # Malformed braces cleanup. PM-706: scoped to names that also contain
+    # 'project-' — never delete an unrelated user skill whose name happens to
+    # contain { } or ,.
     for d in "$TARGET_ROOT"/*\{* "$TARGET_ROOT"/*\}* "$TARGET_ROOT"/*,*; do
       [[ -e "$d" ]] || continue
-      invoke "remove malformed $d" rm -rf "$d"
+      case "$(basename "$d")" in
+        *project-*) invoke "remove malformed $d" rm -rf "$d" ;;
+        *) echo "[info]    leaving non-project entry alone: $d" ;;
+      esac
     done
   fi
 

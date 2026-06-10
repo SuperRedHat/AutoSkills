@@ -89,10 +89,14 @@ if (-not (Test-Path $mcpProjectDir)) {
 Invoke-Action "npm install in $mcpProjectDir" {
   Push-Location $mcpProjectDir
   try { npm install } finally { Pop-Location }
+  # PM-706: native commands do not trip $ErrorActionPreference='Stop' in PS 5.1 —
+  # without this check a failed install continued and a stale dist got registered.
+  if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)" }
 }
 Invoke-Action "npm run build in $mcpProjectDir" {
   Push-Location $mcpProjectDir
   try { npm run build } finally { Pop-Location }
+  if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE) — refusing to register a stale dist" }
   $distIndex = Join-Path $mcpProjectDir 'dist\index.js'
   if (-not (Test-Path $distIndex)) { throw "Build did not produce $distIndex" }
 }
@@ -139,18 +143,29 @@ foreach ($a in $argsTemplate) {
 }
 Write-Output "resolved command: $command $($expandedArgs -join ' ')"
 
-# codex
-Invoke-Action "codex mcp add project-manager" {
-  try { codex mcp remove project-manager 2>&1 | Out-Null } catch {}
-  $argList = @('mcp', 'add', 'project-manager', '--', $command) + $expandedArgs
-  & codex @argList
+# codex — PM-706: skip gracefully when the CLI is absent (bash pair behavior);
+# a missing optional CLI must not abort the install halfway.
+if (Get-Command codex -ErrorAction SilentlyContinue) {
+  Invoke-Action "codex mcp add project-manager" {
+    try { codex mcp remove project-manager 2>&1 | Out-Null } catch {}
+    $argList = @('mcp', 'add', 'project-manager', '--', $command) + $expandedArgs
+    & codex @argList
+    if ($LASTEXITCODE -ne 0) { throw "codex mcp add failed (exit $LASTEXITCODE)" }
+  }
+} else {
+  Write-Output "[info]    codex CLI not found, skipping codex registration"
 }
 
 # claude (user scope)
-Invoke-Action "claude mcp add project-manager (user scope)" {
-  try { claude mcp remove project-manager -s user 2>&1 | Out-Null } catch {}
-  $argList = @('mcp', 'add', 'project-manager', '-s', 'user', '--', $command) + $expandedArgs
-  & claude @argList
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+  Invoke-Action "claude mcp add project-manager (user scope)" {
+    try { claude mcp remove project-manager -s user 2>&1 | Out-Null } catch {}
+    $argList = @('mcp', 'add', 'project-manager', '-s', 'user', '--', $command) + $expandedArgs
+    & claude @argList
+    if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed (exit $LASTEXITCODE)" }
+  }
+} else {
+  Write-Output "[info]    claude CLI not found, skipping claude registration"
 }
 
 # gemini (settings.json edit)
@@ -163,7 +178,10 @@ Invoke-Action "gemini mcp register (settings.json merge, trust=$($trust.gemini))
     args = $expandedArgs
     trust = [bool]$trust.gemini
   }) -Force
-  $settings | ConvertTo-Json -Depth 8 | Out-File -FilePath $geminiSettingsPath -Encoding UTF8
+  # PM-706: Out-File -Encoding UTF8 writes a BOM under Windows PowerShell 5.1,
+  # which strict JSON parsers (incl. the bash pair's python json.load) reject.
+  $json = $settings | ConvertTo-Json -Depth 8
+  [System.IO.File]::WriteAllText($geminiSettingsPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 # --- Step 5: verify ---
