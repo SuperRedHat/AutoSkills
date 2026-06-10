@@ -59,3 +59,60 @@ describe("batch operations", () => {
     expect(sm.getTaskById("D")!.status).toBe("todo"); // untouched
   });
 });
+
+// PM-702: id hygiene at creation time — duplicates were previously pushed
+// straight through, after which Map lookups (last-wins) and find lookups
+// (first-wins) diverge on the same id.
+describe("create_tasks / add_subtask id hygiene (PM-702)", () => {
+  it("rejects an id that already exists — all-or-nothing, nothing written", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "A" })]);
+    const r = sm.createTasks([mkTask({ id: "B" }), mkTask({ id: "A" })]);
+    expect(r.created).toBe(0);
+    expect(r.error).toMatch(/duplicate task id/);
+    expect(sm.getTaskById("B")).toBeNull(); // B from the rejected batch not created
+  });
+
+  it("rejects duplicates within one batch", () => {
+    const sm = new StateManager(emptyProject());
+    const r = sm.createTasks([mkTask({ id: "A" }), mkTask({ id: "A" })]);
+    expect(r.created).toBe(0);
+    expect(r.error).toMatch(/duplicate task id/);
+    expect(sm.getAllTasks().length).toBe(0);
+  });
+
+  it("trims ids and dependencies; a trimmed id collides with its untrimmed twin", () => {
+    const sm = new StateManager(emptyProject());
+    const r1 = sm.createTasks([mkTask({ id: "  A  " })]);
+    expect(r1.created).toBe(1);
+    expect(sm.getTaskById("A")).toBeTruthy(); // stored trimmed
+    const r2 = sm.createTasks([mkTask({ id: " A" })]);
+    expect(r2.created).toBe(0); // collides with existing A after trim
+  });
+
+  it("rejects an empty id after trim", () => {
+    const sm = new StateManager(emptyProject());
+    const r = sm.createTasks([mkTask({ id: "   " })]);
+    expect(r.created).toBe(0);
+    expect(r.error).toMatch(/empty task id/);
+  });
+
+  it("does NOT police graph shape at creation (lint/reconcile own that), only id uniqueness", () => {
+    const sm = new StateManager(emptyProject());
+    // Self/dangling deps still create fine — lint_state diagnoses them, and
+    // tests/fixtures rely on createTasks as the seeding path for dirty graphs.
+    const r = sm.createTasks([mkTask({ id: "A", dependencies: ["GHOST"] })]);
+    expect(r.created).toBe(1);
+    const lint = sm.lintState();
+    expect(lint.findings.some((f) => f.code === "dangling_dependency")).toBe(true);
+  });
+
+  it("add_subtask rejects an existing id and trims the new one", () => {
+    const sm = new StateManager(emptyProject());
+    sm.createTasks([mkTask({ id: "P" })]);
+    expect(sm.addSubtask("P", mkTask({ id: "P" })).success).toBe(false);
+    expect(sm.addSubtask("P", mkTask({ id: "  " })).success).toBe(false);
+    expect(sm.addSubtask("P", mkTask({ id: " S1 " })).success).toBe(true);
+    expect(sm.getTaskById("S1")).toBeTruthy();
+  });
+});

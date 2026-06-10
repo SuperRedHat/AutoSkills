@@ -301,7 +301,10 @@ server.tool(
     const result = state.createTasks(fullTasks);
     return {
       content: [
-        { type: "text" as const, text: `Created ${result.created} tasks.` },
+        {
+          type: "text" as const,
+          text: result.error ? `Error: ${result.error}` : `Created ${result.created} tasks.`,
+        },
       ],
     };
   }

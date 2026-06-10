@@ -25,6 +25,23 @@ function seed(tasks: Task[], status: ProjectInfo["status"] = "in_progress"): Sta
   if (tasks.length) sm.createTasks(tasks);
   return sm;
 }
+/**
+ * Seed by writing tasks.json directly — for corruption that create_tasks now
+ * refuses to produce (duplicate/blank ids, PM-702). lint must still diagnose
+ * these when they enter via hand-edits or legacy files.
+ */
+function seedFile(tasks: Task[], status: ProjectInfo["status"] = "in_progress"): StateManager {
+  const dir = emptyProject();
+  const sm = new StateManager(dir);
+  sm.saveProjectInfo({
+    name: "t", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+    status, tech_stack: [], progress: { total: 0, done: 0, in_progress: 0, awaiting_acceptance: 0, todo: 0 },
+  });
+  const statePath = path.join(dir, ".claude", "state");
+  fs.mkdirSync(statePath, { recursive: true });
+  fs.writeFileSync(path.join(statePath, "tasks.json"), JSON.stringify({ tasks }, null, 2));
+  return sm;
+}
 const codes = (sm: StateManager, o?: { crossProject?: boolean }) =>
   sm.lintState(o).findings.map((f) => f.code);
 
@@ -68,8 +85,9 @@ describe("lint_state", () => {
   });
 
   it("duplicate_task_id: two tasks share an id", () => {
-    const sm = seed([mkTask({ id: "A" })]);
-    sm.createTasks([mkTask({ id: "A", title: "dup" })]);
+    // create_tasks rejects duplicates since PM-702, so seed the corruption at
+    // the file level (hand-edit / legacy data path).
+    const sm = seedFile([mkTask({ id: "A" }), mkTask({ id: "A", title: "dup" })]);
     expect(codes(sm)).toContain("duplicate_task_id");
   });
 
@@ -159,7 +177,8 @@ describe("lint_state", () => {
   });
 
   it("a blank task id is reported as blank_task_id, not duplicate_task_id", () => {
-    const sm = seed([mkTask({ id: "   " })]);
+    // create_tasks rejects blank ids since PM-702; seed at the file level.
+    const sm = seedFile([mkTask({ id: "   " })]);
     const c = codes(sm);
     expect(c).toContain("blank_task_id");
     expect(c).not.toContain("duplicate_task_id");

@@ -369,9 +369,32 @@ export class StateManager {
     this.writeJSON("tasks.json", data);
   }
 
-  createTasks(tasks: Task[]): { created: number } {
+  createTasks(tasks: Task[]): { created: number; error?: string } {
     const now = new Date().toISOString();
     const data = this.getTasks() || { tasks: [] };
+
+    // PM-702: ids are trimmed and must be unique — against existing tasks AND
+    // within the incoming batch. Duplicates previously slipped straight through
+    // push(), after which Map-based lookups (last-wins) and find-based lookups
+    // (first-wins) diverge on the same id. All-or-nothing: reject the batch.
+    const existing = new Set(data.tasks.map((t) => t.id));
+    const seen = new Set<string>();
+    const conflicts = new Set<string>();
+    for (const task of tasks) {
+      task.id = (task.id ?? "").trim();
+      if (!task.id) {
+        return { created: 0, error: `create_tasks rejected: empty task id (after trim) on "${task.title || "<untitled>"}". No tasks were created.` };
+      }
+      if (existing.has(task.id) || seen.has(task.id)) conflicts.add(task.id);
+      seen.add(task.id);
+      task.dependencies = (task.dependencies || []).map((d) => (d ?? "").trim()).filter(Boolean);
+    }
+    if (conflicts.size) {
+      return {
+        created: 0,
+        error: `create_tasks rejected: duplicate task id(s) ${[...conflicts].join(", ")} (already exist or repeat within the batch). No tasks were created.`,
+      };
+    }
 
     for (const task of tasks) {
       task.created_at = task.created_at || now;
@@ -382,6 +405,10 @@ export class StateManager {
       data.tasks.push(this.normalizeTask(task));
     }
 
+    // Graph-shape problems (self/dangling deps, cycles) are deliberately NOT
+    // rejected here: lint_state diagnoses them and reconcile/edit_task repair
+    // them. Only id uniqueness is enforced at creation, because duplicate ids
+    // break keyed lookups themselves (Map last-wins vs find first-wins).
     this.saveTasks(data);
     this.updateProjectProgress();
     return { created: tasks.length };
@@ -1271,6 +1298,16 @@ export class StateManager {
 
     const parent = data.tasks.find((t) => t.id === parentId);
     if (!parent) return { success: false, error: `Parent task ${parentId} not found` };
+
+    // PM-702: same id hygiene as create_tasks — trim, non-empty, no collision.
+    subtask.id = (subtask.id ?? "").trim();
+    if (!subtask.id) {
+      return { success: false, error: "add_subtask rejected: empty subtask id (after trim)." };
+    }
+    if (data.tasks.some((t) => t.id === subtask.id)) {
+      return { success: false, error: `add_subtask rejected: task id ${subtask.id} already exists.` };
+    }
+    subtask.dependencies = (subtask.dependencies || []).map((d) => (d ?? "").trim()).filter(Boolean);
 
     subtask.created_at = new Date().toISOString();
     subtask.updated_at = new Date().toISOString();
