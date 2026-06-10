@@ -49,6 +49,14 @@ verification; see `AutoSkills/docs/audit-2026-06-10.md`. 26 files / 174 tests pa
   `docs/token-slim-report-2026-06-10.md`); skills↔CLI contract corrections (9 items:
   `error.error_kind`, milestone_manual+stage_gate pairing, entities-as-object, etc.);
   README refreshed with a per-skill 用法 table.
+- **Post-release audit (2026-06-10)** — a full multi-agent hallucination review of
+  this batch confirmed all engineering logic + 174 tests are correct. Corrected 3
+  doc/contract hallucination artifacts: removed a fabricated commit hash from the
+  audit doc; fixed a nonexistent CouncilFlow `error_kind` in `project-discuss`
+  (`provider_timeout` → the real `total_timeout` / `idle_timeout`); bumped a stale
+  README ADR reference (`adr-001..004` → `..005`) — commit `b52eb6b`. The skills
+  token-slim additionally passed a real A/B test (no quality regression; several
+  scenarios improved because the pre-slim text still carried bugs this batch fixed).
 
 ## [1.5.0] — 2026-06-10 — edit_tasks + rename_task + reconcile autofix/cross-project (ADR-005)
 
