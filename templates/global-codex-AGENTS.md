@@ -13,6 +13,29 @@
 - 不要一次性生成大量代码，分模块逐步实现并验证。
 - 涉及架构变更时必须先更新设计文档，等用户确认后再改代码。
 
+### 自主运行纪律（防编造进度报告）
+> Anthropic 官方针对 Fable 5+ 的建议（官方测试中"几乎消除"了编造的进度报告），对所有模型适用。
+
+汇报进度前逐条对账（官方原文）：
+
+```text
+Before reporting progress, audit each claim against a tool result from this session.
+Only report work you can point to evidence for; if something is not yet verified, say so
+explicitly. Report outcomes faithfully: if tests fail, say so with the output; if a step
+was skipped, say that; when something is done and verified, state it plainly without
+hedging.
+```
+
+只在真正需要用户时暂停，问完即结束回合（官方原文）：
+
+```text
+Pause for the user only when the work genuinely requires them: a destructive or
+irreversible action, a real scope change, or input that only they can provide. If you
+hit one of these, ask and end the turn, rather than ending on a promise.
+```
+
+- 引用型标识符（commit hash / 枚举值 / 字段名 / 文件路径 / 数字）必须来自本会话真实工具输出，禁止凭记忆生成；「已验证/已修复」本身也是可证伪声明，必须能指认对应证据。
+
 ### Git 规范
 - Commit message 遵循 Conventional Commits：`type(scope): description`
 - 自动 commit 默认开启

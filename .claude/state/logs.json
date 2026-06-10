@@ -1831,6 +1831,27 @@
       "from_status": null,
       "to_status": null,
       "message": "[发布 2026-06-10] v1.5.1 发布到 GitHub。前置全部通过：①sync-skills 部署到 ~/.claude /.codex /.gemini 三处（11 skill，SHA-256 校验全过，含刚修的 project-discuss）。②token-slim A/B 实测（6 场景，verbose e81cba7 vs slimmed HEAD，每场景行为 rubric 打分 + 回归独立复核，18 agent）GATE=PASS 零确认回归——且 4/6 场景 slimmed 反而更正确（pre-slim 还带着 PM-707 修掉的 bug：discuss 无恢复协议 1→6、plan 误用 manual 1→3、change entities 数组 1→3）。③tsc 干净 + 174 测试全过。发布动作：CHANGELOG[1.5.1] 加发布后审计说明；push main→origin/main（领先 24）；同步 origin/master（FF，原落后 47）；打 annotated tag v1.5.1；gh release create。版本不 bump（审计修复纯文档/契约，b52eb6b 已折叠进 1.5.1）。"
+    },
+    {
+      "timestamp": "2026-06-10T11:45:24.334Z",
+      "type": "config_change",
+      "kind": "ops_event",
+      "event_type": "global_template_update",
+      "tags": [
+        "fable5",
+        "global-template",
+        "anti-fabrication",
+        "deploy"
+      ],
+      "entities": {
+        "files": "templates/global-claude-CLAUDE.md, templates/global-codex-AGENTS.md",
+        "deployed_to": "~/.workflow-core/templates, ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md"
+      },
+      "source": "claude-fable-5",
+      "task_id": null,
+      "from_status": null,
+      "to_status": null,
+      "message": "[2026-06-10] 全局模板新增「自主运行纪律」段：两段 Anthropic 官方 verbatim 提示词（进度声明逐条对账工具输出——官方测试几乎消除编造进度报告；只在destructive/scope-change/user-only-input 时暂停并问完即结束回合）+ 引用型标识符必须来自真实工具输出的硬规则（本仓库两轮 Fable 5 审计的教训固化）。来源：platform.claude.com prompting-claude-fable-5 指南（2026-06-10 WebFetch 取得原文，非凭记忆）。同时发现并修复部署链断档：~/.claude/CLAUDE.md 与 ~/.codex/AGENTS.md 停留在 4-11 旧版（缺 6-08 的 close_task/reopen_task 状态机段，而 PM-708 瘦身后的 skills 正指向该段）——已备份旧版（.bak-20260610）并把 repo 模板同步到 ~/.workflow-core/templates + 用户级，4 处 cmp 校验一致。注意：bootstrap 脚本不部署全局模板，目前为手动同步，后续可考虑纳入 sync 脚本。另：reasoning_extraction 风险扫描（skills/ + templates/ + CouncilFlow prompt 渲染层）零命中，无需修改。"
     }
   ]
 }
