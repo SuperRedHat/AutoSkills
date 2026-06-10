@@ -230,4 +230,4 @@ restore 在动手前会**自动对当前状态再做一次快照**（误恢复�
 - [mcp-manifest.json](mcp-manifest.json) — MCP 注册真源
 - [mcp/project-manager/README.md](mcp/project-manager/README.md) — project-manager 完整工具清单（v1.5.1）
 - [mcp/project-manager/CHANGELOG.md](mcp/project-manager/CHANGELOG.md) — project-manager 版本变更
-- `docs/adr-001..004-*.md` — ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查能力设计决策
+- `docs/adr-001..005-*.md` — ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查 / 任务身份与 reconcile 安全包络 能力设计决策

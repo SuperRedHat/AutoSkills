@@ -51,7 +51,7 @@ council discuss "<question>" --controller-position "<initial_position>"
   1. `council status --project-root <root>` 取 `data.state.last_discussion_id`
   2. `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
   3. 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
-  4. 只有 `discussion wait` 自身以非零退出并给出 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `provider_timeout`），才允许宣告失败
+  4. 只有 `discussion wait` 自身以非零退出并给出 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `total_timeout` / `idle_timeout`），才允许宣告失败
 - 如果 `council discuss`（含上述恢复路径）最终确认失败、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并报告失败**；不要把单模型主控判断伪装成已经完成的多模型讨论
 
 ### 第三步：读取结构化产物
