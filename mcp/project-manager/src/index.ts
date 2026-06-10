@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { StateManager, Task } from "./state.js";
 import { findUnknownProfiles } from "./profiles.js";
-import { resolveProjectDir } from "./project_dir.js";
+import { resolveProjectDir, canonicalizePath, samePath } from "./project_dir.js";
 
 // Resolve project directory: env var > search upward for .claude/state/ > cwd
 function findProjectDir(): string {
@@ -59,13 +59,8 @@ function selectState(dir?: string): StateSelection {
   // project — reuse the global state and keep active:true, so cross-project suppression
   // (e.g. lint_state's machine-local checks) does not silently weaken a lint of one's
   // own project addressed by absolute path.
-  let activeResolved: string;
-  try {
-    activeResolved = fs.realpathSync(projectDir);
-  } catch {
-    activeResolved = path.resolve(projectDir);
-  }
-  if (r.resolved === activeResolved) {
+  const activeResolved = canonicalizePath(projectDir);
+  if (samePath(r.resolved, activeResolved)) {
     return {
       ok: true,
       state,

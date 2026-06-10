@@ -13,18 +13,39 @@ export type DirResolution =
     };
 
 /**
+ * PM-704: canonicalize a path for identity comparison. Plain realpathSync does
+ * NOT true-case Windows paths (it preserves the caller's casing), so
+ * `d:/project/x` and `D:/project/X` compared unequal and the active project
+ * was misclassified as foreign. realpathSync.native returns the on-disk casing.
+ */
+export function canonicalizePath(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      // The path may not exist; the caller's stat will classify it.
+      return resolved;
+    }
+  }
+}
+
+/** Case-aware path identity: Windows filesystems are case-insensitive. */
+export function samePath(a: string, b: string): boolean {
+  if (process.platform === "win32") return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+
+/**
  * Resolve a (possibly relative / symlinked) project dir to a canonical path and
  * validate that it is an initialized project (`.claude/state` is a directory).
- * realpathSync canonicalizes symlinks and normalizes Windows case / UNC paths.
- * Never mutates any global state.
+ * canonicalizePath resolves symlinks and (via realpathSync.native) true-cases
+ * Windows paths. Never mutates any global state.
  */
 export function resolveProjectDir(dir: string): DirResolution {
-  let resolved = path.resolve(dir);
-  try {
-    resolved = fs.realpathSync(resolved); // canonical: symlinks, Windows case, UNC
-  } catch {
-    // The path may not exist; keep the resolve() value and let the stat below classify it.
-  }
+  const resolved = canonicalizePath(dir);
 
   const statePath = path.join(resolved, ".claude", "state");
   let st: fs.Stats;
