@@ -249,6 +249,24 @@ export type TaskEditPatch = Partial<
 
 // ---------- State Manager ----------
 
+/**
+ * PM-703: structured error for unparseable/mis-shaped state files. Carries the
+ * offending file name so tools (and lint_state) can point the user at exactly
+ * what to fix instead of dying on a context-free SyntaxError.
+ */
+export class StateFileCorruptError extends Error {
+  readonly code = "state_file_corrupt";
+  constructor(
+    public readonly file: string,
+    public readonly detail: string
+  ) {
+    super(
+      `state_file_corrupt: ${file} cannot be parsed — ${detail}. The file may have been hand-edited or truncated; fix or restore it (other state files are untouched).`
+    );
+    this.name = "StateFileCorruptError";
+  }
+}
+
 export class StateManager {
   private stateDir: string;
 
@@ -269,12 +287,32 @@ export class StateManager {
   private readJSON<T>(name: string): T | null {
     const p = this.filePath(name);
     if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, "utf-8")) as T;
+    const raw = fs.readFileSync(p, "utf-8");
+    try {
+      return JSON.parse(raw) as T;
+    } catch (e) {
+      // PM-703: a truncated/hand-mangled state file previously surfaced as a raw
+      // SyntaxError from deep inside whatever tool happened to touch it first.
+      throw new StateFileCorruptError(name, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * PM-703: all state-file writes go through a tmp-sibling + rename so a crash
+   * mid-write can never leave a truncated file — readers see either the complete
+   * old or the complete new content. rename() is atomic on the same volume
+   * (POSIX) and maps to MoveFileEx(REPLACE_EXISTING) on Windows.
+   */
+  private atomicWrite(name: string, content: string): void {
+    this.ensureDir();
+    const target = this.filePath(name);
+    const tmp = target + ".tmp";
+    fs.writeFileSync(tmp, content, "utf-8");
+    fs.renameSync(tmp, target);
   }
 
   private writeJSON<T>(name: string, data: T): void {
-    this.ensureDir();
-    fs.writeFileSync(this.filePath(name), JSON.stringify(data, null, 2), "utf-8");
+    this.atomicWrite(name, JSON.stringify(data, null, 2));
   }
 
   private readMD(name: string): string | null {
@@ -284,8 +322,20 @@ export class StateManager {
   }
 
   private writeMD(name: string, content: string): void {
-    this.ensureDir();
-    fs.writeFileSync(this.filePath(name), content, "utf-8");
+    this.atomicWrite(name, content);
+  }
+
+  /**
+   * PM-703: parse-validate the derived files an operation will write AFTER
+   * tasks.json (project.json / logs.json / focus.json), so corruption in any of
+   * them fails the operation BEFORE the first write instead of half-applying
+   * (tasks.json persisted, then the audit-log write throws — after which a
+   * retry fails with a confusing "Invalid transition: X → X").
+   */
+  private preflightDerivedFiles(opts: { focus?: boolean } = {}): void {
+    this.readJSON<ProjectInfo>("project.json");
+    this.readJSON<LogsData>("logs.json");
+    if (opts.focus) this.readJSON<CurrentFocus>("focus.json");
   }
 
   // ---------- Project ----------
@@ -360,6 +410,12 @@ export class StateManager {
   getTasks(): TasksData | null {
     const data = this.readJSON<TasksData>("tasks.json");
     if (!data) return null;
+    if (!Array.isArray((data as Partial<TasksData>).tasks)) {
+      throw new StateFileCorruptError(
+        "tasks.json",
+        "top-level shape must be { tasks: [...] }"
+      );
+    }
     return {
       tasks: data.tasks.map((task) => this.normalizeTask(task)),
     };
@@ -769,6 +825,7 @@ export class StateManager {
   } {
     const data = this.getTasks();
     if (!data) return { success: false, error: "No tasks found" };
+    this.preflightDerivedFiles({ focus: true }); // PM-703
     if (!newId || !newId.trim()) {
       return { success: false, error: "rename_task requires a non-empty new_id." };
     }
@@ -910,6 +967,7 @@ export class StateManager {
   ): { success: boolean; error?: string; task_id?: string } {
     const data = this.getTasks();
     if (!data) return { success: false, error: "No tasks found" };
+    this.preflightDerivedFiles(); // PM-703
     const task = data.tasks.find((t) => t.id === id);
     if (!task) return { success: false, error: `Task ${id} not found` };
 
@@ -1014,6 +1072,7 @@ export class StateManager {
   ): { success: boolean; error?: string } {
     const data = this.getTasks();
     if (!data) return { success: false, error: "No tasks found" };
+    this.preflightDerivedFiles(); // PM-703: fail BEFORE the tasks.json write, not between writes
 
     const task = data.tasks.find((t) => t.id === id);
     if (!task) return { success: false, error: `Task ${id} not found` };
@@ -1098,6 +1157,7 @@ export class StateManager {
   } {
     const data = this.getTasks();
     if (!data) return { success: false, error: "No tasks found" };
+    this.preflightDerivedFiles(); // PM-703
 
     const task = data.tasks.find((t) => t.id === id);
     if (!task) return { success: false, error: `Task ${id} not found` };
@@ -1334,6 +1394,12 @@ export class StateManager {
   ): LogEntry[] {
     const data = this.readJSON<LogsData>("logs.json");
     if (!data) return [];
+    if (!Array.isArray((data as Partial<LogsData>).logs)) {
+      throw new StateFileCorruptError(
+        "logs.json",
+        "top-level shape must be { logs: [...] }"
+      );
+    }
 
     const opts = typeof filter === "number" ? { limit: filter } : filter ?? {};
 
@@ -1569,10 +1635,37 @@ export class StateManager {
    * (profiles / schema / etc.) when linting a foreign project read-only.
    */
   lintState(opts: { crossProject?: boolean } = {}): LintResult {
-    const tasksRaw = this.readJSON<TasksData>("tasks.json")?.tasks ?? [];
-    const tasks = this.getTasks()?.tasks ?? [];
-    const info = this.getProjectInfo();
-    return runLint({
+    // PM-703: lint is the diagnosis tool — it must survive corrupt state files
+    // and REPORT them, not die on the very condition it exists to surface.
+    // Each file is read independently; a corrupt one contributes a
+    // state_file_corrupt error finding and an empty/null value to the bundle.
+    const corrupt: Finding[] = [];
+    const guard = <T>(fn: () => T, fallback: T): T => {
+      try {
+        return fn();
+      } catch (e) {
+        corrupt.push({
+          code: "state_file_corrupt",
+          severity: "error",
+          message: e instanceof Error ? e.message : String(e),
+          task_id: null,
+          entities: e instanceof StateFileCorruptError ? { file: e.file } : undefined,
+          autofixable: false,
+        });
+        return fallback;
+      }
+    };
+
+    const tasks = guard(() => this.getTasks()?.tasks ?? [], []);
+    const tasksRaw = guard(
+      () => this.readJSON<TasksData>("tasks.json")?.tasks ?? [],
+      []
+    );
+    const info = guard(() => this.getProjectInfo(), null);
+    const logs = guard(() => this.getLogs(), []);
+    const focus = guard(() => this.readJSON<CurrentFocus>("focus.json"), null);
+
+    const result = runLint({
       tasksRaw,
       tasks,
       actualProgress: info?.progress ?? null,
@@ -1580,11 +1673,26 @@ export class StateManager {
       projectStatus: info?.status ?? null,
       schemaVersion: info?.schema_version ?? 0,
       currentSchemaVersion: CURRENT_SCHEMA_VERSION,
-      logs: this.getLogs(),
-      focus: this.readJSON<CurrentFocus>("focus.json"),
+      logs,
+      focus,
       validProfiles: loadProfileNames(),
       crossProject: !!opts.crossProject,
     });
+
+    if (corrupt.length) {
+      // tasks.json corruption is caught twice (getTasks + raw read) — dedupe by file.
+      const seen = new Set<string>();
+      const unique = corrupt.filter((f) => {
+        const key = String((f.entities as { file?: string } | undefined)?.file ?? f.message);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      result.findings.unshift(...unique);
+      result.summary.error += unique.length;
+      result.summary.total += unique.length;
+    }
+    return result;
   }
 
   /**
