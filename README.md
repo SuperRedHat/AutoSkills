@@ -26,14 +26,14 @@
 | `docs/bootstrap.md` | bootstrap 深度文档：每一步、幂等性、快照、回滚 |
 | `docs/skills-migration-report.md` | skills 搬迁审计（TASK-065 产出） |
 | `docs/mcp-migration-report.md` | MCP server 搬迁审计（TASK-066 产出） |
-| `docs/adr-001..004-*.md` | project-manager ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查能力设计（ADR） |
-| `mcp/project-manager/CHANGELOG.md` | project-manager 版本变更日志（当前 **v1.4.0**） |
+| `docs/adr-001..005-*.md` | project-manager ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查 / 任务身份与 reconcile 安全包络（ADR） |
+| `mcp/project-manager/CHANGELOG.md` | project-manager 版本变更日志（当前 **v1.5.1**） |
 
 ---
 
-## project-manager 能力速览（v1.4.0）
+## project-manager 能力速览（v1.5.1）
 
-`project-manager` 已从最初的"线性 build 任务 + 日志持久化"扩展为支持**运营 / 管理 / 跨项目**的状态引擎（全程**向后兼容、纯加法**）。完整工具清单见 [mcp/project-manager/README.md](mcp/project-manager/README.md)，设计依据见 `docs/adr-001..004`，版本变更见 [CHANGELOG](mcp/project-manager/CHANGELOG.md)。
+`project-manager` 已从最初的"线性 build 任务 + 日志持久化"扩展为支持**运营 / 管理 / 跨项目**的状态引擎（全程**向后兼容、纯加法**）。完整工具清单见 [mcp/project-manager/README.md](mcp/project-manager/README.md)，设计依据见 `docs/adr-001..005`，版本变更见 [CHANGELOG](mcp/project-manager/CHANGELOG.md)。
 
 - **任务生命周期**：除前向状态机（`todo → in_progress → auto_verified → done`）外，新增终态 `cancelled` / `superseded`，经**受审计的** `close_task` 进入（不污染完成率）；`reopen_task` 受审计地复活终态任务（撤销误关/误完成）。
 - **优先级**：任务可带 `priority`，`get_next_task` 优先派高优先级（同分按创建顺序，**永不越过依赖门控**）；`set_task_priority` 事后调整。
@@ -44,7 +44,9 @@
 - **跨项目 / portfolio**：所有**只读**工具支持可选 `project_dir`（**不切走**当前项目即可查另一个项目）；`get_portfolio(project_dirs[])` 一次聚合多项目的进度 / 焦点 / 下一个任务。
 - **更丰富的恢复上下文**：`get_project_context` 现额外返回 `in_progress` 全文、双完成率 `metrics`、`current_focus`、`next_task_blocked_reason` 诊断——`/project-resume` 因此能直接呈现"现在在哪、在等谁、为何卡住"。
 - **元数据补丁（1.4.0）**：`edit_task` 改任务的 `title`/`notes`/`dependencies`/验收字段等**而不触碰 status**（改 `acceptance_mode` 自动同步 `needs_manual_review`、改依赖校验存在/自环/环），终结"改个字段也得手搓 `tasks.json`"。
-- **一致性检查 / 修复（1.4.0，L8）**：`lint_state` 只读交叉核对 tasks/project/logs/focus 四处真相（24 检查，头牌 `progress_drift`＝进度与重算不符），可跨项目巡检；`reconcile` 仅对当前项目做安全确定性自动修复（progress 重算 + 去自环），其余交 `edit_task` 手修。
+- **一致性检查 / 修复（1.4.0，L8）**：`lint_state` 只读交叉核对 tasks/project/logs/focus 四处真相（25 检查，头牌 `progress_drift`＝进度与重算不符），可跨项目巡检；`reconcile` 仅对当前项目做安全确定性自动修复（progress 重算 + 去自环 + active 任务的 stale 字段清理），其余交 `edit_task` 手修；显式 `dry_run:true` 对活动项目也只返回 fix-plan 不落盘。
+- **批量元数据补丁 + 任务重命名（1.5.0，ADR-005）**：`edit_tasks` 一次补丁多个任务的元数据字段；`rename_task` 改任务 id 并级联改写 dependencies / replacement_task_id / focus 引用（logs 不可变留痕），落盘前全图后置校验，失败整体拒绝**不部分写**；`reconcile` 支持跨项目 dry-run/fix-plan（foreign 项目绝不落盘）。
+- **可靠性强化（1.5.1，审计修复批次）**：全部状态文件写入原子化（tmp+rename，崩溃不再产生截断 JSON）；状态文件损坏时返回带文件名的结构化 `state_file_corrupt` 错误、`lint_state` 容损可诊断；多文件变更前预检衍生文件防"半应用"；Windows 路径大小写归一（`d:/x` 与 `D:/X` 不再被误判为两个项目）；`create_tasks`/`add_subtask` 拒绝重复/空白 id；`close_task` supersede 不再把替代任务自身的依赖边改写成自依赖（与 `rename_task` 同款全图校验）。
 
 > **升级到 v1.3.0**：旧状态文件**无需改动**即可读（新字段读时计算）；可选地用 `bootstrap.ps1 -MigrateState dir1,dir2` / `bootstrap.sh --migrate-state=dir1,dir2` 把既有项目**幂等**迁移到 schema v1（绝不改任务 status、回填日志 `kind`、补双完成率）。
 
@@ -61,7 +63,7 @@
 | PowerShell | 5.1+ (Windows) | 跑 `bootstrap.ps1`（PowerShell 5.x 或 7+ 都可） |
 | bash | 4+ (macOS/Linux) | 跑 `bootstrap.sh` |
 | Python | 3.8+ | `bootstrap.sh` 用 python3 解析 manifest（PS1 用内置 JSON） |
-| CouncilFlow | 0.1.2+ | 已通过 `pipx install git+https://github.com/SuperRedHat/CouncilFlow.git` 装好 |
+| CouncilFlow | 0.2.0+ | 已通过 `pipx install git+https://github.com/SuperRedHat/CouncilFlow.git` 装好 |
 | Codex CLI / Claude Code CLI / Gemini CLI | 最新 | 至少装一个；bootstrap 会跳过未装的那端（不报错） |
 | GitHub 访问凭据 | PAT / SSH | 本仓库是 private |
 
@@ -120,6 +122,11 @@ bootstrap 会按顺序执行：
 
 任何一端 CLI 未装都会被**跳过**（只打印 info），不会让 bootstrap 失败。
 
+安装安全性（1.5.1 加固）：
+- `npm install / build` 退出码被严格检查——构建失败立即终止，**不会**把旧 dist 注册成 MCP server
+- 写 `~/.gemini/settings.json` 一律无 BOM；解析失败时**备份原文件并跳过合并**，绝不清空你的既有配置
+- skills 同步的"畸形目录清理"只针对名字含 `project-` 的目录，你自己装的其他 skill（即使名字带 `{},`）不会被碰
+
 ### 四、验证
 
 ```bash
@@ -150,7 +157,7 @@ powershell -NoProfile -File scripts/restore-global-workflow.ps1 -SnapshotPath "$
 bash scripts/restore-global-workflow.sh --snapshot "$HOME/.workflow-core-backups/20260419T201129373Z"
 ```
 
-restore 会还原 skills 三端目录、`claude-commands`、`gemini-settings.json`。**不会**反向执行 `codex/claude mcp remove` —— 如需清除 MCP 注册，再跑一次 bootstrap（会重新注册为当前 manifest 定义的状态）或手动 remove。
+restore 在动手前会**自动对当前状态再做一次快照**（误恢复可再恢复回来），然后整目录还原 skills 三端目录、`claude-commands`、`gemini-settings.json`（快照之后新增的内容会被移除——这正是前置快照存在的原因）。**不会**反向执行 `codex/claude mcp remove` —— 如需清除 MCP 注册，再跑一次 bootstrap（会重新注册为当前 manifest 定义的状态）或手动 remove。
 
 详见 [docs/bootstrap.md](docs/bootstrap.md)。
 
@@ -195,6 +202,6 @@ restore 会还原 skills 三端目录、`claude-commands`、`gemini-settings.jso
 - [CouncilFlow](https://github.com/SuperRedHat/CouncilFlow) — 配套 sidecar 本体
 - [docs/bootstrap.md](docs/bootstrap.md) — bootstrap 深度文档
 - [mcp-manifest.json](mcp-manifest.json) — MCP 注册真源
-- [mcp/project-manager/README.md](mcp/project-manager/README.md) — project-manager 完整工具清单（v1.4.0）
+- [mcp/project-manager/README.md](mcp/project-manager/README.md) — project-manager 完整工具清单（v1.5.1）
 - [mcp/project-manager/CHANGELOG.md](mcp/project-manager/CHANGELOG.md) — project-manager 版本变更
 - `docs/adr-001..004-*.md` — ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查能力设计决策
