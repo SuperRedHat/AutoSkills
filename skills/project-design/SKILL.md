@@ -41,7 +41,7 @@ description: 系统架构设计。当用户说"开始设计"、"架构设计"、
   1. 用 `council status --project-root <root>` 取 `data.state.last_discussion_id`
   2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
   3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
-  4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许按失败上报协议宣告 workflow 失败
+  4. 只有 `discussion wait` 自身报 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `provider_timeout`），才允许按失败上报协议宣告 workflow 失败
 - 推荐用 `council status` 而不是解析 stderr
 
 ### 第三步：进入显式阶段机

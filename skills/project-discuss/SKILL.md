@@ -47,7 +47,12 @@ council discuss "<question>" --controller-position "<initial_position>"
 - 如确实是在独立 CLI fallback 场景下运行，也可以省略 `--controller-position`，此时 CouncilFlow 会退回 provider 驱动的主控回合模式
 - `discuss` 是显式入口；如果没有额外模型参与，就不应伪装成跨模型讨论
 - 这是硬前置步骤：你**必须先调用 CouncilFlow**
-- 如果 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**否则停止当前 workflow 并报告失败**；不要把单模型主控判断伪装成已经完成的多模型讨论
+- **shell 超时恢复协议（0.1.6+，硬前置）**：`council discuss` 自身的 shell 调用超时或非零退出**不等于**讨论失败——CouncilFlow 子进程一般还在跑，summary.md 会落盘。必须先恢复：
+  1. `council status --project-root <root>` 取 `data.state.last_discussion_id`
+  2. `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
+  3. 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
+  4. 只有 `discussion wait` 自身以非零退出并给出 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `provider_timeout`），才允许宣告失败
+- 如果 `council discuss`（含上述恢复路径）最终确认失败、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并报告失败**；不要把单模型主控判断伪装成已经完成的多模型讨论
 
 ### 第三步：读取结构化产物
 1. 优先使用命令返回 JSON 中的 `data.summary_path`。

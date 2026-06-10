@@ -57,7 +57,7 @@ description: 评估需求变更影响，更新文档，并追加带结构化验�
    - `stage_gate`
    - `needs_manual_review`（兼容）
 7. **host 主控**（不是 sidecar）按 synthesizer 的 artifact 依次更新 PRD / 架构文档并记录日志。
-8. 如果本次变更让**既有任务作废**：先创建好替代任务，再由 **host 主控**对每个被替代的旧任务调用 `close_task(old_id, "superseded", reason="<被本次变更替代的原因>", replacement_task_id="<new_id>")`——`superseded` 会自动把旧任务的所有 dependent 边改指到 replacement，保持 DAG 可运行；若旧任务是单纯作废且无替代，则用 `close_task(old_id, "cancelled", reason=...)`。终态关闭只能经 `close_task`（`update_task_status` 会拒绝 `cancelled` / `superseded`），并用 `add_log(kind="decision"` 或 `"ops_event"`, entities=[相关任务], ...)` 记录这次取舍。
+8. 如果本次变更让**既有任务作废**：先创建好替代任务，再由 **host 主控**对每个被替代的旧任务调用 `close_task(old_id, "superseded", reason="<被本次变更替代的原因>", replacement_task_id="<new_id>")`——`superseded` 会自动把旧任务的所有 dependent 边改指到 replacement，保持 DAG 可运行；若旧任务是单纯作废且无替代，则用 `close_task(old_id, "cancelled", reason=...)`。终态关闭只能经 `close_task`（`update_task_status` 会拒绝 `cancelled` / `superseded`），并用 `add_log(kind="decision" 或 "ops_event", entities={"tasks": ["<相关任务id>"]}, ...)` 记录这次取舍（`entities` 是对象/map，传数组会被 schema 拒绝）。
 
 ## 多模型协作（可选）
 
@@ -76,7 +76,7 @@ description: 评估需求变更影响，更新文档，并追加带结构化验�
   1. 用 `council status --project-root <root>` 取 `data.state.last_discussion_id`
   2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`
   3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
-  4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许按失败上报协议宣告 workflow 失败
+  4. 只有 `discussion wait` 自身报 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `provider_timeout`），才允许按失败上报协议宣告 workflow 失败
 - 推荐用 `council status` 而不是解析 stderr
 
 ## 注意事项

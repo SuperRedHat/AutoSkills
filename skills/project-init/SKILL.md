@@ -27,7 +27,7 @@ description: 需求分析与 PRD 生成。生成 PRD 后保存到 project-manage
      1. 用 `council status --project-root <root>` 取 `data.state.last_discussion_id`（`DiscussionOrchestrator.run()` 在启动 < 50ms 内就已经写入 state.json）
      2. 调用 `council discussion wait <discussion_id> --project-root <root> --timeout 7200`（mirror `delegation wait`，最大等 2h）
      3. `discussion wait` 完成判定是双条件：`record.status == "completed"` AND `summary.md` 可读
-     4. 只有 `discussion wait` 自身报 `error_kind=wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，才允许按失败上报协议宣告 workflow 失败
+     4. 只有 `discussion wait` 自身报 `error_kind`（`wait_timeout` / `discussion_failed` / `record_corrupt` / `summary_missing` / `discussion_not_found`，或从 record 转发的 provider 错误如 `adapter_missing` / `provider_timeout`），才允许按失败上报协议宣告 workflow 失败
    - 推荐用 `council status` 而不是解析 stderr —— 后者格式没有契约保证
 3. 把 `project-init` 视为显式阶段机，而不是“主控聊完就直接写 PRD”：
    - `planner -> synthesizer -> persistence`
@@ -62,8 +62,8 @@ description: 需求分析与 PRD 生成。生成 PRD 后保存到 project-manage
 
 步骤 4 / 5 / 7 / 8 都依赖"项目目录是否已确定"的判断。统一语义如下：
 
-- **已确定**：`get_project_info()` 返回的 `project_dir` 非空、指向一个实际存在的目录；或用户在对话中明确给出目录路径并已用 `set_project_dir(<path>)` 登记。
-- **未确定**：`get_project_info().project_dir` 为空或指向不存在的路径，且对话里没有可推断的目录。
+- **已确定**：本会话已成功调用 `set_project_dir(<path>)`（其返回 `project_dir` 与 `state_exists`）；或用户在对话中明确给出目录路径并已登记。（`get_project_info()` 不返回 `project_dir` 字段，不要以它判定。）
+- **未确定**：本会话尚未成功调用 `set_project_dir`，且对话里没有可推断的目录。
 
 项目目录未确定时允许的行为集合：
 - 继续需求澄清问答（只在对话内发生）

@@ -16,7 +16,7 @@ description: 处理真正等待人工验收的任务反馈，并支持阶段 gat
      - 在 `add_log` 里额外记录 `{"stage_gate_closed": true, "phase_summary": "<本阶段收口概述>", "next_phase": "<建议下一阶段>"}`
      - 检查当前阶段内还有没有其它未完成任务：
        - 仍有未完成 → **不要**关阶段 gate，只记录本任务通过
-       - 本阶段所有任务都已 done → 调用 `update_project_info({"status": "<下一阶段或 completed>"})`，并在 log 里写明"阶段 gate closed"
+       - 本阶段所有任务都已 done → 项目**全部**完成时调用 `update_project_info({"status": "completed"})`；仍有后续阶段时保持 `in_progress` 不动（status 枚举只收 initialized/designed/planned/in_progress/completed，没有"阶段名"），改用 `add_log(kind="decision", message="阶段 gate closed: <阶段名>")` 记录收口
      - 如果用户要求立即进入下一阶段的规划或执行，引导到 `$project-plan` / `$project-next`，不在本技能内启动新任务
 3. 如果用户反馈意味着**需要返工**（任务方向正确，只是实现有问题）：
    - 调用 `update_task_status(id, "in_progress")`

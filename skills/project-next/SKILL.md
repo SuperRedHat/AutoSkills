@@ -18,7 +18,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
    - `--controller-position` 用来把当前主控的本地立场显式交给 CouncilFlow，避免同模型自嵌套
    - CouncilFlow 会把这版立场交给外部模型评论；实现方案的最终决定仍由当前主控综合
    - 只有达到项目级 `discussion.min_rounds` 后，讨论才允许提前收敛
-   - 这一步是硬前置：只要决定进入 discuss，就必须先调用 CouncilFlow；如果 `council discuss` 返回错误、缺少 summary artifact，或无法完成调用，则**停止当前 workflow 并如实报告失败**
+   - 这一步是硬前置：只要决定进入 discuss，就必须先调用 CouncilFlow；shell 超时**不等于**讨论失败——先按 project-discuss 的恢复协议（`council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200`）等到底；只有恢复路径也确认失败、缺少 summary artifact，或无法完成调用，才**停止当前 workflow 并如实报告失败**
    - 优先使用命令返回 JSON 中的 `data.summary_path`
    - 如需手动定位，再读取 `.council/discuss/<discussion_id>/summary.md`
    - 如果去重后没有额外模型，接受 `CouncilFlow` 返回的 warning，并继续当前主控判断
@@ -121,7 +121,7 @@ description: 执行下一个任务，按结构化验收字段自动验证并决�
 
 - `status = local_execution` → 按现有流程在当前主控本地执行
 - `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
-- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
+- `error.error_kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
   Report Protocol` 停止 workflow 并上报
 
 动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。

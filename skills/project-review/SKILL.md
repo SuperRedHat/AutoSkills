@@ -80,7 +80,7 @@ council delegate --role reviewer --objective "审查最近完成任务的代码�
 
 - `status = local_execution` → 按现有流程在当前主控本地执行
 - `status = delegated` → 读取 `.council/delegations/<id>/result.md` 等 artifact
-- `error.kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
+- `error.error_kind = routing_no_match` → 按 `docs/integration.md::Workflow Failure
   Report Protocol` 停止 workflow 并上报
 
 动态路由的存在**不改变**本 skill 的阶段机、artifact 消费契约、失败上报协议。

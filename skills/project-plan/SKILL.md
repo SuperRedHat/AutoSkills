@@ -61,8 +61,8 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 7. 优先使用结构化验收字段驱动策略：
    - 普通后端任务：`auto`
    - 普通前端任务：`auto + frontend_browser`
-   - 高风险视觉任务：`milestone_manual`
-   - 阶段收口任务：`manual`
+   - 高风险视觉任务：`milestone_manual` **且必须配 `stage_gate=true`**（`milestone_manual` 不配 stage_gate 时行为等同 `auto`，不会产生人工 gate）
+   - 阶段收口任务：`milestone_manual + stage_gate=true`（这样才会停在 awaiting_manual_acceptance 并触发 project-feedback 的阶段收口逻辑；单任务级强制人工 review 才用 `manual`）
    - 任务可选携带 `priority`（数字，默认 0，越大越紧急）；`get_next_task` 会优先派发优先级最高的可执行任务，同优先级按创建顺序，但 `priority` 永远不会越过依赖门控。需要插队时给关键任务设较高 `priority` 即可，不必靠调整依赖或创建顺序。
 8. 展示任务列表并等待用户确认。
 9. 用户确认后，**host 主控**（不是 sidecar）调用 MCP：
@@ -94,8 +94,8 @@ description: 基于 PRD 和架构文档拆解任务，并写入结构化验收�
 
 在 `create_tasks` / `update_project_info` 之前，先用以下逻辑判断项目目录是否已确定：
 
-- **已确定**：调用 `get_project_info()`，`project_dir` 字段非空且指向一个**实际存在**的目录；或用户在对话中明确给出了目录路径并用 `set_project_dir(<path>)` 登记。
-- **未确定**：`get_project_info().project_dir` 为空 / 指向不存在的路径，且对话中没有可推断的目录。
+- **已确定**：本会话已成功调用 `set_project_dir(<path>)`（其返回 `project_dir` 与 `state_exists`）；或用户在对话中明确给出目录路径并已登记。（`get_project_info()` 不返回 `project_dir` 字段，不要以它判定。）
+- **未确定**：本会话尚未成功调用 `set_project_dir`，且对话中没有可推断的目录。
 
 项目目录未确定时允许的行为集合：
 - 继续需求澄清与任务草案讨论（只在对话内）
