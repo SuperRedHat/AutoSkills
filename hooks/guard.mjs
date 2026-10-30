@@ -8,31 +8,43 @@
 //   "<node>" "<runtime>/hooks/guard.mjs" --selftest
 //
 // Input: the PreToolUse JSON on stdin.
-//   Claude: tool_name Bash or PowerShell, tool_input.command a string, parsed in that tool's syntax.
+//   Claude: tool_name Bash or PowerShell, tool_input.command a string, parsed in that tool's syntax;
+//   Edit, Write, MultiEdit (tool_input.file_path) and NotebookEdit (tool_input.notebook_path) for rule 2;
+//   mcp__project-manager__<tool> for rule 3, with agent_id set only inside a subagent.
 //   Codex: the input fields and the deny format are settled by the C0 probe (T-meta) and backfilled
 //   after it. Until then a shell-like tool (Bash, PowerShell, shell, local_shell, shell_command,
 //   exec_command, unified_exec, container.exec) is read from tool_input.command or tool_input.cmd, as a
 //   string or an argv array; a string is parsed as both Bash and PowerShell and a deny in either wins.
+//   apply_patch is read from tool_input (a string), tool_input.command, .input or .patch (the patch text,
+//   or an argv array ["apply_patch", "<patch>"]); a project-manager tool is any tool_name that ends in
+//   project-manager (or project_manager) plus __ . / or : and the tool, or a tool_input.server naming
+//   project-manager. Whether workflow agents carry agent_id is C0 E2, backfilled by AS3-117.
 //   The platform comes from --platform, else from the input (turn_id or a .codex transcript: codex;
 //   permission_mode or a .claude transcript: claude).
-//   Other tools and other events are allowed (rules 2-4 and the SessionStart hook come in a later task).
+//   Other tools and other events are allowed. Reads of customer data folders are not checked here: Read
+//   is called often and each hook run starts Node (about 90 ms), so that stays with the settings deny rules.
 // Output: nothing on allow, so the normal permission flow goes on. On deny, one UTF-8 JSON line:
 //   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
 // Exit codes: 0 = decided (allow or deny). 2 = error: unknown option, stdin is not a JSON object, a shell
 // call has no command text or does not parse (unterminated quote, $( ... ), block comment, here-string),
-// or the local config exists but cannot be read. The reason goes to stderr. Claude registers the guard
+// a write tool has no readable target while read-only folders are registered, or the local config exists
+// but cannot be read. The reason goes to stderr. Claude registers the guard
 // with onFailure: "block", so an error blocks the call; Codex lets a call through when its hook fails,
 // so there the guard is only a reminder.
 //
-// Local config: hook-config.json next to this script, written at deploy time; --config names another
-// file (tests use temp dirs). Shape: {"runtime": "<absolute runtime dir>"}; other keys are ignored here.
-// A missing file means no heartbeat; a file that exists but cannot be read or parsed is an error.
+// Local config: hook-config.json next to this script, written at deploy time from the git-excluded local
+// kit config; --config names another file (tests use temp dirs). The repo holds only the placeholder
+// hook-config.example.json. Shape: {"runtime": "<absolute runtime dir>", "readonly_dirs": ["<absolute
+// dir>", ...], "kit_repo": "<absolute AutoSkills checkout>"}, every key optional; other keys are ignored.
+// A missing file means no heartbeat and no read-only folders; a file that exists but cannot be read or
+// parsed, or holds a relative path, is an error.
 // Heartbeat: every run except --selftest appends one line to <runtime>/hooks/heartbeat/guard.jsonl with
 // exactly {ts, platform, event, decision} (decision: allow, deny or error), never the command text, so
 // the check script can tell the hook really ran. When the next line would take the file past 1 MiB, the
 // file is first cut to its newest 512 KiB of whole lines. A heartbeat that cannot be written is a stderr
 // note, never a block.
-// --selftest runs the built-in samples in memory: it reads no stdin and no config and writes no file.
+// --selftest runs the built-in samples in memory: it reads no stdin and no config and writes no file
+// (the rule 2 and 4 samples name folders under the OS temp dir that are never created).
 // Exit 0 = every sample gave the expected decision.
 //
 // Parsing: Bash, PowerShell and cmd text is split into simple commands at ; && || | & and newlines,
@@ -52,13 +64,34 @@
 //     the fields as query parameters.
 //   - npm publish.
 //
+// Rule 2, read-only folders: Edit, Write, MultiEdit, NotebookEdit and apply_patch (every Add, Update,
+//   Delete and Move to path of the patch) are denied when the target lies in a registered read-only
+//   folder (readonly_dirs). Both sides are compared by real path: relative targets are resolved against
+//   the input cwd, junctions and symlinks are resolved on the longest existing part of the path (a new
+//   file under a linked folder counts), and on Windows case and / versus \ do not matter.
+// Rule 3, the ledger belongs to the main session (v2 §3.7 item 2): a call that carries agent_id (a
+//   subagent) to a project-manager tool other than the read tools in LEDGER_READS is denied; that covers
+//   every write tool, set_project_dir and tools the guard does not know. The main session, which has no
+//   agent_id, is never stopped here.
+// Rule 4, git clean in the AutoSkills repo (added beyond the v2/v3 list, ADR-006 §2.5; delete it freely):
+//   git clean with -x or -X (also inside a cluster such as -fdx, after -c alias expansion and in wrapped
+//   shells) is denied when it would run in an AutoSkills checkout: the git root around the cwd, a cd,
+//   pushd or Set-Location target in the same command, or the -C, --git-dir and --work-tree directories,
+//   carries hooks/guard.mjs and scripts/lint-kit.mjs, or is the configured kit_repo. It would wipe the
+//   runtime, the deploy backups and the measurement data in _private/, and with them the rollback.
+//   git clean -n (--dry-run) deletes nothing and stays allowed, so does git clean without -x or -X.
+//
 // Known gaps, ADR-006 §4 residual risks. The guard does not pretend to catch them:
 //   - indirect execution: a push written into a script file and then run (bash push.sh, ./push.ps1,
 //     pwsh -File), Invoke-Expression, encoded commands (-EncodedCommand);
 //   - commands built at run time: variables ($g push, & $git push), substitutions that produce the
 //     subcommand (git $(echo push)), git and gh aliases defined outside the command.
+//   - writes into a read-only folder through a shell command (Bash, PowerShell, a patch fed to apply_patch
+//     through a shell here-doc): rule 2 sees only the write tools.
+//   - subagent calls without agent_id (C0 E2): then rule 3 cannot tell them from the main session.
 //   On one Windows account the guard only prevents mistakes; it cannot stop a deliberate bypass.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -344,14 +377,27 @@ function programName(word) {
 }
 
 const isAssign = (w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
+const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location']);
 
 /**
- * Check one simple command; push what it would push or publish onto hits (e.g. "git push").
+ * What the commands of one shell call would do, as far as the rules care.
+ * @typedef {object} Findings
+ * @property {string[]} hits rule-1 hits: what would be pushed or published (e.g. "git push")
+ * @property {Array<{cdirs: string[], extra: string[]}>} cleans rule 4: each git clean with -x or -X and
+ *   no -n, with its -C directories (in order) and its --git-dir and --work-tree values
+ * @property {string[]} dirs cd, pushd and Set-Location targets anywhere in the call
+ */
+
+/** An empty Findings record. */
+export const newFindings = () => ({ hits: [], cleans: [], dirs: [] });
+
+/**
+ * Check one simple command and record what it would do in acc.
  * @param {string[]} words the command and its arguments
  * @param {number} depth nesting depth (bounded by MAX_DEPTH)
- * @param {string[]} hits collected rule-1 hits
+ * @param {Findings} acc collected findings
  */
-export function checkWords(words, depth, hits) {
+export function checkWords(words, depth, acc) {
   if (depth > MAX_DEPTH) throw new ParseError('命令嵌套太深');
   let w = words;
   for (;;) {
@@ -363,13 +409,26 @@ export function checkWords(words, depth, hits) {
   if (!w.length) return;
   const name = programName(w[0]);
   const args = w.slice(1);
-  if (name === 'git') checkGit(args, depth, hits);
-  else if (name === 'gh') checkGh(args, hits);
-  else if (name === 'npm') checkNpm(args, hits);
-  else if (BASH_SHELLS.has(name)) unwrapBash(args, depth, hits);
-  else if (PS_SHELLS.has(name)) unwrapPowerShell(name, args, depth, hits);
-  else if (name === 'cmd') unwrapCmd(args, depth, hits);
-  else if (START_PROCESS.has(name)) unwrapStartProcess(args, depth, hits);
+  if (name === 'git') checkGit(args, depth, acc);
+  else if (name === 'gh') checkGh(args, acc.hits);
+  else if (name === 'npm') checkNpm(args, acc.hits);
+  else if (CD_COMMANDS.has(name)) recordCd(args, acc);
+  else if (BASH_SHELLS.has(name)) unwrapBash(args, depth, acc);
+  else if (PS_SHELLS.has(name)) unwrapPowerShell(name, args, depth, acc);
+  else if (name === 'cmd') unwrapCmd(args, depth, acc);
+  else if (START_PROCESS.has(name)) unwrapStartProcess(args, depth, acc);
+}
+
+// cd <dir>, cd /d <dir> (cmd), Set-Location [-Path|-LiteralPath] <dir>; a bare cd goes home.
+function recordCd(args, acc) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (isParam(a, 'path', 2) || isParam(a, 'literalpath', 2)) { if (args[i + 1] !== undefined) acc.dirs.push(args[i + 1]); return; }
+    if (a === '-' || a === '--' || (a.length > 1 && a.startsWith('-')) || /^\/d$/i.test(a)) continue;
+    acc.dirs.push(a);
+    return;
+  }
+  acc.dirs.push('~');
 }
 
 function stripWrapper(rest, wrap) {
@@ -384,19 +443,25 @@ function stripWrapper(rest, wrap) {
   return rest.slice(i + (wrap.positional ?? 0));
 }
 
-function checkScript(text, dialect, depth, hits) {
-  for (const seg of parseScript(text, dialect, depth + 1)) checkWords(seg, depth + 1, hits);
+function checkScript(text, dialect, depth, acc) {
+  for (const seg of parseScript(text, dialect, depth + 1)) checkWords(seg, depth + 1, acc);
 }
 
-function checkGit(args, depth, hits) {
+function checkGit(args, depth, acc) {
   const aliases = new Map();
+  const cdirs = []; // -C directories, each relative to the one before
+  const extra = []; // --git-dir and --work-tree values
   let i = 0;
   for (; i < args.length; i++) {
     const a = args[i];
+    const eq = /^(--git-dir|--work-tree)=([\s\S]*)$/.exec(a);
+    if (eq) { extra.push(eq[2]); continue; }
     if (GIT_VALUE_OPTS.has(a)) {
       const v = args[++i] ?? '';
       const m = a === '-c' ? /^alias\.([^=]+)=([\s\S]*)$/i.exec(v) : null;
       if (m) aliases.set(m[1].toLowerCase(), m[2]);
+      if (a === '-C' && v) cdirs.push(v);
+      if (a === '--git-dir' || a === '--work-tree') extra.push(v);
       continue;
     }
     if (!a.startsWith('-')) break;
@@ -406,13 +471,35 @@ function checkGit(args, depth, hits) {
   let rest = args.slice(i + 1);
   if (aliases.has(sub)) {
     const v = aliases.get(sub).trim();
-    if (v.startsWith('!')) { checkScript(v.slice(1), 'bash', depth, hits); return; }
+    if (v.startsWith('!')) { checkScript(v.slice(1), 'bash', depth, acc); return; }
     const words = v.split(/\s+/);
     sub = words[0].toLowerCase();
     rest = [...words.slice(1), ...rest];
   }
-  if (GIT_PUSH.has(sub)) hits.push(`git ${sub}`);
-  else if ((sub === 'subtree' || sub === 'lfs') && rest.some((a) => a.toLowerCase() === 'push')) hits.push(`git ${sub} push`);
+  if (GIT_PUSH.has(sub)) acc.hits.push(`git ${sub}`);
+  else if ((sub === 'subtree' || sub === 'lfs') && rest.some((a) => a.toLowerCase() === 'push')) acc.hits.push(`git ${sub} push`);
+  else if (sub === 'clean' && cleansIgnored(rest)) acc.cleans.push({ cdirs, extra });
+}
+
+// git clean options: true when -x or -X is given and -n/--dry-run is not. -e takes a value (the rest of
+// a cluster, or the next word), so -ex excludes the pattern "x"; after -- come pathspecs.
+function cleansIgnored(args) {
+  let ignored = false;
+  let dry = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') break;
+    if (a === '--dry-run') { dry = true; continue; }
+    if (a === '--exclude') { i++; continue; }
+    if (a.startsWith('--') || !a.startsWith('-') || a === '-') continue;
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j];
+      if (c === 'e') { if (j === a.length - 1) i++; break; }
+      if (c === 'x' || c === 'X') ignored = true;
+      else if (c === 'n') dry = true;
+    }
+  }
+  return ignored && !dry;
 }
 
 function checkGh(args, hits) {
@@ -459,11 +546,11 @@ function checkNpm(args, hits) {
 }
 
 // bash -c '<script>' (also -lc, -ec ...). A script file (bash push.sh) is a known gap.
-function unwrapBash(args, depth, hits) {
+function unwrapBash(args, depth, acc) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-o' || a === '+o') { i++; continue; }
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) { if (args[i + 1] !== undefined) checkScript(args[i + 1], 'bash', depth, hits); return; }
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) { if (args[i + 1] !== undefined) checkScript(args[i + 1], 'bash', depth, acc); return; }
     if (a.startsWith('-') || a.startsWith('+')) continue;
     return;
   }
@@ -478,28 +565,28 @@ const PS_VALUE_PARAMS = [['executionpolicy', 2], ['ep', 2], ['windowstyle', 1], 
 
 // powershell -Command <text...> (the rest of the line is the command); powershell.exe also takes a bare
 // first argument as a command. -File, -EncodedCommand and pwsh's bare first argument (a file) are gaps.
-function unwrapPowerShell(name, args, depth, hits) {
+function unwrapPowerShell(name, args, depth, acc) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (isParam(a, 'command')) {
       const text = args.slice(i + 1).join(' ');
-      if (text !== '-') checkScript(text, 'ps', depth, hits);
+      if (text !== '-') checkScript(text, 'ps', depth, acc);
       return;
     }
     if (isParam(a, 'encodedcommand') || a.toLowerCase() === '-ec' || isParam(a, 'file')) return;
     if (PS_VALUE_PARAMS.some(([p, min]) => isParam(a, p, min))) { i++; continue; }
     if (a.startsWith('-') || a.startsWith('/')) continue;
-    if (name === 'powershell') checkScript(args.slice(i).join(' '), 'ps', depth, hits);
+    if (name === 'powershell') checkScript(args.slice(i).join(' '), 'ps', depth, acc);
     return;
   }
 }
 
 // cmd /c <text...> or /k <text...>.
-function unwrapCmd(args, depth, hits) {
+function unwrapCmd(args, depth, acc) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (/^\/[ck]/i.test(a)) {
-      checkScript([a.slice(2), ...args.slice(i + 1)].join(' ').trim(), 'cmd', depth, hits);
+      checkScript([a.slice(2), ...args.slice(i + 1)].join(' ').trim(), 'cmd', depth, acc);
       return;
     }
     if (!a.startsWith('/')) return;
@@ -510,7 +597,7 @@ const START_VALUE_PARAMS = ['workingdirectory', 'verb', 'windowstyle', 'redirect
   'redirectstandardinput', 'credential', 'environment'];
 
 // Start-Process <file> <args> / -FilePath <file> -ArgumentList a,b or "a b" (also cmd's start).
-function unwrapStartProcess(args, depth, hits) {
+function unwrapStartProcess(args, depth, acc) {
   let file = null;
   const argv = [];
   const pos = [];
@@ -525,7 +612,163 @@ function unwrapStartProcess(args, depth, hits) {
   if (file === null) { while (pos.length && pos[0] === '') pos.shift(); file = pos.shift() ?? null; }
   if (!file) return;
   const rest = [...pos, ...argv].flatMap((v) => v.split(/[\s,]+/)).filter(Boolean);
-  checkWords([file, ...rest], depth + 1, hits);
+  checkWords([file, ...rest], depth + 1, acc);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Paths (rules 2 and 4)
+
+const WIN = process.platform === 'win32';
+
+/**
+ * A path as the file system sees it, resolved against base: ~ is the home folder, and on Windows a Git
+ * Bash drive path such as /<drive>/<dir> is <drive>:/<dir>.
+ * @param {string} p path as written in the call
+ * @param {string} base absolute directory for relative paths
+ * @returns {string}
+ */
+export function toFsPath(p, base) {
+  let s = String(p);
+  if (s === '~' || /^~[\\/]/.test(s)) s = path.join(os.homedir(), s.slice(1));
+  else if (WIN) {
+    const m = /^\/([A-Za-z])(?=\/|$)/.exec(s);
+    if (m) s = `${m[1]}:${s.slice(2) || '/'}`;
+  }
+  return path.resolve(base, s);
+}
+
+/**
+ * Real path: junctions and symlinks resolved on the longest existing part of p, the rest kept as
+ * written, so a new file under a linked folder maps into the link target.
+ * @param {string} p absolute path
+ * @returns {string}
+ */
+export function realPath(p) {
+  let cur = path.resolve(p);
+  const rest = [];
+  for (;;) {
+    let real = null;
+    try { real = fs.realpathSync.native(cur); } catch { /* missing or unreadable: try the parent */ }
+    if (real !== null) return path.join(real.replace(/^\\\\\?\\(?=[A-Za-z]:)/, ''), ...rest.reverse());
+    const parent = path.dirname(cur);
+    if (parent === cur) return path.resolve(p);
+    rest.push(path.basename(cur));
+    cur = parent;
+  }
+}
+
+// Comparison key: the real path, on Windows in lower case (path.join already uses backslashes there).
+const pathKey = (p) => (WIN ? realPath(p).toLowerCase() : realPath(p));
+
+function within(key, rootKey) {
+  if (key === rootKey) return true;
+  return key.startsWith(rootKey.endsWith(path.sep) ? rootKey : rootKey + path.sep);
+}
+
+const exists = (p) => { try { fs.statSync(p); return true; } catch { return false; } };
+
+// The nearest directory at or above dir that holds .git, or null.
+function gitRoot(dir) {
+  for (let cur = dir; ;) {
+    if (exists(path.join(cur, '.git'))) return cur;
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Rules 2-4
+
+const EDIT_TOOLS = { edit: ['file_path'], write: ['file_path'], multiedit: ['file_path'], notebookedit: ['notebook_path', 'file_path'] };
+const PATCH_TOOLS = new Set(['apply_patch']);
+const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/;
+
+/**
+ * File paths of an apply_patch text: every Add File, Update File, Delete File and Move to header.
+ * @param {string} text the patch
+ * @returns {string[]}
+ */
+export function patchPaths(text) {
+  const out = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = PATCH_HEADER.exec(line);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+}
+
+// Paths a write tool call would write, as written in the call.
+function writeTargets(tool, raw) {
+  const t = tool.toLowerCase();
+  const ti = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  if (EDIT_TOOLS[t]) {
+    const p = EDIT_TOOLS[t].map((k) => ti[k]).find((v) => typeof v === 'string' && v !== '');
+    if (!p) throw new ParseError(`${tool} 调用没有可读的目标路径`);
+    return [p];
+  }
+  for (const v of typeof raw === 'string' ? [raw] : [ti.command, ti.input, ti.patch]) {
+    const text = Array.isArray(v) && v.length > 1 && programName(String(v[0])) === 'apply_patch' ? v[1] : v;
+    if (typeof text !== 'string') continue;
+    const paths = patchPaths(text);
+    if (paths.length) return paths;
+  }
+  throw new ParseError(`${tool} 调用里读不出要改的文件路径`);
+}
+
+// project-manager 1.5.1 tools that only read. Every other tool of that server writes the ledger or, like
+// set_project_dir, switches it for the whole session; tools added later count as writes until listed.
+const LEDGER_READS = new Set(['get_all_tasks', 'get_architecture', 'get_current_focus', 'get_logs', 'get_next_task',
+  'get_portfolio', 'get_prd', 'get_project_context', 'get_project_info', 'get_server_info', 'get_task_by_id',
+  'get_verification_profiles', 'lint_state']);
+
+/**
+ * The project-manager tool a call names (lower case), or null for any other tool.
+ * @param {string} tool tool_name of the call
+ * @param {object} ti tool_input of the call
+ * @returns {string|null}
+ */
+export function ledgerTool(tool, ti) {
+  const m = /project[-_]manager(?:__|[./:])([A-Za-z0-9_]+)$/i.exec(tool);
+  if (m) return m[1].toLowerCase();
+  const server = [ti.server, ti.server_name, ti.mcp_server].find((v) => typeof v === 'string');
+  if (!server || !/^project[-_]manager$/i.test(server)) return null;
+  const name = [ti.tool, ti.tool_name, ti.name].find((v) => typeof v === 'string') ?? tool;
+  return name.split(/__|[./:]/).pop().toLowerCase() || '?';
+}
+
+const KIT_MARKERS = [['hooks', 'guard.mjs'], ['scripts', 'lint-kit.mjs']];
+
+/**
+ * True when a command run in dir works on an AutoSkills checkout: the git root around dir carries the
+ * kit markers, or dir lies in a configured kit repo and not in a nested repo below it.
+ * @param {string} dir absolute directory
+ * @param {string[]} [kitRepos] configured AutoSkills checkouts (kit_repo)
+ * @returns {boolean}
+ */
+export function inKitRepo(dir, kitRepos = []) {
+  const real = realPath(dir);
+  const root = gitRoot(real);
+  if (root && KIT_MARKERS.every((m) => exists(path.join(root, ...m)))) return true;
+  const key = pathKey(real);
+  const rootKey = root && pathKey(root);
+  return kitRepos.some((k) => {
+    const kk = pathKey(k);
+    return within(key, kk) && !(rootKey && rootKey !== kk && within(rootKey, kk));
+  });
+}
+
+// Rule 4: does any recorded git clean -x/-X run in an AutoSkills checkout? Each clean is tried from the
+// cwd and from every cd target of the call, then through its -C chain and its --git-dir/--work-tree.
+function cleanInKit(found, cwd, kitRepos) {
+  const bases = [cwd, ...found.dirs.map((d) => toFsPath(d, cwd))];
+  for (const c of found.cleans) {
+    for (const b of bases) {
+      const at = c.cdirs.reduce((dir, d) => toFsPath(d, dir), b);
+      for (const dir of [at, ...c.extra.map((e) => toFsPath(e, at))]) if (inKitRepo(dir, kitRepos)) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -542,35 +785,59 @@ function dialectsFor(tool, platform) {
 }
 
 /**
- * Rule-1 hits of one command: a string is parsed in each dialect (a hit in any of them counts; it is an
+ * Findings of one command: a string is parsed in each dialect (a finding in any of them counts; it is an
  * error only when no dialect parses it); an argv array is one command as given.
  * @param {string|string[]} command
  * @param {Array<'bash'|'ps'|'cmd'>} dialects
- * @returns {string[]} what the command would push or publish, without duplicates
+ * @returns {Findings} rule-1 hits without duplicates, rule-4 cleans and cd targets
  */
 export function checkCommand(command, dialects) {
-  const hits = [];
-  if (Array.isArray(command)) { checkWords(command, 0, hits); return [...new Set(hits)]; }
-  let parsed = 0;
-  let lastError = null;
-  for (const d of dialects) {
-    try {
-      for (const seg of parseScript(command, d)) checkWords(seg, 0, hits);
-      parsed++;
-    } catch (e) {
-      if (!(e instanceof ParseError)) throw e;
-      lastError = e;
+  const acc = newFindings();
+  if (Array.isArray(command)) checkWords(command, 0, acc);
+  else {
+    let parsed = 0;
+    let lastError = null;
+    for (const d of dialects) {
+      try {
+        for (const seg of parseScript(command, d)) checkWords(seg, 0, acc);
+        parsed++;
+      } catch (e) {
+        if (!(e instanceof ParseError)) throw e;
+        lastError = e;
+      }
     }
+    if (!parsed) throw lastError;
   }
-  if (!parsed) throw lastError;
-  return [...new Set(hits)];
+  acc.hits = [...new Set(acc.hits)];
+  return acc;
 }
 
-/** The deny reason: what was stopped and what to do instead (ADR-006 §2.5 and §4). */
+/** The rule-1 deny reason: what was stopped and what to do instead (ADR-006 §2.5 and §4). */
 export function denyReason(hits) {
   return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端，代理不做这类操作。`
     + '推送由你自己在普通终端做（“你”指用户本人），例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作也由用户本人做。'
     + '代理不要换写法重试：把要推送或发布的分支、提交写进汇报，接着做不受影响的工作。';
+}
+
+/** The rule-2 deny reason. */
+export function readonlyReason(target, dir) {
+  return `AutoSkills 守卫拒绝了这次写入："${target}" 按真实路径落在登记的只读目录 "${dir}" 里。`
+    + '只读目录只读取、不修改，也不要换工具或换路径（链接、大小写、斜杠）重试。'
+    + '需要改的内容和原因写进汇报，由用户本人处理；接着做不受影响的工作。';
+}
+
+/** The rule-3 deny reason. */
+export function ledgerReason(tool) {
+  const what = tool === 'set_project_dir' ? '它会改掉整个会话的账本目标' : '它会写账本';
+  return `AutoSkills 守卫拒绝了这次调用：子代理不能调用 project-manager 的 ${tool}（${what}）。`
+    + '只有主会话（Codex 里是根线程）写账本、认领任务和记录验收；子代理把结果交回主会话，由主会话来写。'
+    + '读账本的工具照常可用，读时带上主检出的绝对路径。';
+}
+
+/** The rule-4 deny reason. */
+export function cleanReason() {
+  return 'AutoSkills 守卫拒绝了这条命令：在 AutoSkills 仓库里，带 -x 或 -X 的 git clean 会删掉 _private/ 里的运行区、部署备份和测量数据，回滚就没了。'
+    + '要看会删什么用 git clean -n；要清未跟踪的文件用不带 -x、-X 的 git clean -fd，或者指定路径删除。';
 }
 
 /** Platform of a hook input when --platform is not given. */
@@ -581,32 +848,68 @@ export function detectPlatform(input) {
   return 'unknown';
 }
 
+const ALLOW = Object.freeze({ decision: 'allow' });
+const deny = (reason) => ({ decision: 'deny', reason });
+
 /**
  * Decide one PreToolUse input.
  * @param {object} input the hook input JSON
  * @param {string} platform claude, codex or unknown
+ * @param {{readonlyDirs?: string[], kitRepos?: string[]}} [policy] registered read-only folders (rule 2)
+ *   and AutoSkills checkouts (rule 4), from the local config
  * @returns {{decision: 'allow'|'deny', reason?: string}}
- * @throws {ParseError} when the input or the command cannot be read
+ * @throws {ParseError} when the input, the command or a write target cannot be read
  */
-export function decide(input, platform) {
+export function decide(input, platform, policy = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ParseError('钩子输入不是 JSON 对象');
   const event = input.hook_event_name ?? 'PreToolUse';
-  if (event !== 'PreToolUse') return { decision: 'allow' };
+  if (event !== 'PreToolUse') return ALLOW;
   const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
+  const raw = input.tool_input;
+  const ti = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const cwd = toFsPath(typeof input.cwd === 'string' && input.cwd ? input.cwd : '.', process.cwd());
+
+  const ledger = ledgerTool(tool, ti);
+  if (ledger !== null) {
+    const subagent = input.agent_id !== undefined && input.agent_id !== null && input.agent_id !== '';
+    return subagent && !LEDGER_READS.has(ledger) ? deny(ledgerReason(ledger)) : ALLOW;
+  }
+
+  const t = tool.toLowerCase();
+  if (EDIT_TOOLS[t] || PATCH_TOOLS.has(t)) {
+    const readonly = policy.readonlyDirs ?? [];
+    if (!readonly.length) return ALLOW;
+    const roots = readonly.map((dir) => ({ dir, key: pathKey(toFsPath(dir, cwd)) }));
+    for (const target of writeTargets(tool, raw)) {
+      const key = pathKey(toFsPath(target, cwd));
+      const hit = roots.find((r) => within(key, r.key));
+      if (hit) return deny(readonlyReason(target, hit.dir));
+    }
+    return ALLOW;
+  }
+
   const dialects = dialectsFor(tool, platform);
-  if (!dialects) return { decision: 'allow' };
-  const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  if (!dialects) return ALLOW;
   const command = ti.command ?? ti.cmd;
   const argv = Array.isArray(command) && command.length && command.every((x) => typeof x === 'string');
   if (typeof command !== 'string' && !argv) throw new ParseError(`${tool} 调用没有可读的命令文本`);
-  const hits = checkCommand(command, dialects);
-  return hits.length ? { decision: 'deny', reason: denyReason(hits) } : { decision: 'allow' };
+  const found = checkCommand(command, dialects);
+  const reasons = [];
+  if (found.hits.length) reasons.push(denyReason(found.hits));
+  if (found.cleans.length && cleanInKit(found, cwd, policy.kitRepos ?? [])) reasons.push(cleanReason());
+  return reasons.length ? deny(reasons.join('\n')) : ALLOW;
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Local config, heartbeat, selftest, main
 
-function loadConfig(file) {
+/**
+ * Read the local hook config (shared with hooks/session-start.mjs).
+ * @param {string} file absolute path of hook-config.json
+ * @returns {object|null} the config, or null when the file does not exist
+ * @throws {Error} when the file exists but cannot be read or parsed, or holds a relative path
+ */
+export function loadConfig(file) {
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -617,16 +920,31 @@ function loadConfig(file) {
   let cfg;
   try { cfg = JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error(`本地配置 "${file}" 不是合法的 JSON`); }
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error(`本地配置 "${file}" 不是 JSON 对象`);
-  if (cfg.runtime !== undefined && (typeof cfg.runtime !== 'string' || !path.isAbsolute(cfg.runtime))) {
-    throw new Error(`本地配置 "${file}" 里的 runtime 必须是绝对路径`);
+  const absolute = (v) => typeof v === 'string' && path.isAbsolute(v);
+  for (const key of ['runtime', 'kit_repo']) {
+    if (cfg[key] !== undefined && !absolute(cfg[key])) throw new Error(`本地配置 "${file}" 里的 ${key} 必须是绝对路径`);
+  }
+  if (cfg.readonly_dirs !== undefined && !(Array.isArray(cfg.readonly_dirs) && cfg.readonly_dirs.every(absolute))) {
+    throw new Error(`本地配置 "${file}" 里的 readonly_dirs 必须是绝对路径的数组`);
   }
   return cfg;
 }
 
-function writeHeartbeat(config, entry) {
+/** The rule policy of a loaded config (no config: no read-only folders, kit repos found by markers only). */
+export function policyFrom(config) {
+  return { readonlyDirs: config?.readonly_dirs ?? [], kitRepos: config?.kit_repo ? [config.kit_repo] : [] };
+}
+
+/**
+ * Append one heartbeat line to <runtime>/hooks/heartbeat/<name>.jsonl; never throws.
+ * @param {object|null} config the loaded config (no runtime: nothing is written)
+ * @param {object} entry the line, exactly {ts, platform, event, decision}
+ * @param {string} [name] hook name (file name and stderr prefix)
+ */
+export function writeHeartbeat(config, entry, name = HOOK_NAME) {
   if (!config?.runtime) return;
   const dir = path.join(config.runtime, 'hooks', 'heartbeat');
-  const file = path.join(dir, `${HOOK_NAME}.jsonl`);
+  const file = path.join(dir, `${name}.jsonl`);
   const line = Buffer.from(`${JSON.stringify(entry)}\n`, 'utf8');
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -635,7 +953,7 @@ function writeHeartbeat(config, entry) {
     if (size + line.length > HEARTBEAT_MAX) truncateHeartbeat(file);
     fs.appendFileSync(file, line);
   } catch (e) {
-    process.stderr.write(`guard: note: heartbeat not written to "${file}" (${e.code || e.message})\n`);
+    process.stderr.write(`${name}: note: heartbeat not written to "${file}" (${e.code || e.message})\n`);
   }
 }
 
@@ -658,7 +976,15 @@ function truncateHeartbeat(file) {
   }
 }
 
-// Built-in samples for --selftest: [tool, command, expected decision, platform].
+// Selftest folders: never created; rules 2 and 4 only read the file system, so missing folders are fine.
+const ST_ROOT = path.join(os.tmpdir(), 'autoskills-guard-selftest');
+const ST_READONLY = path.join(ST_ROOT, 'readonly');
+const ST_KIT = path.join(ST_ROOT, 'kit');
+const SELFTEST_POLICY = { readonlyDirs: [ST_READONLY], kitRepos: [ST_KIT] };
+const ST_AGENT = { agent_id: 'selftest-agent', agent_type: 'general-purpose' };
+
+// Built-in samples for --selftest: [tool, tool_input (a string is the command), expected decision,
+// platform, extra input fields]. Rules 2 and 4 use SELFTEST_POLICY.
 export const SELFTEST = [
   ['Bash', 'git status', 'allow', 'claude'],
   ['Bash', 'git commit -m "docs: why git push is blocked"', 'allow', 'claude'],
@@ -679,21 +1005,33 @@ export const SELFTEST = [
   ['PowerShell', 'gh api --method DELETE repos/acme/demo', 'deny', 'claude'],
   ['shell', 'powershell -NoProfile -Command "git push"', 'deny', 'codex'],
   ['shell', 'gh workflow list', 'allow', 'codex'],
+  ['Write', { file_path: path.join(ST_READONLY, 'notes.md'), content: 'x' }, 'deny', 'claude'],
+  ['Edit', { file_path: path.join(ST_ROOT, 'readonly-copy', 'notes.md'), old_string: 'a', new_string: 'b' }, 'allow', 'claude'],
+  ['apply_patch', { command: `*** Begin Patch\n*** Update File: ${path.join(ST_READONLY, 'a.txt')}\n@@\n-a\n+b\n*** End Patch` }, 'deny', 'codex'],
+  ['mcp__project-manager__update_task_status', { id: 'T1', status: 'done' }, 'deny', 'claude', ST_AGENT],
+  ['mcp__project-manager__set_project_dir', { project_dir: ST_ROOT }, 'deny', 'claude', ST_AGENT],
+  ['mcp__project-manager__get_task_by_id', { id: 'T1' }, 'allow', 'claude', ST_AGENT],
+  ['mcp__project-manager__update_task_status', { id: 'T1', status: 'done' }, 'allow', 'claude'],
+  ['Bash', 'git clean -fdx', 'deny', 'claude', { cwd: ST_KIT }],
+  ['PowerShell', 'git clean -fX', 'deny', 'claude', { cwd: ST_KIT }],
+  ['Bash', 'git clean -fd', 'allow', 'claude', { cwd: ST_KIT }],
+  ['Bash', 'git clean -n -x', 'allow', 'claude', { cwd: ST_KIT }],
 ];
 
 function selftest() {
   let failed = 0;
-  for (const [tool, command, expected, platform] of SELFTEST) {
+  for (const [tool, ti, expected, platform, extra] of SELFTEST) {
+    const input = { hook_event_name: 'PreToolUse', tool_name: tool, tool_input: typeof ti === 'string' ? { command: ti } : ti, ...extra };
     let got;
     try {
-      got = decide({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command } }, platform).decision;
+      got = decide(input, platform, SELFTEST_POLICY).decision;
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
       got = 'error';
     }
     if (got !== expected) {
       failed++;
-      console.log(`guard selftest: FAIL ${tool} ${JSON.stringify(command)}: expected ${expected}, got ${got}`);
+      console.log(`guard selftest: FAIL ${tool} ${JSON.stringify(input.tool_input)}: expected ${expected}, got ${got}`);
     }
   }
   console.log(failed ? `guard selftest: ${failed} of ${SELFTEST.length} failed` : `guard selftest: ok (${SELFTEST.length} samples)`);
@@ -737,7 +1075,7 @@ function main(argv) {
     // The event name is recorded only when it looks like one; the heartbeat never carries free text.
     const ev = input?.hook_event_name;
     event = typeof ev === 'string' && /^[A-Za-z]{1,40}$/.test(ev) ? ev : ev === undefined ? 'PreToolUse' : 'unknown';
-    const r = decide(input, platform);
+    const r = decide(input, platform, policyFrom(config));
     decision = r.decision;
     code = 0;
     if (r.decision === 'deny') {
@@ -745,7 +1083,7 @@ function main(argv) {
     }
   } catch (e) {
     const why = e instanceof ParseError ? e.message : `内部错误（${e.message}）`;
-    process.stderr.write(`AutoSkills 守卫无法判断这次调用，已按失败处理：${why}。请把命令改写成引号成对的简单命令后再试。\n`);
+    process.stderr.write(`AutoSkills 守卫无法判断这次调用，已按失败处理：${why}。请把命令改写成引号成对的简单命令，写入工具要带目标路径，然后再试。\n`);
   }
   writeHeartbeat(config, { ts: new Date().toISOString(), platform, event, decision });
   if (out) process.stdout.write(Buffer.from(out, 'utf8'));

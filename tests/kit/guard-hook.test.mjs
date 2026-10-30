@@ -1,8 +1,9 @@
-// Tests for hooks/guard.mjs, rule 1 and the skeleton (node:test, zero dependencies). Every input is
-// hand-written and synthetic (acme/demo repositories, example.com remotes); heartbeat runtimes and
-// configs live in OS temp dirs that the tests remove. The rule matrix calls the exported decide() in
-// process; the hook contract (stdout JSON, exit codes, heartbeat, --selftest) is checked by spawning the
-// guard with the Node that runs the tests, so running this file under both Node versions covers both.
+// Tests for hooks/guard.mjs, rules 1-4 and the skeleton (node:test, zero dependencies). Every input is
+// hand-written and synthetic (acme/demo repositories, example.com remotes); heartbeat runtimes, configs,
+// the read-only folders with their junctions and the fake AutoSkills checkouts of rule 4 live in OS temp
+// dirs that the tests remove (links first). The rule matrix calls the exported decide() in process; the
+// hook contract (stdout JSON, exit codes, heartbeat, --selftest) is checked by spawning the guard with the
+// Node that runs the tests, so running this file under both Node versions covers both.
 //
 // Known gaps (ADR-006 §4 residual risks: "间接执行能绕过守卫：写进脚本文件再运行、Invoke-Expression、
 // 编码过的命令，守卫都看不到原命令"). The guard does not pretend to catch them; the "known gaps" suite
@@ -12,7 +13,9 @@
 //   - Invoke-Expression / iex with the command as a string;
 //   - powershell -EncodedCommand <base64>;
 //   - commands built at run time: $g = 'git'; & $g push, git $(echo push), aliases defined outside the
-//     command (git config alias.p push, then git p).
+//     command (git config alias.p push, then git p);
+//   - writes into a read-only folder through a shell command (rule 2 sees only the write tools);
+//   - a subagent call without agent_id looks like the main session to rule 3 (C0 E2, AS3-117).
 // On one Windows account the guard only prevents mistakes; a deliberate bypass is out of its reach.
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,19 +24,31 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, SELFTEST } from '../../hooks/guard.mjs';
+import { decide, SELFTEST, patchPaths } from '../../hooks/guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'hooks', 'guard.mjs');
 const REASON_HINT = '推送由你自己在普通终端做';
 
 const temps = [];
+const links = [];
 function tempDir(name = 'guard-hook-') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
   temps.push(dir);
   return dir;
 }
-after(() => { for (const t of temps) fs.rmSync(t, { recursive: true, force: true }); });
+// Links go first, so removing the temp dirs never walks into a link target.
+after(() => {
+  for (const l of links) { try { fs.unlinkSync(l); } catch { fs.rmSync(l, { force: true }); } }
+  for (const t of temps) fs.rmSync(t, { recursive: true, force: true });
+});
+
+/** A directory link: a junction on Windows (no admin right needed), a symlink elsewhere. */
+function dirLink(target, at) {
+  fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+  links.push(at);
+  return at;
+}
 
 /** All files under dir, relative, sorted. */
 function listFiles(dir) {
@@ -378,8 +393,304 @@ describe('scope', () => {
   });
 });
 
+const WIN = process.platform === 'win32';
+
+/**
+ * Rule 2 fixture in a temp dir: the read-only folder vault/ (with a file and a sub folder), a sibling
+ * vault-copy/ whose name starts the same, and work/vault-link, a junction to vault/.
+ */
+function readonlyFixture() {
+  const root = tempDir('guard-readonly-');
+  const vault = path.join(root, 'vault');
+  fs.mkdirSync(path.join(vault, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(vault, 'a.txt'), 'synthetic\n');
+  fs.mkdirSync(path.join(root, 'vault-copy'));
+  const work = path.join(root, 'work');
+  fs.mkdirSync(work);
+  const link = dirLink(vault, path.join(work, 'vault-link'));
+  return { root, vault, work, link };
+}
+
+/** One rule-2 decision: tool, tool_input, cwd and the registered read-only folders. */
+function writeDecision(tool, toolInput, cwd, readonlyDirs, platform = 'claude') {
+  const input = { hook_event_name: 'PreToolUse', tool_name: tool, tool_input: toolInput, cwd };
+  return decide(input, platform, { readonlyDirs }).decision;
+}
+
+/** Git Bash spelling of a Windows path: C:\x\y -> /c/x/y. */
+const msys = (p) => p.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/');
+
+describe('rule 2, read-only folders', () => {
+  test('deny: Edit, Write, MultiEdit and NotebookEdit into the folder, by absolute and relative path', () => {
+    const f = readonlyFixture();
+    const ro = [f.vault];
+    const d = (tool, ti, cwd = f.root) => writeDecision(tool, ti, cwd, ro);
+    assert.equal(d('Write', { file_path: path.join(f.vault, 'new.md'), content: 'x' }), 'deny');
+    assert.equal(d('Edit', { file_path: path.join(f.vault, 'a.txt'), old_string: 'a', new_string: 'b' }), 'deny');
+    assert.equal(d('MultiEdit', { file_path: path.join(f.vault, 'a.txt'), edits: [] }), 'deny');
+    assert.equal(d('NotebookEdit', { notebook_path: path.join(f.vault, 'sub', 'n.ipynb'), new_source: 'x' }), 'deny');
+    assert.equal(d('Write', { file_path: path.join(f.vault, 'sub', 'deeper', 'new.md'), content: 'x' }), 'deny', 'a path that does not exist yet');
+    assert.equal(d('Write', { file_path: f.vault, content: 'x' }), 'deny', 'the folder itself');
+    assert.equal(d('Write', { file_path: 'vault/new.md', content: 'x' }), 'deny', 'relative to cwd');
+    assert.equal(d('Edit', { file_path: '../vault/a.txt', old_string: 'a', new_string: 'b' }, f.work), 'deny', 'with ..');
+  });
+
+  test('deny: case and slash spellings of the same path (Windows)', { skip: !WIN && 'Windows paths only' }, () => {
+    const f = readonlyFixture();
+    const target = path.join(f.vault, 'a.txt');
+    for (const p of [target.toUpperCase(), target.toLowerCase(), target.replace(/\\/g, '/'), target.replace(/\\/g, '/').toUpperCase(),
+      `${path.join(f.vault, 'sub')}/new.md`, msys(target)]) {
+      assert.equal(writeDecision('Edit', { file_path: p, old_string: 'a', new_string: 'b' }, f.root, [f.vault]), 'deny', p);
+    }
+    for (const dir of [f.vault.toUpperCase(), f.vault.replace(/\\/g, '/'), `${f.vault}\\`, `${f.vault.replace(/\\/g, '/')}/`]) {
+      assert.equal(writeDecision('Write', { file_path: target, content: 'x' }, f.root, [dir]), 'deny', `registered as ${dir}`);
+    }
+  });
+
+  test('deny: through a junction, both ways', () => {
+    const f = readonlyFixture();
+    assert.equal(fs.readFileSync(path.join(f.link, 'a.txt'), 'utf8'), 'synthetic\n', 'the junction reaches the folder');
+    assert.equal(writeDecision('Edit', { file_path: path.join(f.link, 'a.txt'), old_string: 'a', new_string: 'b' }, f.root, [f.vault]), 'deny');
+    assert.equal(writeDecision('Write', { file_path: path.join(f.link, 'sub', 'new.md'), content: 'x' }, f.root, [f.vault]), 'deny', 'new file under the link');
+    assert.equal(writeDecision('Write', { file_path: 'vault-link/new.md', content: 'x' }, f.work, [f.vault]), 'deny', 'relative, through the link');
+    assert.equal(writeDecision('Write', { file_path: path.join(f.vault, 'new.md'), content: 'x' }, f.root, [f.link]), 'deny', 'registered by the link path');
+  });
+
+  test('allow: siblings, other tools, the main checkout and no registered folder', () => {
+    const f = readonlyFixture();
+    const ro = [f.vault];
+    assert.equal(writeDecision('Write', { file_path: path.join(f.root, 'vault-copy', 'x.md'), content: 'x' }, f.root, ro), 'allow', 'same name prefix');
+    assert.equal(writeDecision('Write', { file_path: path.join(f.root, 'vault.md'), content: 'x' }, f.root, ro), 'allow');
+    assert.equal(writeDecision('Edit', { file_path: path.join(f.work, 'notes.md'), old_string: 'a', new_string: 'b' }, f.root, ro), 'allow');
+    assert.equal(writeDecision('Read', { file_path: path.join(f.vault, 'a.txt') }, f.root, ro), 'allow', 'reads are not rule 2');
+    assert.equal(writeDecision('Grep', { pattern: 'x', path: f.vault }, f.root, ro), 'allow');
+    assert.equal(writeDecision('Write', { file_path: path.join(f.vault, 'new.md'), content: 'x' }, f.root, []), 'allow', 'nothing registered');
+    assert.equal(decide({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(f.vault, 'n.md') } }, 'claude').decision,
+      'allow', 'no policy');
+  });
+
+  test('Codex apply_patch: every Add, Update, Delete and Move to path is checked', () => {
+    const f = readonlyFixture();
+    const ro = [f.vault];
+    const patch = (...lines) => ['*** Begin Patch', ...lines, '*** End Patch'].join('\n');
+    const inVault = patch(`*** Update File: ${path.join(f.vault, 'a.txt')}`, '@@', '-synthetic', '+changed');
+    const d = (ti, cwd = f.root) => writeDecision('apply_patch', ti, cwd, ro, 'codex');
+    assert.equal(d({ command: inVault }), 'deny');
+    assert.equal(d({ input: inVault }), 'deny');
+    assert.equal(d(inVault), 'deny', 'tool_input as the patch string');
+    assert.equal(d({ command: ['apply_patch', inVault] }), 'deny', 'argv form');
+    assert.equal(d({ command: patch('*** Add File: vault/new.md', '+x') }), 'deny', 'relative Add File');
+    assert.equal(d({ command: patch(`*** Delete File: ${path.join(f.link, 'a.txt')}`) }), 'deny', 'Delete File through the junction');
+    assert.equal(d({ command: patch(`*** Update File: ${path.join(f.work, 'x.md')}`, `*** Move to: ${path.join(f.vault, 'x.md')}`, '@@', '-a', '+b') }), 'deny',
+      'Move to into the folder');
+    assert.equal(d({ command: patch(`*** Update File: ${path.join(f.work, 'x.md')}`, '@@', '-a', '+b', `*** Add File: ${path.join(f.root, 'vault-copy', 'y.md')}`, '+y') }),
+      'allow');
+    assert.deepEqual(patchPaths(patch('*** Add File: a.md', '+x', '*** Update File: b.md', '*** Move to: c.md', '*** Delete File: d.md')),
+      ['a.md', 'b.md', 'c.md', 'd.md']);
+    assert.throws(() => d({ command: 'not a patch' }), /读不出要改的文件路径/, 'no path: error, so Claude-side onFailure blocks');
+    assert.throws(() => writeDecision('Write', { content: 'x' }, f.root, ro), /没有可读的目标路径/);
+  });
+
+  test('the guard never touches the fixture', () => {
+    const f = readonlyFixture();
+    const before = listFiles(f.vault);
+    writeDecision('Write', { file_path: path.join(f.vault, 'new.md'), content: 'x' }, f.root, [f.vault]);
+    writeDecision('apply_patch', { command: `*** Add File: ${path.join(f.vault, 'p.md')}\n+x` }, f.root, [f.vault], 'codex');
+    assert.deepEqual(listFiles(f.vault), before);
+  });
+});
+
+const SUBAGENT = { agent_id: 'agent-synthetic-1', agent_type: 'general-purpose' };
+const LEDGER_WRITES = ['set_project_dir', 'update_task_status', 'update_tasks', 'create_tasks', 'edit_task', 'edit_tasks', 'add_log',
+  'add_subtask', 'close_task', 'close_tasks', 'reopen_task', 'rename_task', 'set_task_priority', 'save_prd', 'save_architecture',
+  'update_project_info', 'set_current_focus', 'archive_module', 'migrate_tasks_schema', 'reconcile', 'some_future_tool'];
+const LEDGER_READ_TOOLS = ['get_all_tasks', 'get_task_by_id', 'get_logs', 'get_next_task', 'get_project_context', 'get_project_info',
+  'get_prd', 'get_architecture', 'get_current_focus', 'get_portfolio', 'get_server_info', 'get_verification_profiles', 'lint_state'];
+
+/** One rule-3 decision. */
+function ledgerDecision(tool, extra = {}, toolInput = {}, platform = 'claude') {
+  return decide({ session_id: 'synthetic-session', hook_event_name: 'PreToolUse', tool_name: tool, tool_input: toolInput, ...extra }, platform);
+}
+
+describe('rule 3, subagents do not write the ledger', () => {
+  test('deny: a subagent calling a write tool, set_project_dir or an unknown project-manager tool', () => {
+    for (const t of LEDGER_WRITES) {
+      const r = ledgerDecision(`mcp__project-manager__${t}`, SUBAGENT);
+      assert.equal(r.decision, 'deny', t);
+      assert.match(r.reason, /子代理/);
+      assert.match(r.reason, new RegExp(t));
+    }
+    assert.match(ledgerDecision('mcp__project-manager__set_project_dir', SUBAGENT).reason, /账本目标/);
+  });
+
+  test('allow: a subagent reading the ledger', () => {
+    for (const t of LEDGER_READ_TOOLS) assert.equal(ledgerDecision(`mcp__project-manager__${t}`, SUBAGENT).decision, 'allow', t);
+  });
+
+  test('allow: the main session (no agent_id) writes and switches the ledger', () => {
+    for (const t of [...LEDGER_WRITES, ...LEDGER_READ_TOOLS]) assert.equal(ledgerDecision(`mcp__project-manager__${t}`).decision, 'allow', t);
+    assert.equal(ledgerDecision('mcp__project-manager__update_task_status', { agent_id: '' }).decision, 'allow', 'empty agent_id');
+    assert.equal(ledgerDecision('mcp__project-manager__update_task_status', { agent_id: null }).decision, 'allow', 'null agent_id');
+  });
+
+  test('other spellings of the server and tool name (Codex forms are settled by C0)', () => {
+    for (const tool of ['mcp__project_manager__add_log', 'project-manager.add_log', 'project-manager/add_log', 'project_manager:add_log',
+      'mcp__plugin_kit_project-manager__add_log', 'MCP__Project-Manager__Add_Log']) {
+      assert.equal(ledgerDecision(tool, SUBAGENT).decision, 'deny', tool);
+    }
+    assert.equal(ledgerDecision('add_log', SUBAGENT, { server: 'project-manager' }).decision, 'deny', 'server in tool_input');
+    assert.equal(ledgerDecision('call', SUBAGENT, { server_name: 'project_manager', tool: 'get_logs' }).decision, 'allow', 'read named in tool_input');
+    const codexSub = { turn_id: 'synthetic-turn', ...SUBAGENT };
+    assert.equal(ledgerDecision('mcp__project-manager__update_tasks', codexSub, {}, 'codex').decision, 'deny');
+    assert.equal(ledgerDecision('mcp__project-manager__update_tasks', { turn_id: 'synthetic-turn' }, {}, 'codex').decision, 'allow', 'Codex root thread');
+  });
+
+  test('allow: tools of other servers, even with ledger-like names', () => {
+    assert.equal(ledgerDecision('mcp__demo__update_task_status', SUBAGENT).decision, 'allow');
+    assert.equal(ledgerDecision('mcp__project-manager-viewer-x__noop', SUBAGENT).decision, 'allow');
+    assert.equal(ledgerDecision('Read', SUBAGENT, { file_path: 'notes.md' }).decision, 'allow');
+  });
+});
+
+/**
+ * Rule 4 fixture in a temp dir: kit/ is a fake AutoSkills checkout (.git, hooks/guard.mjs,
+ * scripts/lint-kit.mjs, _private/) with a nested repo kit/nested; other/ is an unrelated repo and
+ * plain/ a repo without the markers (for kit_repo from the config).
+ */
+function kitFixture() {
+  const root = tempDir('guard-kit-');
+  const kit = path.join(root, 'kit');
+  for (const d of ['.git', 'hooks', 'scripts', 'tests', '_private', path.join('nested', '.git')]) fs.mkdirSync(path.join(kit, d), { recursive: true });
+  fs.writeFileSync(path.join(kit, 'hooks', 'guard.mjs'), '// synthetic marker\n');
+  fs.writeFileSync(path.join(kit, 'scripts', 'lint-kit.mjs'), '// synthetic marker\n');
+  for (const d of [path.join('other', '.git'), path.join('plain', '.git'), path.join('plain', 'src')]) fs.mkdirSync(path.join(root, d), { recursive: true });
+  return { root, kit, other: path.join(root, 'other'), plain: path.join(root, 'plain') };
+}
+
+const shellDecision = (tool, command, cwd, kitRepos = []) => decide(
+  { hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command }, cwd, permission_mode: 'default' }, 'claude', { kitRepos },
+).decision;
+
+describe('rule 4, git clean -x/-X in the AutoSkills repo', () => {
+  test('deny: in the checkout, in Bash form', () => {
+    const f = kitFixture();
+    expectAll((c) => shellDecision('Bash', c, f.kit), [
+      'git clean -fdx',
+      'git clean -xfd',
+      'git clean -ffdx',
+      'git clean -fX',
+      'git clean -d -f -x',
+      'git clean -x -f -- _private',
+      'git clean -fdx -e node_modules',
+      'git -c core.quotepath=off clean -fdx',
+      'git -c "alias.wipe=clean -fdx" wipe',
+      'git.exe clean -fdx',
+      'git status && git clean -fdx',
+      'bash -lc "git clean -fdx"',
+      'cd tests && git clean -fdx',
+    ], 'deny');
+    const r = decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git clean -fdx' }, cwd: f.kit }, 'claude');
+    assert.match(r.reason, /_private\//);
+    assert.match(r.reason, /git clean -n/);
+  });
+
+  test('deny: in the checkout, in PowerShell form', () => {
+    const f = kitFixture();
+    expectAll((c) => shellDecision('PowerShell', c, f.kit), [
+      'git clean -fdx',
+      '& git clean -fX',
+      'Set-Location tests; git clean -xdf',
+      'powershell -NoProfile -Command "git clean -fdx"',
+    ], 'deny');
+  });
+
+  test('allow: -n, -fd and the like in the checkout', () => {
+    const f = kitFixture();
+    for (const tool of ['Bash', 'PowerShell']) {
+      expectAll((c) => shellDecision(tool, c, f.kit), [
+        'git clean -n',
+        'git clean -fd',
+        'git clean -f',
+        'git clean -nd',
+        'git clean -n -x',
+        'git clean --dry-run -X',
+        'git clean -ndX',
+        'git clean -fd -e x',
+        'git clean -fdex',
+        'git clean -fd -- -x',
+        'git status',
+        'echo "git clean -fdx"',
+      ], 'allow');
+    }
+  });
+
+  test('deny: the checkout reached from elsewhere (-C, cd, --git-dir, Git Bash paths)', () => {
+    const f = kitFixture();
+    expectAll((c) => shellDecision('Bash', c, f.other), [
+      `git -C "${f.kit}" clean -fdx`,
+      `git -C "${f.root}" -C kit clean -fdx`,
+      `cd "${f.kit}" && git clean -fdx`,
+      `cd "${path.join(f.kit, 'tests')}"; git clean -fX`,
+      `pushd "${f.kit}" && git clean -fdx`,
+      `git --git-dir="${path.join(f.kit, '.git')}" --work-tree="${f.kit}" clean -fdx`,
+      `git --work-tree "${f.kit}" clean -xdf`,
+    ], 'deny');
+    expectAll((c) => shellDecision('PowerShell', c, f.other), [
+      `Set-Location -Path '${f.kit}'; git clean -fdx`,
+      `cd '${f.kit}'; git clean -fdx`,
+      `git -C '${f.kit}' clean -fX`,
+    ], 'deny');
+    if (WIN) {
+      assert.equal(shellDecision('Bash', `cd ${msys(f.kit)} && git clean -fdx`, f.other), 'deny', 'Git Bash drive path');
+      assert.equal(shellDecision('Bash', 'git clean -fdx', f.kit.toUpperCase()), 'deny', 'upper-case cwd');
+    }
+  });
+
+  test('allow: other repositories, a nested repo inside the checkout', () => {
+    const f = kitFixture();
+    assert.equal(shellDecision('Bash', 'git clean -fdx', f.other), 'allow');
+    assert.equal(shellDecision('PowerShell', 'git clean -fdX', f.other), 'allow');
+    assert.equal(shellDecision('Bash', 'git clean -fdx', path.join(f.kit, 'nested')), 'allow', 'nested repo: only it is cleaned');
+    assert.equal(shellDecision('Bash', `git -C "${f.other}" clean -fdx`, f.root), 'allow');
+  });
+
+  test('kit_repo from the config marks a checkout without the markers', () => {
+    const f = kitFixture();
+    assert.equal(shellDecision('Bash', 'git clean -fdx', f.plain), 'allow', 'no markers, not configured');
+    assert.equal(shellDecision('Bash', 'git clean -fdx', f.plain, [f.plain]), 'deny');
+    assert.equal(shellDecision('Bash', 'git clean -fdx', path.join(f.plain, 'src'), [f.plain]), 'deny', 'sub folder');
+    assert.equal(shellDecision('Bash', 'git clean -fd', f.plain, [f.plain]), 'allow');
+    assert.equal(shellDecision('Bash', 'git clean -fdx', path.join(f.kit, 'nested'), [f.kit]), 'allow', 'nested repo below the configured one');
+    if (WIN) assert.equal(shellDecision('Bash', 'git clean -fdx', f.plain, [f.plain.toUpperCase().replace(/\\/g, '/')]), 'deny', 'case and slashes');
+  });
+
+  test('this repository counts as an AutoSkills checkout (read only)', () => {
+    assert.equal(shellDecision('Bash', 'git clean -fdx', REPO), 'deny');
+    assert.equal(shellDecision('PowerShell', 'git clean -fd', REPO), 'allow');
+    assert.equal(shellDecision('Bash', 'git clean -n -x', REPO), 'allow');
+  });
+
+  test('rules 1 and 4 together: both reasons', () => {
+    const f = kitFixture();
+    const r = decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git clean -fdx && git push' }, cwd: f.kit }, 'claude');
+    assert.equal(r.decision, 'deny');
+    assert.match(r.reason, /git push/);
+    assert.match(r.reason, /_private\//);
+  });
+});
+
 // Documented, not desired: see the gap list at the top of this file and ADR-006 §4.
 describe('known gaps (ADR-006 §4 residual risks, allowed on purpose)', () => {
+  test('shell writes into a read-only folder and subagent calls without agent_id', () => {
+    const f = readonlyFixture();
+    const target = path.join(f.vault, 'a.txt');
+    assert.equal(decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `echo x > "${target}"` }, cwd: f.root },
+      'claude', { readonlyDirs: [f.vault] }).decision, 'allow');
+    assert.equal(decide({ hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: `Set-Content -Path '${target}' -Value x` },
+      cwd: f.root }, 'claude', { readonlyDirs: [f.vault] }).decision, 'allow');
+    assert.equal(ledgerDecision('mcp__project-manager__update_task_status').decision, 'allow', 'no agent_id: treated as the main session');
+  });
+
   test('indirect execution and commands built at run time are not seen', () => {
     const encoded = Buffer.from('git push', 'utf16le').toString('base64');
     expectAll((c) => decision('Bash', c), [
@@ -521,6 +832,39 @@ describe('hook contract (spawned guard)', () => {
     assert.match(r.err, /hook-config\.json"/, 'the path is quoted');
     fs.writeFileSync(bad, JSON.stringify({ runtime: 'relative/rt' }));
     assert.equal(runGuard(claudeInput('Bash', 'git status'), ['--config', bad]).code, 2);
+    for (const cfg of [{ readonly_dirs: ['relative/vault'] }, { readonly_dirs: 'not-a-list' }, { kit_repo: 'relative/kit' }]) {
+      fs.writeFileSync(bad, JSON.stringify(cfg));
+      const r = runGuard(claudeInput('Bash', 'git status'), ['--config', bad]);
+      assert.equal(r.code, 2, JSON.stringify(cfg));
+      assert.equal(r.out, '');
+    }
+  });
+
+  test('config: readonly_dirs and kit_repo reach rules 2 and 4 of the spawned guard', () => {
+    const f = readonlyFixture();
+    const k = kitFixture();
+    const rt = tempRuntime();
+    fs.writeFileSync(rt.config, JSON.stringify({ runtime: rt.runtime, readonly_dirs: [f.vault], kit_repo: k.plain }));
+    const write = runGuard({ ...claudeInput('Write', 'x'), tool_input: { file_path: path.join(f.link, 'new.md'), content: 'x' }, cwd: f.root },
+      ['--config', rt.config]);
+    assert.equal(write.code, 0, write.err);
+    const j = JSON.parse(write.out);
+    assert.equal(j.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(j.hookSpecificOutput.permissionDecisionReason, /只读目录/);
+    const clean = runGuard({ ...claudeInput('Bash', 'git clean -fdx'), cwd: k.plain }, ['--config', rt.config]);
+    assert.equal(JSON.parse(clean.out).hookSpecificOutput.permissionDecision, 'deny', clean.err);
+    const sub = runGuard({ ...claudeInput('x', 'x'), tool_name: 'mcp__project-manager__add_log', tool_input: { type: 'note' }, ...SUBAGENT },
+      ['--config', rt.config]);
+    assert.match(JSON.parse(sub.out).hookSpecificOutput.permissionDecisionReason, /子代理/);
+    const ok = runGuard({ ...claudeInput('Write', 'x'), tool_input: { file_path: path.join(f.work, 'n.md'), content: 'x' }, cwd: f.root },
+      ['--config', rt.config]);
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(ok.out, '');
+    const noTarget = runGuard({ ...claudeInput('Write', 'x'), tool_input: { content: 'x' } }, ['--config', rt.config]);
+    assert.equal(noTarget.code, 2, 'a write tool without a target is an error while folders are registered');
+    const beats = fs.readFileSync(rt.heartbeat, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(beats.map((b) => b.decision), ['deny', 'deny', 'deny', 'allow', 'error']);
+    assert.doesNotMatch(fs.readFileSync(rt.heartbeat, 'utf8'), /vault|new\.md|add_log/, 'no paths or tool names in the heartbeat');
   });
 
   test('timing: one call of the guard, per Node version', (t) => {

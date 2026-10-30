@@ -1,0 +1,5 @@
+{
+  "runtime": "<runtime>",
+  "readonly_dirs": ["<readonly-dir>"],
+  "kit_repo": "<autoskills-repo>"
+}
