@@ -15,6 +15,9 @@
 //                     drops the [projects.'<path>'] sections (and dotted projects.'<path>'.* keys) whose path
 //                     lies in a folder, e.g. the trust entries Codex wrote for measurement repos under
 //                     _private/eval/runs/.
+//   removeValue, removeEmptyTable
+//                     undo setValue for deploy-kit --rollback: drop one key line, and a [table] header that
+//                     no longer holds keys together with the blank line setValue put above it.
 // A document the scanner cannot follow (an unterminated string, a stray character after a value) or an
 // edit TOML would reject (a key that is already an inline table or a dotted-key table) throws
 // TomlEditError; the deploy plan reports it as a conflict instead of writing.
@@ -294,6 +297,38 @@ export function setValue(text, keyPath, literal) {
   if (dotted) fail(text, dotted.start, `${formatKey(table)} is defined by dotted keys; ${name} cannot be added as a [table]`);
   const sep = text.length === 0 ? '' : `${atLineEnd(text, text.length, eol)}${eol}`;
   return `${text}${sep}[${formatKey(table)}]${eol}${line}${eol}`;
+}
+
+/**
+ * Remove one key = value entry: its whole lines, a trailing comment included. A key the document does not
+ * set leaves the text as it is.
+ * @param {string} text
+ * @param {string[]} keyPath full dotted path of the key
+ * @returns {string} the new document (the same string when nothing changes)
+ * @throws {TomlEditError} the document cannot be scanned
+ */
+export function removeValue(text, keyPath) {
+  const hit = scanToml(text).find((e) => e.kind === 'kv' && !e.inArray && samePath(e.path, keyPath));
+  if (!hit) return text;
+  return text.slice(0, hit.start) + text.slice(hit.end);
+}
+
+/**
+ * Remove a [table] header that holds no keys (only blank lines up to the next header), with the blank line
+ * right above it: the counterpart of setValue adding a missing table at the end. A table that holds a key
+ * or a comment, an array of tables and a missing header leave the text as it is.
+ * @param {string} text
+ * @param {string[]} tablePath e.g. ['desktop']
+ * @returns {string}
+ * @throws {TomlEditError} the document cannot be scanned
+ */
+export function removeEmptyTable(text, tablePath) {
+  const entries = scanToml(text);
+  const h = entries.findIndex((e) => e.kind === 'header' && !e.array && samePath(e.path, tablePath));
+  if (h < 0) return text;
+  for (let k = h + 1; k < entries.length && entries[k].kind !== 'header'; k++) if (entries[k].kind !== 'blank') return text;
+  const start = h > 0 && entries[h - 1].kind === 'blank' ? entries[h - 1].start : entries[h].start;
+  return text.slice(0, start) + text.slice(entries[h].end);
 }
 
 /** A line ending when the text before `at` does not end with one (a last line without newline). */

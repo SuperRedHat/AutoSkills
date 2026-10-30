@@ -2,9 +2,12 @@
 // test copies the hand-written fixtures in tests/kit/fixtures/deploy/ into an OS temp dir and passes
 // --home, --runtime, --projects-root and --local-config there, so the script never reads targets in the
 // real user directory; the git repositories the pushurl plan looks at are created in the temp projects
-// root. The --stage tests write only to folders under <repo>/_private/stage/ named deploy-kit-test-*, removed
-// at the end. The last test checks that the real target files, the real runtime area and the .git/config of
-// the real repositories are unchanged after the whole file ran.
+// root. --apply and --rollback keep their deploy records next to the temp local config. The --stage tests
+// write only to folders under <repo>/_private/stage/ named deploy-kit-test-*, the --drill test only to
+// <repo>/_private/eval/restore-drill-test-*, both removed at the end. The rollback runs the step-0 restore
+// tool (<repo>/_private/redesign-2026-10/step0/restore.mjs, git-excluded). The last test checks that the real
+// target files, the real runtime area and the .git/config of the real repositories are unchanged after the
+// whole file ran.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -13,18 +16,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildPlan, STAGE_MANIFEST } from '../../scripts/deploy-kit.mjs';
+import {
+  buildPlan, STAGE_MANIFEST, applyDeploy, rollbackDeploy, DeployError, processCheckApplies, isAgentProcess, listProcesses,
+  jsonDiff, reverseJson, LABEL_WHOLE, LABEL_MERGE, JOURNAL,
+} from '../../scripts/deploy-kit.mjs';
 import {
   KIT_REPO, KIT_SKILLS, LEGACY_SKILL_DIRS, targetMap, mergeWorkflowRules, WF_BEGIN, WF_END,
-  readLocalConfig, mergeClaudeSettings, mergeCodexConfig, claudePathRule, isKitHook,
+  readLocalConfig, mergeClaudeSettings, mergeCodexConfig, claudePathRule, isKitHook, within, pathKey,
 } from '../../scripts/lib/kit-targets.mjs';
-import { scanToml, setValue, getValue, keyValues, removeProjectsByPrefix, TomlEditError } from '../../scripts/lib/toml-edit.mjs';
+import { scanToml, setValue, getValue, keyValues, removeProjectsByPrefix, removeValue, removeEmptyTable, TomlEditError } from '../../scripts/lib/toml-edit.mjs';
 import { applyPlan, scanRepos } from '../../scripts/set-pushurl.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(REPO, 'scripts', 'deploy-kit.mjs');
 const FIXTURES = path.join(REPO, 'tests', 'kit', 'fixtures', 'deploy');
 const STAGE_ROOT = path.join(REPO, '_private', 'stage');
+const RESTORE_TOOL = path.join(REPO, '_private', 'redesign-2026-10', 'step0', 'restore.mjs');
 
 const temps = [];
 after(() => { for (const t of temps) fs.rmSync(t, { recursive: true, force: true }); });
@@ -111,7 +118,7 @@ function git(cwd, ...args) {
  * git repositories with a remote: projects/demo-app (gets pushurl = no_push) and the read-only
  * projects/archive-study/phase1-archive (skipped).
  */
-function sandbox({ init = true } = {}) {
+function sandbox({ init = true, restore = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-kit-'));
   temps.push(root);
   const sb = {
@@ -142,6 +149,13 @@ function sandbox({ init = true } = {}) {
     const r = run(['--init-local', '--runtime', sb.runtime, '--projects-root', sb.projects, '--local-config', sb.localConfig]);
     assert.equal(r.status, 0, r.stderr);
   }
+  if (restore) {
+    // --apply and --rollback need the step-0 restore tool; --init-local pointed at one next to the temp config.
+    assert.ok(fs.existsSync(RESTORE_TOOL), `step-0 restore tool missing: ${RESTORE_TOOL}`);
+    const cfg = JSON.parse(fs.readFileSync(sb.localConfig, 'utf8'));
+    cfg.restore_tool = fwd(RESTORE_TOOL);
+    fs.writeFileSync(sb.localConfig, `${JSON.stringify(cfg, null, 2)}\n`);
+  }
   return sb;
 }
 
@@ -163,7 +177,7 @@ const paths = (list) => list.map((e) => e.path);
 const localOf = (sb) => readLocalConfig(sb.localConfig);
 const rootsOf = (sb) => ({ home: path.resolve(sb.home), runtime: path.resolve(sb.runtime), projectsRoot: path.resolve(sb.projects) });
 
-/** Bring the sandbox to the planned state (a stand-in for --apply, which comes with AS3-113). */
+/** Bring the sandbox to the planned state directly, without the backup and journal of --apply. */
 function materialize(sb, opts = {}) {
   const plan = buildPlan(rootsOf(sb), { ...opts, local: localOf(sb) });
   for (const e of [...plan.create, ...plan.modify]) {
@@ -574,13 +588,23 @@ test('all three roots are redirected; runtime and projects root default to the l
   assert.deepEqual(moved.pushurl, []);
 });
 
-test('unknown options, misplaced options and the modes of later tasks exit 2', () => {
+test('unknown options, misplaced options, a missing restore tool and the modes of later tasks exit 2', () => {
   const sb = sandbox();
+  // --apply without a restore tool (the sandbox config points to a missing one) is a setup error.
   for (const args of [['--bogus'], ['--apply'], ['--rollback', 'x'], ['--neutral'], ['--stage', 'x'], ['--init-local', '--json'],
-    ['--expect-clean', '--claude-contract', 'inline'], ['--expect-clean', '--retire-legacy-agents'], ['--layout', 'project'], ['--force']]) {
+    ['--expect-clean', '--claude-contract', 'inline'], ['--expect-clean', '--retire-legacy-agents'], ['--layout', 'project'], ['--force'],
+    ['--apply', '--dry-run'], ['--apply', '--json'], ['--apply', '--expect-clean'], ['--apply', '--rollback', '20261030-000000-abcd'],
+    ['--whole-file'], ['--allow-running'], ['--drill', 'x', '--json'], ['--drill', 'x', '--apply']]) {
     const r = run([...sb.rootArgs, ...args]);
     assert.equal(r.status, 2, args.join(' '));
   }
+  assert.match(run([...sb.rootArgs, '--apply']).stderr, /restore_tool .* not found/);
+  // --rollback takes its roots from the journal: root options, unknown and malformed ids are usage errors.
+  for (const args of [['--rollback', 'x'], ['--rollback', '20261030-000000-abcd'], ['--rollback', '20261030-000000-abcd', '--home', sb.home]]) {
+    const r = run([...args, '--local-config', sb.localConfig]);
+    assert.equal(r.status, 2, args.join(' '));
+  }
+  assert.deepEqual(fs.readdirSync(sb.privateDir).sort(), ['eval', 'kit-local.json']);
 });
 
 // ---------- --expect-clean ----------
@@ -770,6 +794,319 @@ test('mergeWorkflowRules drops Core Rules, keeps the other sections and line end
   const none = mergeWorkflowRules(null);
   assert.ok(none.startsWith(`# Shared Workflow Rules\n\n${WF_BEGIN}`));
   assert.equal(mergeWorkflowRules(none), none);
+});
+
+// ---------- --apply, --rollback, --drill ----------
+
+const sha = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const idOf = (stdout) => /deploy id (\S+)/.exec(stdout)?.[1];
+const deployDir = (sb, id) => path.join(sb.privateDir, 'deploy', id);
+const journalOf = (sb, id) => JSON.parse(fs.readFileSync(path.join(deployDir(sb, id), JOURNAL), 'utf8'));
+const demoConfig = (sb) => path.join(sb.projects, 'demo-app', '.git', 'config');
+
+/** The parts of the sandbox a deploy must never touch: other skills, other agents, the brace folder,
+ *  ~/.claude.json, the ledger build, the verification policies and the old ~/.workflow-core folders. */
+function untouched(sb) {
+  const h = (...p) => treeHash(path.join(sb.home, ...p));
+  return {
+    otherTool: h('.claude', 'skills', 'other-tool'), pdf: h('.codex', 'skills', 'pdf'), system: h('.codex', 'skills', '.system'),
+    helper: h('.claude', 'agents', 'my-helper.md'), brace: h('.codex', 'agents', 'skills', '{project-init,project-plan}'),
+    claudeJson: h('.claude.json'), dist: h('.claude', 'mcp-project-manager'), gemini: h('.gemini', 'settings.json'),
+    policies: [h('.workflow-core', 'policies', 'verification-profiles.json'), h('.workflow-core', 'policies', 'acceptance-matrix.json')],
+    old: [h('.workflow-core', 'scripts'), h('.workflow-core', 'docs'), h('.workflow-core', 'backups')],
+  };
+}
+
+function apply(sb, ...extra) {
+  const r = run([...sb.rootArgs, '--apply', ...extra]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const id = idOf(r.stdout);
+  assert.match(id, /^\d{8}-\d{6}-[0-9a-f]{4}$/);
+  return { ...r, id };
+}
+
+function rollback(sb, id, ...extra) {
+  return run(['--rollback', id, '--local-config', sb.localConfig, ...extra]);
+}
+
+test('--apply backs up in the step-0 format and journals; --rollback brings every file back and deletes what it created', () => {
+  const sb = sandbox({ restore: true });
+  const homeBefore = treeHash(sb.home);
+  const runtimeBefore = treeHash(sb.runtime);
+  const repoBefore = sha(demoConfig(sb));
+  const keep = untouched(sb);
+  const plan = buildPlan(rootsOf(sb), { retireLegacyAgents: true, local: localOf(sb) });
+
+  const a = apply(sb, '--retire-legacy-agents');
+  assert.match(a.stdout, /process check: skipped/);
+  assert.match(a.stdout, new RegExp(`roll back with: node scripts/deploy-kit\\.mjs --rollback ${a.id} --local-config "`));
+  const dir = deployDir(sb, a.id);
+  assert.ok(within(dir, path.join(sb.privateDir, 'deploy')));
+  // Backup: every modified or removed file, labelled by class, with matching hashes; never ~/.claude.json.
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'backup', 'manifest.json'), 'utf8'));
+  assert.equal(path.resolve(manifest.home), path.resolve(sb.home));
+  assert.ok(Array.isArray(manifest.sources) && Array.isArray(manifest.links));
+  for (const f of manifest.files) {
+    assert.deepEqual(Object.keys(f).filter((k) => ['label', 'src', 'rel', 'size', 'sha256'].includes(k)).sort(), ['label', 'rel', 'sha256', 'size', 'src']);
+    assert.equal(sha(path.join(dir, 'backup', 'files', f.rel)), f.sha256, f.src);
+    assert.ok(/^[A-Z][\\/]/.test(f.rel) || f.rel.startsWith('_root'), f.rel);
+  }
+  const label = (...p) => manifest.files.find((f) => path.resolve(f.src) === path.join(sb.home, ...p))?.label;
+  assert.equal(label('.claude', 'settings.json'), LABEL_MERGE);
+  assert.equal(label('.codex', 'config.toml'), LABEL_MERGE);
+  assert.equal(label('.workflow-core', 'policies', 'workflow-rules.md'), LABEL_MERGE);
+  assert.equal(label('.claude', 'skills', 'project-next', 'SKILL.md'), LABEL_WHOLE);
+  assert.equal(label('.claude', 'agents', 'tester.md'), LABEL_WHOLE, 'old agents are archived before removal');
+  assert.equal(label('.codex', 'skills', 'project-discuss', 'SKILL.md'), LABEL_WHOLE);
+  assert.ok(!manifest.files.some((f) => /\.claude\.json$/.test(f.src)), '~/.claude.json is never backed up');
+  const modifiedOrRemoved = [...plan.modify.map((e) => e.path), ...plan.remove.flatMap((e) => (e.kind === 'dir' ? e.files.map((r) => path.join(e.path, ...r.split('/'))) : [e.path]))];
+  assert.deepEqual(manifest.files.map((f) => pathKey(f.src)).sort(), modifiedOrRemoved.map(pathKey).sort());
+  // The step-0 restore tool reads the backup (dry run, no --apply) and exits 0.
+  const dry = spawnSync(process.execPath, [RESTORE_TOOL, '--backup', path.join(dir, 'backup')], { encoding: 'utf8' });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(JSON.parse(dry.stdout.trim().split(/\r?\n/).pop()).mode, 'dry-run');
+
+  // Journal: created paths, hashes before and after, removals, merge records, pushurl originals, options.
+  const j = journalOf(sb, a.id);
+  assert.equal(j.status, 'applied');
+  assert.deepEqual(j.options, { claude_contract: 'import', retire_legacy_agents: true });
+  assert.deepEqual(j.created.map((c) => pathKey(c.path)).sort(), plan.create.map((e) => pathKey(e.path)).sort());
+  for (const m of j.modified) assert.ok(/^[0-9a-f]{64}$/.test(m.before_sha256) && /^[0-9a-f]{64}$/.test(m.after_sha256) && m.before_sha256 !== m.after_sha256, m.path);
+  assert.deepEqual(j.removed.map((r) => pathKey(r.path)).sort(), plan.remove.map((e) => pathKey(e.path)).sort());
+  assert.deepEqual(j.merges.map((m) => [path.basename(m.path), m.kind]).sort(), [['config.toml', 'toml'], ['settings.json', 'json'], ['workflow-rules.md', 'lines']]);
+  const toml = j.merges.find((m) => m.kind === 'toml');
+  assert.deepEqual(toml.keys.map((k) => [k.path.join('.'), k.before, k.after]), [['model_reasoning_effort', '"xhigh"', '"medium"'], ['desktop.followUpQueueMode', '"queue"', '"steer"']]);
+  assert.deepEqual(j.pushurl.entries.map((e) => [fwd(e.repo), e.remote, e.original]), [[fwd(path.join(sb.projects, 'demo-app')), 'origin', null]]);
+  assert.ok(j.created_dirs.some((d) => pathKey(d) === pathKey(path.join(sb.runtime, 'hooks'))));
+  assert.deepEqual(localOf(sb).deploy_options, { claude_contract: 'import', retire_legacy_agents: true });
+  // The deploy is in place: --expect-clean passes with the recorded options; untouched parts are untouched.
+  assert.equal(run([...sb.rootArgs, '--dry-run', '--expect-clean']).status, 0);
+  assert.equal(git(path.join(sb.projects, 'demo-app'), 'config', '--get', 'remote.origin.pushurl').trim(), 'no_push');
+  assert.deepEqual(untouched(sb), keep);
+
+  const r = rollback(sb, a.id);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /process check: skipped/);
+  assert.match(r.stdout, new RegExp(`rolled back ${a.id}`));
+  // Whole files match their backup hashes, created files and folders are gone, untouched parts untouched.
+  for (const f of manifest.files.filter((x) => x.label === LABEL_WHOLE)) assert.equal(sha(f.src), f.sha256, f.src);
+  for (const c of j.created) assert.ok(!fs.existsSync(c.path), c.path);
+  assert.ok(!fs.existsSync(path.join(sb.runtime, 'hooks')));
+  assert.deepEqual(untouched(sb), keep);
+  // Nothing changed after the deploy, so the whole home, the runtime and the repo config are as before.
+  assert.deepEqual(treeHash(sb.home), homeBefore);
+  assert.deepEqual(treeHash(sb.runtime), runtimeBefore);
+  assert.equal(sha(demoConfig(sb)), repoBefore);
+  assert.equal(localOf(sb).deploy_options, undefined);
+  assert.equal(journalOf(sb, a.id).status, 'rolled-back');
+  assert.equal(run([...sb.rootArgs, '--dry-run', '--expect-clean']).status, 1);
+  // A deploy is rolled back once.
+  const again = rollback(sb, a.id);
+  assert.equal(again.status, 2);
+  assert.match(again.stderr, /already rolled-back/);
+});
+
+test('--rollback keeps what changed in merged files after the deploy and removes only the kit keys; --whole-file restores whole files', () => {
+  for (const whole of [false, true]) {
+    const sb = sandbox({ restore: true });
+    const settingsFile = path.join(sb.home, '.claude', 'settings.json');
+    const tomlFile = path.join(sb.home, '.codex', 'config.toml');
+    const rulesFile = path.join(sb.home, '.workflow-core', 'policies', 'workflow-rules.md');
+    const settingsBefore = fs.readFileSync(settingsFile);
+    const tomlBefore = fs.readFileSync(tomlFile);
+    const rulesBefore = fs.readFileSync(rulesFile);
+    const a = apply(sb);
+    // After the deploy: Codex writes a trust section, the user changes the model with /config.
+    const trust = "\n[projects.'c:\\example\\later\\repo']\ntrust_level = \"trusted\"\n";
+    fs.appendFileSync(tomlFile, trust);
+    const s = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    s.model = 'changed-after-deploy';
+    fs.writeFileSync(settingsFile, `${JSON.stringify(s, null, 2)}\n`);
+
+    const r = rollback(sb, a.id, ...(whole ? ['--whole-file'] : []));
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    if (whole) {
+      assert.ok(fs.readFileSync(settingsFile).equals(settingsBefore));
+      assert.ok(fs.readFileSync(tomlFile).equals(tomlBefore));
+      assert.ok(fs.readFileSync(rulesFile).equals(rulesBefore));
+      continue;
+    }
+    // Both later changes stay.
+    const toml = fs.readFileSync(tomlFile, 'utf8');
+    assert.ok(toml.endsWith(trust));
+    assert.equal(toml, tomlBefore.toString('utf8') + trust);
+    const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    assert.equal(after.model, 'changed-after-deploy');
+    // Every kit key is gone and the target keys are back: apart from model, settings.json is as before.
+    const before = JSON.parse(settingsBefore.toString('utf8'));
+    assert.deepEqual({ ...after, model: before.model }, before);
+    assert.equal(after.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS, undefined);
+    assert.ok(!('subagentPromptCacheTtl' in after) && !('worktree' in after));
+    assert.deepEqual(after.permissions.deny, ['Bash(rm -rf *)']);
+    assert.ok(!JSON.stringify(after.hooks).includes(fwd(sb.runtime)), 'no kit hook entry is left');
+    assert.equal(getValue(toml, ['model_reasoning_effort']), '"xhigh"');
+    assert.equal(getValue(toml, ['desktop', 'followUpQueueMode']), '"queue"');
+    // The unchanged merged file is back byte for byte; the changed ones got a diff in the output.
+    assert.ok(fs.readFileSync(rulesFile).equals(rulesBefore));
+    assert.match(r.stdout, /config\.toml changed since the apply/);
+    assert.match(r.stdout, /diff of .*settings\.json since the apply/);
+    assert.match(r.stdout, /\+ {3}"model": "changed-after-deploy"/);
+    assert.match(r.stdout, /\+ trust_level = "trusted"/);
+  }
+});
+
+test('a write that fails during --apply rolls back at once: the targets are as before the apply', () => {
+  for (const at of ['middle', 'last']) {
+    const sb = sandbox({ restore: true });
+    const homeBefore = treeHash(sb.home);
+    const runtimeBefore = treeHash(sb.runtime);
+    const repoBefore = sha(demoConfig(sb));
+    const local = localOf(sb);
+    const plan = buildPlan(rootsOf(sb), { retireLegacyAgents: true, local });
+    // Steps: each created or modified file, each removal, the pushurl step, the deploy options.
+    const steps = plan.create.length + plan.modify.length + plan.remove.length + 1 + 1;
+    const failAt = at === 'middle' ? plan.create.length + 3 : steps;
+    assert.throws(() => applyDeploy(plan, { localConfig: sb.localConfig, local, failAt }), (e) => {
+      assert.ok(e instanceof DeployError, String(e));
+      assert.match(e.message, new RegExp(`injected write failure at step ${failAt}.*rolled back automatically`));
+      return true;
+    });
+    assert.deepEqual(treeHash(sb.home), homeBefore, at);
+    assert.deepEqual(treeHash(sb.runtime), runtimeBefore, at);
+    assert.equal(sha(demoConfig(sb)), repoBefore, at);
+    assert.equal(localOf(sb).deploy_options, undefined);
+    const [id] = fs.readdirSync(path.join(sb.privateDir, 'deploy'));
+    const j = journalOf(sb, id);
+    assert.equal(j.status, 'auto-rolled-back');
+    assert.deepEqual(j.rollback.problems, []);
+    if (at === 'last') assert.ok(j.pushurl && fs.existsSync(path.join(deployDir(sb, id), 'pushurl.json')), 'the failure came after pushurl was set');
+    assert.equal(rollback(sb, id).status, 2, 'an automatic rollback is final');
+  }
+});
+
+test('several deploys roll back latest first', () => {
+  const sb = sandbox({ restore: true });
+  const homeBefore = treeHash(sb.home);
+  const first = apply(sb);
+  const second = apply(sb, '--claude-contract', 'inline', '--retire-legacy-agents');
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(localOf(sb).deploy_options, { claude_contract: 'inline', retire_legacy_agents: true });
+  const refused = rollback(sb, first.id);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, new RegExp(`roll back the latest first: ${second.id}`));
+  assert.equal(journalOf(sb, first.id).status, 'applied');
+  assert.equal(rollback(sb, second.id).status, 0);
+  assert.deepEqual(localOf(sb).deploy_options, { claude_contract: 'import', retire_legacy_agents: false });
+  assert.equal(run([...sb.rootArgs, '--dry-run', '--expect-clean']).status, 0, 'back to the first deploy');
+  assert.equal(rollback(sb, first.id).status, 0);
+  assert.deepEqual(treeHash(sb.home), homeBefore);
+  assert.equal(localOf(sb).deploy_options, undefined);
+});
+
+test('the process check applies only to --apply, --neutral --apply and --rollback on the real user directory', () => {
+  const real = os.homedir();
+  for (const mode of ['apply', 'neutral-apply', 'rollback']) assert.equal(processCheckApplies(mode, real), true, mode);
+  for (const mode of ['dry-run', 'expect-clean', 'drill', 'stage', 'init-local', 'neutral-dry-run']) assert.equal(processCheckApplies(mode, real), false, mode);
+  const sb = sandbox({ restore: true });
+  for (const mode of ['apply', 'neutral-apply', 'rollback']) assert.equal(processCheckApplies(mode, sb.home), false, `${mode} on a redirected home`);
+  assert.equal(processCheckApplies('apply', sb.home, sb.home), true, 'the same rule with a given real home');
+
+  // What counts as a running agent.
+  for (const p of [{ name: 'claude.exe' }, { name: 'Claude.exe' }, { name: 'codex.exe' }, { name: 'Codex' }, { name: 'claude' },
+    { name: 'node.exe', command_line: 'node C:/example/npm/node_modules/@anthropic-ai/claude-code/cli.js' }, { name: 'node', command_line: 'node C:/example/npm/node_modules/@openai/codex/bin/codex.js' }]) {
+    assert.equal(isAgentProcess(p), true, JSON.stringify(p));
+  }
+  for (const p of [{ name: 'node.exe', command_line: 'node scripts/deploy-kit.mjs --apply' }, { name: 'claudette.exe' }, { name: 'explorer.exe' }, {}]) {
+    assert.equal(isAgentProcess(p), false, JSON.stringify(p));
+  }
+
+  // With the check on, a running agent refuses the apply before anything is written; --allow-running passes.
+  const local = localOf(sb);
+  const homeBefore = treeHash(sb.home);
+  const plan = buildPlan(rootsOf(sb), { local });
+  const running = () => [{ pid: 4242, name: 'claude.exe', created: '2026-10-30T08:00:00.0000000Z', command_line: '' }];
+  assert.throws(() => applyDeploy(plan, { localConfig: sb.localConfig, local, checkProcesses: true, listProcesses: running }), /claude or codex is running: claude\.exe \(pid 4242\)/);
+  assert.throws(() => applyDeploy(plan, { localConfig: sb.localConfig, local, checkProcesses: true, listProcesses: () => { throw new Error('no list'); } }), /cannot list the running processes/);
+  assert.deepEqual(treeHash(sb.home), homeBefore);
+  assert.ok(!fs.existsSync(path.join(sb.privateDir, 'deploy')));
+  const ok = applyDeploy(plan, { localConfig: sb.localConfig, local, checkProcesses: true, listProcesses: () => [{ pid: 1, name: 'node.exe', command_line: 'node other.js' }] });
+  assert.equal(ok.gate.status, 'clear');
+  assert.throws(() => rollbackDeploy(ok.id, { localConfig: sb.localConfig, checkProcesses: true, listProcesses: running }), DeployError);
+  assert.equal(journalOf(sb, ok.id).status, 'applied');
+  const rb = rollbackDeploy(ok.id, { localConfig: sb.localConfig, checkProcesses: true, allowRunning: true, listProcesses: running });
+  assert.equal(rb.ok, true, rb.problems.join('\n'));
+  assert.equal(rb.gate.status, 'allowed');
+  assert.deepEqual(treeHash(sb.home), homeBefore);
+  // Without a check (redirected home, as in every CLI test here) the lister is never called.
+  const skipped = applyDeploy(buildPlan(rootsOf(sb), { local }), { localConfig: sb.localConfig, local, listProcesses: () => { throw new Error('called'); } });
+  assert.equal(skipped.gate.status, 'skipped');
+  assert.equal(rollbackDeploy(skipped.id, { localConfig: sb.localConfig, listProcesses: () => { throw new Error('called'); } }).ok, true);
+});
+
+test('the process list is read as structured data', () => {
+  const list = listProcesses();
+  const self = list.find((p) => p.pid === process.pid);
+  assert.ok(self, 'this node process is listed');
+  assert.match(self.name, /^node/i);
+  for (const p of list) assert.ok(Number.isInteger(p.pid) && typeof p.name === 'string', JSON.stringify(p));
+  if (process.platform === 'win32') assert.ok(!Number.isNaN(Date.parse(self.created)), 'creation time for --ignore-pids (AS3-114)');
+});
+
+const drillDirs = [];
+after(() => { for (const d of drillDirs) fs.rmSync(d, { recursive: true, force: true }); });
+
+test('--drill applies and rolls back on a copy inside _private/, checks every hash and removes its folder', () => {
+  const sb = sandbox({ restore: true });
+  const before = treeHash(sb.root);
+  const dir = path.join(REPO, '_private', 'eval', `restore-drill-test-${process.pid}`);
+  drillDirs.push(dir);
+  for (const extra of [[], ['--retire-legacy-agents']]) {
+    const r = run(['--drill', dir, ...sb.rootArgs, ...extra]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /drill passed/);
+    assert.match(r.stdout, /\d+ kit-related file\(s\) copied/);
+    assert.match(r.stdout, /apply \d{8}-\d{6}-[0-9a-f]{4}: \d+ created, \d+ modified \(3 merged\), \d+ removed, 1 pushurl/);
+    assert.match(r.stdout, /drill folder removed; source runtime, repo \.git\/config files and home targets unchanged/);
+    assert.deepEqual(fs.readdirSync(dir), [], 'the timestamp folder is gone');
+  }
+  // The source (here the sandbox) is unchanged, its local config included.
+  assert.deepEqual(treeHash(sb.root), before);
+  // Outside _private/ is refused.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-kit-drill-'));
+  temps.push(outside);
+  const refused = run(['--drill', outside, ...sb.rootArgs]);
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /--drill writes only to a folder inside/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+// ---------- reverse merges ----------
+
+test('jsonDiff and reverseJson take out what a merge added and put back what it replaced', () => {
+  const before = { a: 1, keep: { x: 1 }, list: ['u1'], hooks: [{ k: 'old' }, { k: 'user' }] };
+  const after = { a: 2, keep: { x: 1, kit: true }, list: ['u1', 'kit'], hooks: [{ k: 'user' }, { k: 'kit' }], added: { deep: [1] } };
+  const ops = jsonDiff(before, after);
+  assert.deepEqual(reverseJson(after, ops), before);
+  // Later changes stay: a new user key, a new list entry and a new key inside a kit-added object.
+  const later = structuredClone(after);
+  later.mine = 'x';
+  later.list.push('u2');
+  later.added.user = 1;
+  assert.deepEqual(reverseJson(later, ops), { ...before, mine: 'x', list: ['u1', 'u2'], added: { user: 1 } });
+});
+
+test('removeValue and removeEmptyTable undo setValue', () => {
+  const doc = '# head\nmodel = "m" # keep\n\n[x]\na = 1\n';
+  for (const [p, lit] of [[['top'], 'true'], [['x', 'c'], '2'], [['z', 'k'], '"v"']]) {
+    let edited = setValue(doc, p, lit);
+    edited = removeValue(edited, p);
+    if (p.length > 1) edited = removeEmptyTable(edited, p.slice(0, -1));
+    assert.equal(edited, doc, p.join('.'));
+  }
+  assert.equal(removeValue(doc, ['missing']), doc);
+  assert.equal(removeEmptyTable(doc, ['x']), doc, 'a table with keys stays');
+  assert.equal(removeEmptyTable('[t]\n# note\n', ['t']), '[t]\n# note\n', 'a table with a comment stays');
+  assert.equal(removeValue('a = 1\r\nb = 2\r\n', ['b']), 'a = 1\r\n');
 });
 
 // ---------- last: the real user directory and runtime ----------

@@ -479,7 +479,7 @@ function readJsonTarget(file) {
 }
 
 /** JSON text in the style of the file it replaces: its indent, line endings and byte-order mark. */
-function jsonLike(value, like) {
+export function jsonLike(value, like) {
   const indent = (like && /^([ \t]+)"/m.exec(like)?.[1]) || '  ';
   const eol = like && like.includes('\r\n') ? '\r\n' : '\n';
   const bom = like && like.charCodeAt(0) === 0xfeff ? '\uFEFF' : '';

@@ -11,3 +11,8 @@ and pass --home, --runtime and --projects-root there. Nothing here is copied fro
 - projects/: two fake projects that register read-only folders in their rules (the contract line and the
   table form) plus folders that must not be picked up. The tests add git repositories with a remote at
   run time (a .git folder cannot be committed here).
+
+The --apply, --rollback and --drill tests use the same trees: a deploy writes into the temp copy, its
+backup and journal go next to the temp local config (deploy/<id>/), and a rollback must give back the
+copy's file hashes. The tests change merged files after a deploy (a trust section in config.toml, the model
+in settings.json) to check that a rollback keeps such later changes.

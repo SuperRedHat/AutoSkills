@@ -1,15 +1,20 @@
 #!/usr/bin/env node
-// deploy-kit: plan the deployment of the AutoSkills kit to the user level (ADR-006 §2.7). Zero
-// dependencies (Node >= 18). This version plans the user-level deploy: it prints what a deploy would
-// create, modify and remove, with a reason per item, and writes nothing there. Writing, backup and rollback
-// come with --apply and --rollback (AS3-113). The only writing modes are --init-local (the local config)
-// and --stage (a project-layout copy inside _private/ for the measurement scripts).
+// deploy-kit: deploy the AutoSkills kit to the user level (ADR-006 §2.7). Zero dependencies (Node >= 18).
+// The default is a dry-run that prints what a deploy would create, modify and remove, with a reason per item,
+// and writes nothing. --apply writes after a backup and keeps a journal; --rollback <deploy id> undoes one
+// deploy; --drill rehearses apply and rollback on a copy. The other writing modes are --init-local (the local
+// config) and --stage (a project-layout copy inside _private/ for the measurement scripts).
 //
 // Usage:
 //   node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]
 //                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
 //   node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>]
 //                               [--projects-root <dir>] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --apply [--claude-contract import|inline] [--retire-legacy-agents] [--allow-running]
+//                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --rollback <deploy id> [--whole-file] [--allow-running] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --drill <dir> [--claude-contract import|inline] [--retire-legacy-agents]
+//                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
 //   node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]
 //   node scripts/deploy-kit.mjs --init-local [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
 //
@@ -33,8 +38,45 @@
 //   Removals are limited to the old project-* copies; a folder whose name starts with "{" (a failed brace
 //   expansion) is listed, not removed.
 //   --expect-clean checks a deploy: exit 0 only when the plan is empty. It plans with the options the last
-//   --apply recorded in the local config (deploy_options: claude_contract, retire_legacy_agents; written by
-//   AS3-113), or the defaults when none are recorded, so it takes no option flags of its own.
+//   --apply recorded in the local config (deploy_options: claude_contract, retire_legacy_agents), or the
+//   defaults when none are recorded, so it takes no option flags of its own.
+//
+// --apply carries out the plan. Deploy records live in <local config folder>/deploy/<deploy id>/ (by default
+// <kit repo>/_private/deploy/, git-excluded):
+//   1. Running agents: on the real user directory it lists processes (structured output of Get-CimInstance on
+//      Windows, ps elsewhere; no localized text is parsed) and refuses while a claude or codex process runs,
+//      unless --allow-running. The check applies only to --apply, --neutral --apply (AS3-114) and --rollback
+//      on the real user directory; dry-run, --drill, --stage and a redirected --home never check.
+//   2. Backup: every file the plan modifies or removes is copied to backup/ in the step-0 format
+//      (files/<drive>/<path> plus manifest.json with home, sources, links and files[].label/src/rel/size/
+//      sha256). Merged targets (settings.json, config.toml, workflow-rules.md) are labelled kit-merge, all
+//      others kit-whole. Each copy is hash-checked; a failed backup stops the apply before any write.
+//      ~/.claude.json and the other never-touch paths are never backed up or written.
+//   3. Writes, each recorded in journal.json before it happens: created paths and the folders made for them,
+//      modified paths with their hashes before and after, removed paths, for merged files the keys and
+//      sections the kit added with the values they replaced (applied/ keeps the merged copies for diffs),
+//      the pushurl originals (pushurl.json, the set-pushurl log) and the deploy options, which also go to
+//      deploy_options in the local config. A failure on the way rolls everything back at once, merged files
+//      included (from the backup), so the targets end as they were before the apply.
+//   4. It prints the deploy id and the rollback command.
+// --rollback <deploy id> undoes one deploy in two classes:
+//   - whole targets (skills, contract, agent definitions, hooks.json, rules, runtime files): the step-0
+//     restore tool (restore_tool in the local config) runs as restore.mjs --backup <dir> --only kit-whole
+//     --apply; it does not delete files, so the journal's created files and folders are removed here, removed
+//     links are made again and the pushurl originals restored.
+//   - merged targets (settings.json, config.toml, workflow-rules.md) are reversed from the journal: only the
+//     kit's keys, list entries and sections go and the target keys get their earlier values back; everything
+//     written since (a Codex trust section, a /config change) stays. A file that changed since the apply gets
+//     a diff printed. --whole-file restores them from the backup instead (kit-merge).
+//   Every target is checked at the end: whole targets against the backup hashes, merged ones for "kit keys
+//   gone, target keys restored". A mismatch exits 1. After several deploys, roll back the latest first: an
+//   earlier deploy id is refused while a later one is still in place.
+// --drill <dir> rehearses a deploy (v2 appendix C) inside <dir>/<timestamp>/, which must lie inside
+// <kit repo>/_private/: a drill home with copies of the kit-related files of the source home (never
+// ~/.claude.json), an empty runtime and a new git repository for pushurl. It applies, rolls back, compares
+// the hash of every file with the state before and removes the timestamp folder. The source runtime, the
+// .git/config of the repositories under the source projects root and the source home targets are hashed
+// before and after; any change exits 1.
 //
 // --stage <dir> --layout project writes the same kit content in the project layout into <dir>, which must
 // lie inside <kit repo>/_private/: .claude/AGENTS.md, .claude/CLAUDE.md (first line @AGENTS.md),
@@ -57,33 +99,44 @@
 // An existing local config is kept: lists only gain entries, set values stay unless --runtime or
 // --projects-root names a new one, deploy_options and other keys stay. Nothing is written when nothing changes.
 //
-// Exit codes: 0 = plan printed (with --expect-clean: the plan is empty; or local config written / already
-// current; or stage written). 1 = the plan has conflicts (a folder where a file must go, a merged file that
-// cannot be read), or with --expect-clean the plan is not empty. 2 = usage or setup error (unknown option,
-// missing local config or portable_node, a kit source missing in the repo, a stage target outside _private/
-// or not replaceable, a mode that is not implemented yet).
+// Exit codes: 0 = plan printed (with --expect-clean: the plan is empty), local config written or already
+// current, stage written, deployed, rolled back and verified, or drill passed. 1 = the plan has conflicts (a
+// folder where a file must go, a merged file that cannot be read); with --expect-clean the plan is not empty;
+// --apply refused (a claude or codex process runs, conflicts) or failed and rolled back; --rollback left a
+// target that does not match; the drill found a difference. 2 = usage or setup error (unknown option, missing
+// local config, portable_node or restore tool, a kit source missing in the repo, a stage or drill folder
+// outside _private/ or not replaceable, an unknown or already rolled back deploy id, a mode that is not
+// implemented yet).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   KIT_REPO, DEFAULT_LOCAL_CONFIG, DEFAULT_OPTIONS, CLAUDE_CONTRACT_MODES, UsageError,
   targetMap, neverTouch, readLocalConfig, resolveRoots, recordedOptions, desiredFiles, stageFiles, kitSkillDirs, legacyRemovals,
-  listFiles, slash, pathKey, within, realPathOf,
+  listFiles, slash, pathKey, within, realPathOf, jsonLike,
 } from './lib/kit-targets.mjs';
-import { planRepos, NO_PUSH } from './set-pushurl.mjs';
+import { keyValues, getValue, setValue, scanToml, removeValue, removeEmptyTable } from './lib/toml-edit.mjs';
+import { planRepos, scanRepos, applyPlan, readLog, revertLog, NO_PUSH } from './set-pushurl.mjs';
 
 const USAGE = 'usage: node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]\n'
   + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
   + '       node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --apply [--claude-contract import|inline] [--retire-legacy-agents] [--allow-running]\n'
+  + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --rollback <deploy id> [--whole-file] [--allow-running] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --drill <dir> [--claude-contract import|inline] [--retire-legacy-agents]\n'
+  + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
   + '       node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]\n'
   + '       node scripts/deploy-kit.mjs --init-local [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]';
 
 const SELF = fileURLToPath(import.meta.url);
 const WIN = process.platform === 'win32';
 // Modes of later tasks: named here so the message says where they come from, not "unknown option".
-const LATER = { apply: 'AS3-113', rollback: 'AS3-113', drill: 'AS3-113', neutral: 'AS3-114' };
+const LATER = { neutral: 'AS3-114' };
 const STAGE_LAYOUTS = ['project'];
 export const STAGE_MANIFEST = 'stage-manifest.json';
 const CANARIES = {
@@ -264,12 +317,7 @@ function printPlan(plan, localConfig, { expectClean = false } = {}) {
  */
 export function stageProject(dest, { layout = 'project', force = false, repo = KIT_REPO } = {}) {
   if (!STAGE_LAYOUTS.includes(layout)) throw new UsageError(`--layout must be one of ${STAGE_LAYOUTS.join(', ')}: ${layout}`);
-  const priv = realPathOf(path.join(repo, '_private'));
-  const abs = path.resolve(dest);
-  const real = realPathOf(abs);
-  if (!within(real, priv) || pathKey(real) === pathKey(priv)) {
-    throw new UsageError(`--stage writes only to a folder inside ${slash(priv)}; refused: ${slash(abs)}`);
-  }
+  const abs = privateFolder(dest, '--stage', repo);
   let st = null;
   try { st = fs.lstatSync(abs); } catch { /* new folder */ }
   let replaced = false;
@@ -434,6 +482,891 @@ export function initLocal({ localConfig, runtime, projectsRoot }) {
   return { config, written, created, readonly, notes };
 }
 
+// ---------- apply, rollback, drill: shared pieces ----------
+
+// Rollback classes (ADR-006 §2.7). These groups are merged and reversed key by key; every other target is
+// whole and comes back from the backup through the step-0 restore tool. hooks.json counts as whole even when
+// the deploy merged it into an existing file: the task lists it with the whole targets.
+const MERGE_KINDS = { settings: 'json', 'codex-config': 'toml', policies: 'lines' };
+export const LABEL_WHOLE = 'kit-whole';
+export const LABEL_MERGE = 'kit-merge';
+export const JOURNAL = 'journal.json';
+const BACKUP_DIR = 'backup';
+const APPLIED_DIR = 'applied';
+const PUSHURL_LOG = 'pushurl.json';
+const DEPLOY_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
+// Journal states a later deploy can be in while it still counts as in place.
+const IN_PLACE = ['applying', 'applied', 'failed', 'rollback-failed'];
+const DIFF_LINES = 40;
+
+/** An apply or rollback that was refused or did not end clean (running agents, conflicts, a failed write or
+ *  check): the CLI exits 1. */
+export class DeployError extends Error {}
+
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const hashOf = (p) => { try { return sha256(fs.readFileSync(p)); } catch { return null; } };
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const stable = (v) => JSON.stringify(v);
+const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+const parseJson = (text) => JSON.parse(text.replace(/^﻿/, ''));
+
+function writeJsonFile(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
+/** The folder that holds the deploy records: deploy/ next to the local config (_private/deploy/ by default). */
+export function deployRootOf(localConfig) {
+  return path.join(path.dirname(path.resolve(localConfig)), 'deploy');
+}
+
+/** A new deploy id: UTC date and time plus 4 hex digits, so ids sort in deploy order. */
+export function newDeployId(now = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}-${crypto.randomBytes(2).toString('hex')}`;
+}
+
+/** dest resolved; it must lie inside <repo>/_private/ (not be _private itself), as stage and drill folders do. */
+function privateFolder(dest, flag, repo) {
+  const priv = realPathOf(path.join(repo, '_private'));
+  const abs = path.resolve(dest);
+  const real = realPathOf(abs);
+  if (!within(real, priv) || pathKey(real) === pathKey(priv)) {
+    throw new UsageError(`${flag} writes only to a folder inside ${slash(priv)}; refused: ${slash(abs)}`);
+  }
+  return abs;
+}
+
+// ---------- running agents ----------
+
+const AGENT_NAME_RE = /^(?:claude|codex)(?:$|[ ._-])/i;
+const AGENT_NODE_RE = /@anthropic-ai[\\/]claude-code|@openai[\\/]codex/i;
+// Win32_Process through CIM, filtered and printed as JSON by PowerShell itself; the output is UTF-8 whatever
+// the console code page, and nothing localized is read.
+const PS_PROCESSES = [
+  "$ErrorActionPreference = 'Stop'",
+  '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+  "$list = @(Get-CimInstance -ClassName Win32_Process | Where-Object { $_.Name -match '^(claude|codex|node)' } | ForEach-Object {",
+  "  [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name; created = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }); command_line = [string]$_.CommandLine } })",
+  'ConvertTo-Json -InputObject $list -Compress -Depth 3',
+].join('; ').replace('{; ', '{ ');
+
+/**
+ * Processes that may be Claude Code or Codex (names starting with claude, codex or node), from structured
+ * output. Reads only.
+ * @returns {{pid: number, name: string, created: string|null, command_line: string}[]}
+ * @throws {Error} the list cannot be read
+ */
+export function listProcesses() {
+  if (WIN) {
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_PROCESSES],
+      { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+    if (r.error || r.status !== 0) throw new Error(`process list failed: ${r.error?.message || (r.stderr || '').trim().split(/\r?\n/)[0] || `exit ${r.status}`}`);
+    const list = JSON.parse(r.stdout.trim() || '[]');
+    return (Array.isArray(list) ? list : [list]).map((p) => ({ pid: p.pid, name: p.name, created: p.created ?? null, command_line: p.command_line ?? '' }));
+  }
+  const r = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'comm=', '-o', 'args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.error || r.status !== 0) throw new Error(`process list failed: ${r.error?.message || `exit ${r.status}`}`);
+  return r.stdout.split('\n').map((l) => /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(l)).filter(Boolean)
+    .map((m) => ({ pid: Number(m[1]), name: path.basename(m[2]), created: null, command_line: m[3] }));
+}
+
+/** True for a Claude Code or Codex process: claude*, codex* (CLI and desktop apps), or node running either CLI. */
+export function isAgentProcess(p) {
+  const base = String(p?.name ?? '').split(/[\\/]/).pop().replace(/\.exe$/i, '');
+  if (AGENT_NAME_RE.test(base)) return true;
+  return /^node$/i.test(base) && AGENT_NODE_RE.test(String(p?.command_line ?? ''));
+}
+
+/**
+ * Whether the running-agent check applies: only --apply, --neutral --apply and --rollback, and only on the
+ * real user directory. Dry-run, --drill, --stage and a redirected home (tests, drills) never check.
+ * @param {'apply'|'neutral-apply'|'rollback'|string} mode
+ * @param {string} home the home the mode writes to
+ * @param {string} [realHome]
+ */
+export function processCheckApplies(mode, home, realHome = os.homedir()) {
+  if (!['apply', 'neutral-apply', 'rollback'].includes(mode)) return false;
+  return pathKey(realPathOf(home)) === pathKey(realPathOf(realHome));
+}
+
+function processGate({ check, allowRunning = false, lister = listProcesses }) {
+  if (!check) return { status: 'skipped', running: [] };
+  let list;
+  try { list = lister(); } catch (e) {
+    if (allowRunning) return { status: 'unknown', running: [], note: e.message };
+    throw new DeployError(`cannot list the running processes (${e.message}); close every Claude Code and Codex session and retry, or pass --allow-running`);
+  }
+  const running = list.filter(isAgentProcess);
+  if (running.length && !allowRunning) {
+    throw new DeployError(`claude or codex is running: ${running.map((p) => `${p.name} (pid ${p.pid})`).join(', ')}; `
+      + 'close every Claude Code and Codex session (desktop background chats included) and retry, or pass --allow-running');
+  }
+  return { status: running.length ? 'allowed' : 'clear', running };
+}
+
+function gateLine(g) {
+  if (g.status === 'skipped') return 'process check: skipped (not the real user directory)';
+  if (g.status === 'clear') return 'process check: no claude or codex process running';
+  if (g.status === 'unknown') return `process check: could not list processes (${g.note}); continuing because of --allow-running`;
+  return `process check: ${g.running.length} claude or codex process(es) running; continuing because of --allow-running`;
+}
+
+// ---------- backup (step-0 format) ----------
+
+/** Backup path of a file as the step-0 tool writes it: <drive letter>/<rest> (_root/<rest> without a drive). */
+export function backupRel(abs) {
+  const r = path.resolve(abs);
+  const m = /^([A-Za-z]):[\\/](.*)$/.exec(r);
+  return m ? path.join(m[1].toUpperCase(), m[2]) : path.join('_root', r.replace(/^[\\/]+/, ''));
+}
+
+/**
+ * Copy files into <dir>/files/<drive>/<path> and write <dir>/manifest.json in the format of the step-0
+ * backup.mjs, so its restore.mjs can read it. Folders are walked; links are recorded, never followed. Every
+ * copy is hash-checked.
+ * @param {string} dir
+ * @param {{path: string, label: string}[]} items
+ * @param {{home: string, id: string}} meta
+ * @returns {object} the manifest
+ * @throws {Error} a copy fails or its hash differs
+ */
+export function writeBackup(dir, items, { home, id }) {
+  const files = [];
+  const links = [];
+  const add = (label, p) => {
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink()) { links.push({ label, src: p, target: fs.readlinkSync(p) }); return; }
+    if (st.isDirectory()) { for (const n of fs.readdirSync(p).sort()) add(label, path.join(p, n)); return; }
+    const rel = backupRel(p);
+    const dest = path.join(dir, 'files', rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(p, dest);
+    const hash = hashOf(dest);
+    if (hash === null || hash !== hashOf(p)) throw new Error(`backup copy of ${p} does not match the original`);
+    files.push({ label, src: p, rel, size: st.size, sha256: hash, mtimeMs: st.mtimeMs });
+  };
+  fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+  for (const it of items) add(it.label, it.path);
+  const totals = {};
+  for (const f of files) {
+    totals[f.label] ??= { files: 0, bytes: 0 };
+    totals[f.label].files++;
+    totals[f.label].bytes += f.size;
+  }
+  const manifest = {
+    created: new Date().toISOString(), tool: 'deploy-kit', deploy_id: id, home,
+    sources: items.map((it) => ({ label: it.label, path: it.path })), links, totals, files,
+  };
+  writeJsonFile(path.join(dir, 'manifest.json'), manifest);
+  return manifest;
+}
+
+// ---------- merged files: what the kit added, and how to take it out again ----------
+
+const getAt = (v, p) => p.reduce((o, k) => (isObject(o) ? o[k] : undefined), v);
+
+function setAt(root, p, value) {
+  let o = root;
+  for (const k of p.slice(0, -1)) {
+    if (!isObject(o[k])) o[k] = {};
+    o = o[k];
+  }
+  if (value === undefined) delete o[p[p.length - 1]];
+  else o[p[p.length - 1]] = value;
+}
+
+/**
+ * The changes from one JSON value to another, as reversible operations: add (key new in after), set (value
+ * replaced), del (key gone), array (entries added, and entries removed with their index; the hook merge
+ * replaces old kit hook groups this way).
+ * @param {*} before
+ * @param {*} after
+ * @returns {object[]}
+ */
+export function jsonDiff(before, after, at = [], ops = []) {
+  if (isObject(before) && isObject(after)) {
+    for (const k of Object.keys(after)) {
+      if (!Object.hasOwn(before, k)) ops.push({ op: 'add', path: [...at, k], value: after[k] });
+      else jsonDiff(before[k], after[k], [...at, k], ops);
+    }
+    for (const k of Object.keys(before)) if (!Object.hasOwn(after, k)) ops.push({ op: 'del', path: [...at, k], before: before[k] });
+    return ops;
+  }
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (stable(before) === stable(after)) return ops;
+    const keys = after.map(stable);
+    const used = new Array(after.length).fill(false);
+    const removed = [];
+    before.forEach((item, index) => {
+      const j = keys.findIndex((k, i) => !used[i] && k === stable(item));
+      if (j >= 0) used[j] = true;
+      else removed.push({ index, item });
+    });
+    ops.push({ op: 'array', path: at, added: after.filter((_, i) => !used[i]), removed });
+    return ops;
+  }
+  if (stable(before) !== stable(after)) ops.push({ op: 'set', path: at, before, after });
+  return ops;
+}
+
+/** Take an added value out of parent[key]: object keys and list entries one by one, so content added later
+ *  in the same place stays; a container left empty goes. */
+function removeAdded(parent, key, value) {
+  if (!isObject(parent) || !Object.hasOwn(parent, key)) return;
+  const cur = parent[key];
+  if (isObject(value) && isObject(cur)) {
+    for (const [k, v] of Object.entries(value)) removeAdded(cur, k, v);
+    if (!Object.keys(cur).length) delete parent[key];
+  } else if (Array.isArray(value) && Array.isArray(cur)) {
+    for (const item of value) {
+      const i = cur.findIndex((x) => stable(x) === stable(item));
+      if (i >= 0) cur.splice(i, 1);
+    }
+    if (!cur.length) delete parent[key];
+  } else delete parent[key];
+}
+
+/**
+ * Undo jsonDiff operations on the current value: added keys and entries go, replaced values and removed
+ * entries come back; everything else in current stays.
+ * @param {*} current
+ * @param {object[]} ops from jsonDiff(before, applied)
+ * @returns {*} a new value
+ */
+export function reverseJson(current, ops) {
+  const out = { root: clone(current) };
+  for (const o of [...ops].reverse()) {
+    const p = ['root', ...o.path];
+    if (o.op === 'add') removeAdded(getAt(out, p.slice(0, -1)), p[p.length - 1], o.value);
+    else if (o.op === 'set' || o.op === 'del') setAt(out, p, clone(o.before));
+    else if (o.op === 'array') {
+      let arr = getAt(out, p);
+      if (!Array.isArray(arr)) { arr = []; setAt(out, p, arr); }
+      for (const item of o.added) {
+        const i = arr.findIndex((x) => stable(x) === stable(item));
+        if (i >= 0) arr.splice(i, 1);
+      }
+      for (const r of [...o.removed].sort((a, b) => a.index - b.index)) {
+        if (!arr.some((x) => stable(x) === stable(r.item))) arr.splice(Math.min(r.index, arr.length), 0, clone(r.item));
+      }
+    }
+  }
+  return out.root;
+}
+
+/** What still differs from "kit keys gone, target keys restored" after reverseJson. */
+function jsonProblems(value, ops) {
+  const problems = [];
+  const name = (p) => p.join('.') || '(root)';
+  const leaves = (v, p) => {
+    const cur = getAt(value, p);
+    if (isObject(v) && isObject(cur)) { for (const [k, x] of Object.entries(v)) leaves(x, [...p, k]); return; }
+    if (Array.isArray(v) && Array.isArray(cur)) {
+      if (v.some((item) => cur.some((x) => stable(x) === stable(item)))) problems.push(`${name(p)} still holds kit entries`);
+      return;
+    }
+    if (cur !== undefined) problems.push(`${name(p)} is still set`);
+  };
+  for (const o of ops) {
+    if (o.op === 'add') leaves(o.value, o.path);
+    else if (o.op === 'set' || o.op === 'del') { if (stable(getAt(value, o.path)) !== stable(o.before)) problems.push(`${name(o.path)} is not back to its earlier value`); }
+    else if (o.op === 'array') {
+      const arr = getAt(value, o.path);
+      const has = (item) => Array.isArray(arr) && arr.some((x) => stable(x) === stable(item));
+      if (o.added.some(has)) problems.push(`${name(o.path)} still holds kit entries`);
+      if (o.removed.some((r) => !has(r.item))) problems.push(`${name(o.path)} misses entries it had before`);
+    }
+  }
+  return problems;
+}
+
+/** The keys of the TOML fragment with their values before and after, and the tables the kit had to add. */
+function tomlRecord(before, after, fragmentText) {
+  const kvs = keyValues(fragmentText);
+  const keys = kvs.map((kv) => ({ path: kv.path, before: before === null ? null : getValue(before, kv.path) ?? null, after: getValue(after, kv.path) ?? null }));
+  const tables = [];
+  for (const kv of kvs) {
+    const t = kv.path.slice(0, -1);
+    if (!t.length || tables.some((x) => stable(x.path) === stable(t))) continue;
+    const existed = before !== null && scanToml(before).some((e) => (e.kind === 'header' && stable(e.path) === stable(t))
+      || (e.kind === 'kv' && !e.inArray && e.path.length > t.length && stable(e.path.slice(0, t.length)) === stable(t)));
+    tables.push({ path: t, existed });
+  }
+  return { keys, tables };
+}
+
+function reverseToml(text, rec) {
+  let out = text;
+  for (const k of [...rec.keys].reverse()) out = k.before === null ? removeValue(out, k.path) : setValue(out, k.path, k.before);
+  for (const t of [...rec.tables].reverse()) if (!t.existed) out = removeEmptyTable(out, t.path);
+  return out;
+}
+
+function tomlProblems(text, rec) {
+  return rec.keys.filter((k) => (getValue(text, k.path) ?? null) !== k.before).map((k) => `${k.path.join('.')} is not back to ${k.before ?? 'unset'}`);
+}
+
+const splitLines = (text) => (text === null ? [] : text.split(/\r?\n/));
+
+/**
+ * Line diff (longest common subsequence): '=' kept, '-' only in a, '+' only in b.
+ * @param {string[]} a
+ * @param {string[]} b
+ * @returns {[string, string][]}
+ */
+export function lineDiff(a, b) {
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push(['=', a[i]]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) ops.push(['-', a[i++]]);
+    else ops.push(['+', b[j++]]);
+  }
+  while (i < n) ops.push(['-', a[i++]]);
+  while (j < m) ops.push(['+', b[j++]]);
+  return ops;
+}
+
+/** Hunks of a line diff with up to 3 kept lines of context on each side; at is the hunk's line in b. */
+function lineHunks(a, b) {
+  const ops = lineDiff(a, b);
+  const hunks = [];
+  let bi = 0;
+  for (let k = 0; k < ops.length;) {
+    if (ops[k][0] === '=') { bi++; k++; continue; }
+    const h = { at: bi, before: [], after: [], pre: [], post: [] };
+    for (let c = k - 1; c >= 0 && ops[c][0] === '=' && h.pre.length < 3; c--) h.pre.unshift(ops[c][1]);
+    while (k < ops.length && ops[k][0] !== '=') {
+      if (ops[k][0] === '-') h.before.push(ops[k][1]);
+      else { h.after.push(ops[k][1]); bi++; }
+      k++;
+    }
+    for (let c = k; c < ops.length && ops[c][0] === '=' && h.post.length < 3; c++) h.post.push(ops[c][1]);
+    hunks.push(h);
+  }
+  return hunks;
+}
+
+/** Start of the occurrence of seq in lines nearest to hint, or -1. */
+function findSeq(lines, seq, hint) {
+  let best = -1;
+  for (let s = 0; s + seq.length <= lines.length; s++) {
+    if (seq.every((x, i) => lines[s + i] === x) && (best < 0 || Math.abs(s - hint) < Math.abs(best - hint))) best = s;
+  }
+  return best;
+}
+
+/** Undo line hunks on the current lines; hunks whose lines cannot be found are returned in failed. */
+function unpatchLines(lines, hunks) {
+  const out = [...lines];
+  const failed = [];
+  for (const h of [...hunks].reverse()) {
+    let start = -1;
+    const pos = findSeq(out, [...h.pre, ...h.after, ...h.post], h.at - h.pre.length);
+    if (pos >= 0) start = pos + h.pre.length;
+    else if (h.after.length) start = findSeq(out, h.after, h.at);
+    if (start < 0) { failed.push(h); continue; }
+    out.splice(start, h.after.length, ...h.before);
+  }
+  return { lines: out, failed };
+}
+
+function linesProblems(lines, hunks, beforeLines) {
+  const problems = [];
+  const had = new Set(beforeLines);
+  for (const h of hunks) {
+    const added = h.after.filter((l) => l.trim() && !had.has(l));
+    if (added.some((l) => lines.includes(l))) problems.push(`kit lines still present (${added.find((l) => lines.includes(l))})`);
+    const back = h.before;
+    if (back.some((l) => l.trim()) && findSeq(lines, back, h.at) < 0) problems.push(`earlier lines not back (${back.find((l) => l.trim())})`);
+  }
+  return problems;
+}
+
+/** A short line diff for the output: only changed lines, at most DIFF_LINES. */
+function diffText(fromText, toText) {
+  const changed = lineDiff(splitLines(fromText), splitLines(toText)).filter(([op]) => op !== '=');
+  const shownLines = changed.slice(0, DIFF_LINES).map(([op, l]) => `      ${op} ${l}`);
+  if (changed.length > DIFF_LINES) shownLines.push(`      ... ${changed.length - DIFF_LINES} more changed line(s)`);
+  return shownLines.join('\n');
+}
+
+/** The reversible record of one merged file: what the kit added and what it replaced. */
+function mergeRecord(entry, beforeBuf) {
+  const kind = MERGE_KINDS[entry.group];
+  const before = beforeBuf === null ? null : beforeBuf.toString('utf8');
+  const after = entry.content.toString('utf8');
+  if (kind === 'json') return { kind, ops: jsonDiff(before === null ? {} : parseJson(before), parseJson(after)) };
+  if (kind === 'toml') return { kind, ...tomlRecord(before, after, fs.readFileSync(entry.source, 'utf8').replace(/^﻿/, '')) };
+  return { kind, hunks: lineHunks(splitLines(before), splitLines(after)) };
+}
+
+// ---------- journal and local config ----------
+
+function readJournal(dir) {
+  const file = path.join(dir, JOURNAL);
+  let j;
+  try { j = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { throw new UsageError(`deploy journal ${slash(file)} cannot be read: ${e.message}`); }
+  if (!j || j.tool !== 'deploy-kit' || !Array.isArray(j.created) || !Array.isArray(j.modified) || !Array.isArray(j.removed) || !Array.isArray(j.merges)) {
+    throw new UsageError(`${slash(file)} is not a deploy-kit journal`);
+  }
+  return j;
+}
+
+/** Set (or with undefined remove) deploy_options in the local config; the other keys and their order stay. */
+function writeDeployOptions(localConfig, value) {
+  const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+  if (value === undefined) delete cfg.deploy_options;
+  else cfg.deploy_options = value;
+  writeJsonFile(localConfig, cfg);
+}
+
+function kitHead(repo) {
+  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', windowsHide: true });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+/** Remove a file, a link (never its target) or nothing. */
+function removePath(p, kind) {
+  let st;
+  try { st = fs.lstatSync(p); } catch { return; }
+  if (st.isSymbolicLink() || kind === 'link') {
+    try { fs.unlinkSync(p); } catch (e) { if (e.code === 'EPERM' || e.code === 'EISDIR') fs.rmdirSync(p); else throw e; }
+  } else fs.rmSync(p, { recursive: true, force: true });
+}
+
+/** The highest missing folder above file, or null when its folder exists. */
+function missingTop(file) {
+  let top = null;
+  for (let d = path.dirname(file); !fs.existsSync(d); d = path.dirname(d)) {
+    top = d;
+    if (path.dirname(d) === d) break;
+  }
+  return top;
+}
+
+/** Remove the empty folders in dir, dir included; true when dir is gone. */
+function pruneEmpty(dir) {
+  let st;
+  try { st = fs.lstatSync(dir); } catch { return true; }
+  if (!st.isDirectory() || st.isSymbolicLink()) return false;
+  for (const n of fs.readdirSync(dir)) pruneEmpty(path.join(dir, n));
+  if (fs.readdirSync(dir).length) return false;
+  fs.rmdirSync(dir);
+  return true;
+}
+
+// ---------- apply ----------
+
+/**
+ * Carry out a deploy plan: process check, backup, writes with a journal, deploy options. A failure after the
+ * backup rolls the targets back at once (merged files from the backup too) and throws.
+ * @param {object} plan from buildPlan
+ * @param {{localConfig: string, local: object, repo?: string, checkProcesses?: boolean, allowRunning?: boolean,
+ *   listProcesses?: function, failAt?: number}} opts checkProcesses: run the running-agent check (the CLI sets it
+ *   from processCheckApplies); listProcesses replaces the process lister (tests); failAt makes write step n fail
+ *   after a partial write (tests of the automatic rollback)
+ * @returns {{id: string|null, dir: string|null, journal: object|null, gate: object, counts: object}} id null: the plan
+ *   was empty, only the deploy options were recorded
+ * @throws {DeployError} conflicts, running agents, a failed backup, or a failed write (rolled back)
+ * @throws {UsageError} the restore tool is missing (a rollback would be impossible)
+ */
+export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkProcesses = false, allowRunning = false, listProcesses: lister, failAt = 0 }) {
+  if (plan.conflicts.length) throw new DeployError(`the plan has ${plan.conflicts.length} conflict(s); run a dry-run to see them, fix them and retry`);
+  assertInsideRoots(plan);
+  const gate = processGate({ check: checkProcesses, allowRunning, lister });
+  const restoreTool = local.restore_tool;
+  if (!restoreTool || !fs.existsSync(restoreTool)) {
+    throw new UsageError(`restore_tool ${restoreTool ? slash(restoreTool) : '(not set)'} not found in the local config; --rollback needs the step-0 restore.mjs`);
+  }
+  const counts = { created: 0, modified: 0, merged: 0, removed: 0, pushurl: 0 };
+  const rawLocal = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+  if (planIsEmpty(plan)) {
+    if (stable(rawLocal.deploy_options) !== stable(plan.options)) writeDeployOptions(localConfig, plan.options);
+    return { id: null, dir: null, journal: null, gate, counts };
+  }
+
+  const id = newDeployId();
+  const dir = path.join(deployRootOf(localConfig), id);
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.mkdirSync(dir);
+  const classOf = (e) => (MERGE_KINDS[e.group] ? 'merge' : 'whole');
+  let manifest;
+  try {
+    manifest = writeBackup(path.join(dir, BACKUP_DIR), [
+      ...plan.modify.map((e) => ({ path: e.path, label: classOf(e) === 'merge' ? LABEL_MERGE : LABEL_WHOLE })),
+      ...plan.remove.map((e) => ({ path: e.path, label: LABEL_WHOLE })),
+    ], { home: plan.roots.home, id });
+  } catch (e) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw new DeployError(`backup failed, nothing was written: ${e.message}`);
+  }
+  const backupOf = new Map(manifest.files.map((f) => [pathKey(f.src), f]));
+
+  const journal = {
+    tool: 'deploy-kit', version: 1, id, applied_at: new Date().toISOString(), status: 'applying', kit_head: kitHead(repo),
+    options: plan.options,
+    roots: { home: plan.roots.home, runtime: plan.roots.runtime, projects_root: plan.roots.projectsRoot },
+    local_config: path.resolve(localConfig), restore_tool: restoreTool, backup: BACKUP_DIR,
+    created: [], created_dirs: [], modified: [], removed: [], merges: [], pushurl: null,
+    deploy_options_before: rawLocal.deploy_options ?? null, deploy_options_recorded: false,
+  };
+  const save = () => writeJsonFile(path.join(dir, JOURNAL), journal);
+  save();
+
+  let step = 0;
+  const tick = (target) => {
+    step++;
+    if (failAt && step === failAt) {
+      if (target) fs.writeFileSync(target, 'partial write (injected failure)\n');
+      throw new Error(`injected write failure at step ${step}`);
+    }
+  };
+  try {
+    for (const e of [...plan.create, ...plan.modify]) {
+      const isNew = plan.create.includes(e);
+      const cls = classOf(e);
+      const after = sha256(e.content);
+      const top = isNew ? missingTop(e.path) : null;
+      if (top && !journal.created_dirs.some((d) => within(top, d))) journal.created_dirs.push(top);
+      if (isNew) journal.created.push({ path: e.path, group: e.group, class: cls, after_sha256: after });
+      else journal.modified.push({ path: e.path, group: e.group, class: cls, before_sha256: backupOf.get(pathKey(e.path)).sha256, after_sha256: after });
+      if (cls === 'merge') {
+        const b = isNew ? null : fs.readFileSync(path.join(dir, BACKUP_DIR, 'files', backupOf.get(pathKey(e.path)).rel));
+        const applied = path.join(dir, APPLIED_DIR, backupRel(e.path));
+        fs.mkdirSync(path.dirname(applied), { recursive: true });
+        fs.writeFileSync(applied, e.content);
+        journal.merges.push({ path: e.path, group: e.group, created: isNew, after_sha256: after, applied: path.relative(dir, applied), ...mergeRecord(e, b) });
+      }
+      save();
+      fs.mkdirSync(path.dirname(e.path), { recursive: true });
+      tick(e.path);
+      fs.writeFileSync(e.path, e.content);
+      counts[isNew ? 'created' : 'modified']++;
+      if (cls === 'merge') counts.merged++;
+    }
+    for (const e of plan.remove) {
+      let target = null;
+      if (e.kind === 'link') { try { target = fs.readlinkSync(e.path); } catch { /* gone */ } }
+      journal.removed.push({ path: e.path, kind: e.kind, files: e.files, group: e.group, ...(target ? { target, dir_link: fs.statSync(e.path, { throwIfNoEntry: false })?.isDirectory() ?? false } : {}) });
+      save();
+      tick(null);
+      removePath(e.path, e.kind);
+      counts.removed++;
+    }
+    if (plan.pushurl.length) {
+      journal.pushurl = { log: PUSHURL_LOG, entries: plan.pushurl.map((p) => ({ repo: p.repo, config: p.config, remote: p.remote, original: p.original })) };
+      save();
+      tick(null);
+      const r = applyPlan(plan.pushurlPlan, path.join(dir, PUSHURL_LOG));
+      if (r.failed) throw new Error(`pushurl failed for ${r.results.filter((x) => x.status === 'failed').map((x) => `${x.repo} (${x.remote}): ${x.detail}`).join('; ')}`);
+      counts.pushurl = plan.pushurl.length;
+    }
+    tick(null);
+    journal.deploy_options_recorded = true;
+    save();
+    writeDeployOptions(localConfig, plan.options);
+    journal.status = 'applied';
+    save();
+  } catch (err) {
+    journal.status = 'failed';
+    journal.error = err.message;
+    save();
+    const rb = doRollback(journal, dir, { wholeFile: true, restoreTool, localConfig, readonlyDirs: local.readonly_dirs ?? [] });
+    journal.status = rb.ok ? 'auto-rolled-back' : 'rollback-failed';
+    journal.rollback = { at: new Date().toISOString(), whole_file: true, automatic: true, problems: rb.problems, notes: rb.notes };
+    save();
+    throw new DeployError(`write failed: ${err.message}; ${rb.ok ? 'rolled back automatically, the targets are as before the apply'
+      : `the automatic rollback left ${rb.problems.length} problem(s): ${rb.problems.join('; ')}`} (deploy id ${id}, journal ${slash(path.join(dir, JOURNAL))})`);
+  }
+  return { id, dir, journal, gate, counts };
+}
+
+// ---------- rollback ----------
+
+/**
+ * Undo a deploy from its journal and backup (shared by --rollback and the automatic rollback of --apply).
+ * @returns {{ok: boolean, problems: string[], notes: string[], diffs: {path: string, diff: string}[]}}
+ */
+function doRollback(j, dir, { wholeFile, restoreTool, localConfig, readonlyDirs = [] }) {
+  const problems = [];
+  const notes = [];
+  const diffs = [];
+  const backupDir = path.join(dir, j.backup || BACKUP_DIR);
+  const manifest = JSON.parse(fs.readFileSync(path.join(backupDir, 'manifest.json'), 'utf8'));
+  const labels = wholeFile ? [LABEL_WHOLE, LABEL_MERGE] : [LABEL_WHOLE];
+  const restored = manifest.files.filter((f) => labels.includes(f.label));
+
+  for (const m of j.modified) {
+    if ((m.class === 'whole' || wholeFile) && hashOf(m.path) !== m.after_sha256 && j.status === 'applied') {
+      notes.push(`${slash(m.path)} changed since the apply; restored from the backup`);
+    }
+  }
+  // Whole targets: the step-0 restore tool puts back every backed-up file whose hash differs.
+  const r = spawnSync(process.execPath, [restoreTool, '--backup', backupDir, '--only', labels.join(','), '--apply'], { encoding: 'utf8', windowsHide: true });
+  if (r.error || r.status !== 0) problems.push(`restore tool exited ${r.status ?? r.error?.message}: ${((r.stderr || '') + (r.stdout || '')).trim().split(/\r?\n/).pop()}`);
+  // It does not delete: files the apply created go here.
+  for (const c of j.created) if (c.class === 'whole' || wholeFile) removePath(c.path);
+  for (const rm of j.removed.filter((x) => x.kind === 'link' && x.target)) {
+    if (!fs.existsSync(rm.path)) {
+      try { fs.symlinkSync(rm.target, rm.path, rm.dir_link ? 'junction' : 'file'); } catch (e) { problems.push(`link ${slash(rm.path)} not made again: ${e.message}`); }
+    }
+  }
+
+  // Merged targets: reverse what the kit added, keep the rest.
+  if (!wholeFile) {
+    const byPath = new Map(manifest.files.map((f) => [pathKey(f.src), f]));
+    for (const rec of j.merges) {
+      const p = rec.path;
+      const b = byPath.get(pathKey(p));
+      const beforeBuf = rec.created || !b ? null : fs.readFileSync(path.join(backupDir, 'files', b.rel));
+      let curBuf;
+      try { curBuf = fs.readFileSync(p); } catch {
+        if (!rec.created) problems.push(`${slash(p)} is gone; nothing to reverse (--whole-file restores it from the backup)`);
+        continue;
+      }
+      const cur = curBuf.toString('utf8');
+      if (sha256(curBuf) !== rec.after_sha256) {
+        let appliedText = null;
+        try { appliedText = fs.readFileSync(path.join(dir, rec.applied), 'utf8'); } catch { /* no copy */ }
+        notes.push(`${slash(p)} changed since the apply; its own changes stay`);
+        if (appliedText !== null) diffs.push({ path: p, diff: diffText(appliedText, cur) });
+      }
+      try {
+        let out = null;
+        let remove = false;
+        if (rec.kind === 'json') {
+          const value = reverseJson(parseJson(cur), rec.ops);
+          if (rec.created && isObject(value) && !Object.keys(value).length) remove = true;
+          // Back to the value it had: the backup bytes keep the file's own formatting as well.
+          else if (beforeBuf !== null && stable(value) === stable(parseJson(beforeBuf.toString('utf8')))) out = beforeBuf;
+          else out = Buffer.from(jsonLike(value, cur), 'utf8');
+        } else if (rec.kind === 'toml') {
+          const text = reverseToml(cur, rec);
+          if (rec.created && !text.trim()) remove = true;
+          else out = Buffer.from(text, 'utf8');
+        } else {
+          const u = unpatchLines(splitLines(cur), rec.hunks);
+          for (const h of u.failed) problems.push(`${slash(p)}: the kit lines near "${(h.after.find((l) => l.trim()) || h.pre.join(' ')).slice(0, 60)}" were not found; fix by hand or use --whole-file`);
+          if (rec.created && u.lines.every((l) => !l.trim())) remove = true;
+          else out = Buffer.from(u.lines.join(cur.includes('\r\n') ? '\r\n' : '\n'), 'utf8');
+        }
+        if (remove) fs.rmSync(p, { force: true });
+        else if (!out.equals(curBuf)) fs.writeFileSync(p, out);
+      } catch (e) {
+        problems.push(`${slash(p)}: cannot reverse the merge (${e.message}); use --whole-file`);
+      }
+    }
+  }
+  for (const d of [...j.created_dirs].reverse()) {
+    if (!pruneEmpty(d)) notes.push(`${slash(d)} was created by the apply and is kept: it holds files the apply did not write`);
+  }
+
+  // pushurl originals, through set-pushurl's own revert.
+  if (j.pushurl) {
+    const log = path.join(dir, j.pushurl.log);
+    if (fs.existsSync(log)) {
+      const rv = revertLog(readLog(log), { readonlyDirs });
+      for (const x of rv.results.filter((y) => y.status === 'skipped' || y.status === 'failed')) problems.push(`pushurl ${slash(x.repo)} (${x.remote}): ${x.status}: ${x.detail}`);
+    }
+  }
+  // deploy_options: back to the value before the apply, unless something else wrote it since.
+  if (j.deploy_options_recorded) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+      if (stable(cfg.deploy_options) === stable(j.options)) writeDeployOptions(localConfig, j.deploy_options_before ?? undefined);
+      else notes.push('deploy_options in the local config changed since the apply; left as it is');
+    } catch (e) { notes.push(`deploy_options not restored: ${e.message}`); }
+  }
+
+  // Check every target.
+  for (const f of restored) if (hashOf(f.src) !== f.sha256) problems.push(`${slash(f.src)} does not match its backup`);
+  for (const c of j.created) {
+    if ((c.class === 'whole' || wholeFile) && fs.existsSync(c.path)) problems.push(`${slash(c.path)} was created by the apply and is still there`);
+  }
+  if (!wholeFile) {
+    const byPath = new Map(manifest.files.map((f) => [pathKey(f.src), f]));
+    for (const rec of j.merges) {
+      let text;
+      try { text = fs.readFileSync(rec.path, 'utf8'); } catch { continue; }
+      const b = byPath.get(pathKey(rec.path));
+      const beforeText = rec.created || !b ? null : fs.readFileSync(path.join(backupDir, 'files', b.rel), 'utf8');
+      let found;
+      try {
+        found = rec.kind === 'json' ? jsonProblems(parseJson(text), rec.ops)
+          : rec.kind === 'toml' ? tomlProblems(text, rec) : linesProblems(splitLines(text), rec.hunks, splitLines(beforeText));
+      } catch (e) { found = [`cannot be read (${e.message})`]; }
+      for (const x of found) problems.push(`${slash(rec.path)}: ${x}`);
+    }
+  }
+  for (const rm of j.removed.filter((x) => x.kind === 'link' && x.target)) if (!fs.existsSync(rm.path)) problems.push(`link ${slash(rm.path)} is missing`);
+  return { ok: !problems.length, problems: [...new Set(problems)], notes, diffs };
+}
+
+/** Every deploy record under the deploy root, oldest first. */
+function deployRecords(root) {
+  let names = [];
+  try { names = fs.readdirSync(root).filter((n) => DEPLOY_ID_RE.test(n)); } catch { /* none yet */ }
+  const out = [];
+  for (const n of names) {
+    try { out.push({ id: n, journal: readJournal(path.join(root, n)) }); } catch { /* not a journal: ignored */ }
+  }
+  return out.sort((a, b) => (a.journal.applied_at < b.journal.applied_at ? -1 : a.journal.applied_at > b.journal.applied_at ? 1 : a.id < b.id ? -1 : 1));
+}
+
+/**
+ * Roll back one deploy. Refused while a later deploy is still in place (roll back the latest first).
+ * @param {string} id
+ * @param {{localConfig: string, wholeFile?: boolean, checkProcesses?: boolean|null, allowRunning?: boolean,
+ *   listProcesses?: function}} opts checkProcesses null: decided by processCheckApplies from the deploy's home
+ * @returns {{id: string, ok: boolean, problems: string[], notes: string[], diffs: object[], gate: object, journal: object}}
+ * @throws {UsageError} unknown or malformed id, already rolled back, restore tool missing
+ * @throws {DeployError} a later deploy is in place, or claude or codex is running
+ */
+export function rollbackDeploy(id, { localConfig, wholeFile = false, checkProcesses = null, allowRunning = false, listProcesses: lister }) {
+  if (!DEPLOY_ID_RE.test(id)) throw new UsageError(`not a deploy id: ${id} (form 20261030-091500-ab12)`);
+  const root = deployRootOf(localConfig);
+  const dir = path.join(root, id);
+  if (!fs.existsSync(path.join(dir, JOURNAL))) throw new UsageError(`no deploy ${id} under ${slash(root)}`);
+  const j = readJournal(dir);
+  if (!IN_PLACE.includes(j.status)) throw new UsageError(`deploy ${id} is already ${j.status}; nothing to roll back`);
+  const later = deployRecords(root).filter((r) => r.id !== id && IN_PLACE.includes(r.journal.status) && r.journal.applied_at > j.applied_at);
+  if (later.length) {
+    throw new DeployError(`deploy ${id} has later deploys still in place; roll back the latest first: ${later.reverse().map((r) => r.id).join(', ')}`);
+  }
+  const check = checkProcesses ?? processCheckApplies('rollback', j.roots.home);
+  const gate = processGate({ check, allowRunning, lister });
+  let local = {};
+  try { local = readLocalConfig(localConfig); } catch { /* fall back to the journal */ }
+  const restoreTool = local.restore_tool || j.restore_tool;
+  if (!restoreTool || !fs.existsSync(restoreTool)) throw new UsageError(`restore tool ${restoreTool ? slash(restoreTool) : '(not set)'} not found; set restore_tool in the local config`);
+  const rb = doRollback(j, dir, { wholeFile, restoreTool, localConfig, readonlyDirs: local.readonly_dirs ?? [] });
+  j.status = rb.ok ? 'rolled-back' : 'rollback-failed';
+  j.rollback = { at: new Date().toISOString(), whole_file: wholeFile, automatic: false, problems: rb.problems, notes: rb.notes };
+  writeJsonFile(path.join(dir, JOURNAL), j);
+  return { id, ...rb, gate, journal: j };
+}
+
+// ---------- drill ----------
+
+/** sha256 of every file (and "dir" or "link:<target>" for the others) under p, keyed by prefix + relative path. */
+function treeHashes(p, prefix, out = {}) {
+  let st;
+  try { st = fs.lstatSync(p); } catch { return out; }
+  if (st.isSymbolicLink()) out[prefix] = `link:${fs.readlinkSync(p)}`;
+  else if (st.isDirectory()) {
+    out[prefix] = 'dir';
+    for (const n of fs.readdirSync(p).sort()) treeHashes(path.join(p, n), `${prefix}/${n}`, out);
+  } else out[prefix] = hashOf(p);
+  return out;
+}
+
+function compareHashes(before, after) {
+  const out = [];
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[k] === after[k]) continue;
+    out.push(`${k}: ${before[k] === undefined ? 'added' : after[k] === undefined ? 'missing' : 'changed'}`);
+  }
+  return out.sort();
+}
+
+/** The source home paths a deploy reads or changes: every planned target, removal and kit skill folder. */
+function homeTargets(roots, plan, desired) {
+  const set = new Map();
+  for (const p of [...desired.map((d) => d.path), ...plan.remove.map((e) => e.path), ...kitSkillDirs(roots)]) {
+    if (within(p, roots.home)) set.set(pathKey(p), p);
+  }
+  return [...set.values()].sort();
+}
+
+function realFingerprint(roots, targets) {
+  const out = treeHashes(roots.runtime, 'runtime');
+  for (const repo of scanRepos(roots.projectsRoot).candidates) {
+    const g = path.join(repo, '.git');
+    let st;
+    try { st = fs.lstatSync(g); } catch { continue; }
+    treeHashes(st.isDirectory() ? path.join(g, 'config') : g, `repo:${slash(repo)}`, out);
+  }
+  for (const p of targets) treeHashes(p, `home:${slash(p)}`, out);
+  return out;
+}
+
+/** Copy files (folders walked; links skipped and counted) from src to dest. */
+function copyTree(src, dest, counts) {
+  let st;
+  try { st = fs.lstatSync(src); } catch { return; }
+  if (st.isSymbolicLink()) { counts.links++; return; }
+  if (st.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const n of fs.readdirSync(src)) copyTree(path.join(src, n), path.join(dest, n), counts);
+    return;
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  counts.files++;
+}
+
+/**
+ * The restore drill (v2 appendix C): apply and roll back on a copy of the kit-related files of the source
+ * home, inside <dir>/<timestamp>/, then compare hashes. The timestamp folder is removed at the end.
+ * @param {string} dir a folder inside <repo>/_private/
+ * @param {{roots: object, local: object, claudeContract?: string, retireLegacyAgents?: boolean, repo?: string}} opts
+ *   roots and local: the source (by default the real user directory, runtime and projects root)
+ * @returns {{ok: boolean, sub: string, copied: object, applied: object, rollback: object|null, mismatches: string[],
+ *   sourceChanged: string[], removed: boolean}}
+ */
+export function runDrill(dir, { roots: src, local: srcLocal, claudeContract = DEFAULT_OPTIONS.claude_contract, retireLegacyAgents = false, repo = KIT_REPO }) {
+  const base = privateFolder(dir, '--drill', repo);
+  if (!srcLocal.restore_tool || !fs.existsSync(srcLocal.restore_tool)) {
+    throw new UsageError(`restore_tool ${srcLocal.restore_tool ? slash(srcLocal.restore_tool) : '(not set)'} not found in the local config`);
+  }
+  const desired = desiredFiles(src, { claudeContract, repo, local: srcLocal });
+  const srcPlan = buildPlan(src, { claudeContract, retireLegacyAgents, local: srcLocal, repo });
+  const targets = homeTargets(src, srcPlan, desired);
+  const sourceBefore = realFingerprint(src, targets);
+
+  const sub = path.join(base, new Date().toISOString().replace(/[:.]/g, '-'));
+  if (fs.existsSync(sub)) throw new UsageError(`drill folder already exists: ${slash(sub)}`);
+  const roots = { home: path.join(sub, 'home'), runtime: path.join(sub, 'runtime'), projectsRoot: path.join(sub, 'projects') };
+  const result = { ok: false, sub, copied: { files: 0, links: 0 }, applied: null, rollback: null, mismatches: [], sourceChanged: [], removed: false };
+  try {
+    for (const d of Object.values(roots)) fs.mkdirSync(d, { recursive: true });
+    for (const p of targets) copyTree(p, path.join(roots.home, path.relative(src.home, p)), result.copied);
+    // pushurl is exercised on a repository made for the drill only.
+    const drillRepo = path.join(roots.projectsRoot, 'drill-repo');
+    fs.mkdirSync(drillRepo);
+    for (const args of [['init', '-q'], ['remote', 'add', 'origin', 'https://example.invalid/drill/drill-repo.git']]) {
+      const g = spawnSync('git', args, { cwd: drillRepo, encoding: 'utf8', windowsHide: true });
+      if (g.status !== 0) throw new Error(`git ${args[0]} in the drill repo failed: ${(g.stderr || '').trim()}`);
+    }
+    const localConfig = path.join(sub, 'private', 'kit-local.json');
+    const local = {
+      readonly_dirs: srcLocal.readonly_dirs ?? [], customer_data_dirs: srcLocal.customer_data_dirs ?? [],
+      runtime: slash(roots.runtime), portable_node: srcLocal.portable_node ?? null, projects_root: slash(roots.projectsRoot),
+      restore_tool: slash(srcLocal.restore_tool),
+    };
+    writeJsonFile(localConfig, local);
+    const snapshot = () => ({ ...treeHashes(roots.home, 'home'), ...treeHashes(roots.runtime, 'runtime'), ...treeHashes(roots.projectsRoot, 'projects') });
+    const before = snapshot();
+    const plan = buildPlan(roots, { claudeContract, retireLegacyAgents, local: readLocalConfig(localConfig), repo });
+    const a = applyDeploy(plan, { localConfig, local: readLocalConfig(localConfig), repo });
+    result.applied = { id: a.id, ...a.counts, changed: compareHashes(before, snapshot()).length };
+    if (a.id) result.rollback = rollbackDeploy(a.id, { localConfig, checkProcesses: false });
+    result.mismatches = compareHashes(before, snapshot());
+  } finally {
+    fs.rmSync(sub, { recursive: true, force: true });
+    result.removed = !fs.existsSync(sub);
+  }
+  result.sourceChanged = compareHashes(sourceBefore, realFingerprint(src, targets));
+  result.ok = !!result.applied && (result.rollback ? result.rollback.ok : true) && !result.mismatches.length && !result.sourceChanged.length && result.removed;
+  return result;
+}
+
 // ---------- main ----------
 
 function parseCli(argv) {
@@ -446,6 +1379,7 @@ function parseCli(argv) {
         'claude-contract': { type: 'string' }, 'retire-legacy-agents': { type: 'boolean' },
         home: { type: 'string' }, runtime: { type: 'string' }, 'projects-root': { type: 'string' }, 'local-config': { type: 'string' },
         apply: { type: 'boolean' }, rollback: { type: 'string' }, drill: { type: 'string' }, neutral: { type: 'boolean' },
+        'whole-file': { type: 'boolean' }, 'allow-running': { type: 'boolean' },
         stage: { type: 'string' }, layout: { type: 'string' }, force: { type: 'boolean' }, 'expect-clean': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -456,9 +1390,13 @@ function parseCli(argv) {
   }
   if (a.help) return { help: true };
   for (const [flag, task] of Object.entries(LATER)) {
-    if (a[flag] !== undefined) throw new UsageError(`--${flag} is not implemented yet (${task}); this version only plans`);
+    if (a[flag] !== undefined) throw new UsageError(`--${flag} is not implemented yet (${task})`);
   }
   const given = (...flags) => flags.filter((f) => a[f] !== undefined).map((f) => `--${f}`);
+  const modes = given('apply', 'rollback', 'drill', 'stage', 'init-local');
+  if (modes.length > 1) throw new UsageError(`${modes.join(' and ')} exclude each other`);
+  if (a['whole-file'] !== undefined && a.rollback === undefined) throw new UsageError('--whole-file goes with --rollback');
+  if (a['allow-running'] !== undefined && a.apply === undefined && a.rollback === undefined) throw new UsageError('--allow-running goes with --apply or --rollback');
   if (a['init-local'] && (a['dry-run'] || a.json || a.home !== undefined || a['claude-contract'] !== undefined || a['retire-legacy-agents'])) {
     throw new UsageError('--init-local takes only --runtime, --projects-root and --local-config');
   }
@@ -471,6 +1409,23 @@ function parseCli(argv) {
     return { mode: 'stage', stage: a.stage, layout: a.layout, force: !!a.force };
   }
   if (a.layout !== undefined || a.force !== undefined) throw new UsageError('--layout and --force go with --stage');
+  for (const k of ['home', 'runtime', 'projects-root', 'local-config']) {
+    if (a[k] !== undefined && !a[k].trim()) throw new UsageError(`--${k} needs a path`);
+  }
+  const localConfig = path.resolve(a['local-config'] ?? DEFAULT_LOCAL_CONFIG);
+  if (a.rollback !== undefined) {
+    // The roots come from the deploy's journal; only the local config says where the deploy records are.
+    const extra = given('dry-run', 'json', 'expect-clean', 'claude-contract', 'retire-legacy-agents', 'home', 'runtime', 'projects-root');
+    if (extra.length) throw new UsageError(`--rollback takes only --whole-file, --allow-running and --local-config (not ${extra.join(', ')})`);
+    if (!a.rollback.trim()) throw new UsageError('--rollback needs a deploy id');
+    return { mode: 'rollback', id: a.rollback.trim(), wholeFile: !!a['whole-file'], allowRunning: !!a['allow-running'], localConfig };
+  }
+  if (a.apply || a.drill !== undefined) {
+    const extra = given('dry-run', 'json', 'expect-clean');
+    const flag = a.apply ? '--apply' : '--drill';
+    if (extra.length) throw new UsageError(`${flag} does not take ${extra.join(', ')}`);
+    if (a.drill !== undefined && !a.drill.trim()) throw new UsageError('--drill needs a folder');
+  }
   if (a['expect-clean']) {
     // The options come from deploy_options in the local config, so the deployed state is checked as deployed.
     const extra = given('init-local', 'claude-contract', 'retire-legacy-agents');
@@ -478,14 +1433,26 @@ function parseCli(argv) {
   }
   const contract = a['claude-contract'] ?? DEFAULT_OPTIONS.claude_contract;
   if (!CLAUDE_CONTRACT_MODES.includes(contract)) throw new UsageError(`--claude-contract must be import or inline: ${contract}`);
-  for (const k of ['home', 'runtime', 'projects-root', 'local-config']) {
-    if (a[k] !== undefined && !a[k].trim()) throw new UsageError(`--${k} needs a path`);
-  }
+  const mode = a['init-local'] ? 'init-local' : a.apply ? 'apply' : a.drill !== undefined ? 'drill' : 'dry-run';
   return {
-    mode: a['init-local'] ? 'init-local' : 'dry-run', json: !!a.json, claudeContract: contract, expectClean: !!a['expect-clean'],
-    retireLegacyAgents: !!a['retire-legacy-agents'], home: a.home, runtime: a.runtime, projectsRoot: a['projects-root'],
-    localConfig: path.resolve(a['local-config'] ?? DEFAULT_LOCAL_CONFIG),
+    mode, json: !!a.json, claudeContract: contract, expectClean: !!a['expect-clean'], drill: a.drill, allowRunning: !!a['allow-running'],
+    retireLegacyAgents: !!a['retire-legacy-agents'], home: a.home, runtime: a.runtime, projectsRoot: a['projects-root'], localConfig,
   };
+}
+
+/** The rollback command as printed: --local-config only when it is not the default. */
+function rollbackCommand(id, localConfig) {
+  const lc = pathKey(localConfig) === pathKey(DEFAULT_LOCAL_CONFIG) ? '' : ` --local-config "${slash(localConfig)}"`;
+  return `node scripts/deploy-kit.mjs --rollback ${id}${lc}`;
+}
+
+function printRollback(r) {
+  console.log(`deploy-kit: rollback ${r.id}${r.journal.rollback.whole_file ? ' --whole-file' : ''}: ${gateLine(r.gate)}`);
+  for (const n of r.notes) console.log(`  note: ${n}`);
+  for (const d of r.diffs) console.log(`  diff of ${slash(d.path)} since the apply (- as deployed, + now):\n${d.diff}`);
+  for (const p of r.problems) console.log(`  MISMATCH ${p}`);
+  console.log(r.ok ? `deploy-kit: rolled back ${r.id}; every target checked (whole files against the backup hashes, merged files: kit keys gone, earlier values back)`
+    : `deploy-kit: rollback ${r.id} left ${r.problems.length} mismatch(es); see above (--whole-file restores the merged files from the backup)`);
 }
 
 function run(argv) {
@@ -511,14 +1478,62 @@ function run(argv) {
     return 0;
   }
 
+  if (opts.mode === 'rollback') {
+    const r = rollbackDeploy(opts.id, { localConfig: opts.localConfig, wholeFile: opts.wholeFile, allowRunning: opts.allowRunning });
+    printRollback(r);
+    return r.ok ? 0 : 1;
+  }
+
   const local = readLocalConfig(opts.localConfig);
   const roots = resolveRoots({ home: opts.home, runtime: opts.runtime, projectsRoot: opts.projectsRoot }, local);
   if (!fs.existsSync(roots.home) || !fs.statSync(roots.home).isDirectory()) throw new UsageError(`home is not a folder: ${roots.home}`);
+
+  if (opts.mode === 'drill') {
+    console.log(`deploy-kit: drill from home ${slash(roots.home)}, runtime ${slash(roots.runtime)}, projects root ${slash(roots.projectsRoot)}`);
+    const r = runDrill(opts.drill, { roots, local, claudeContract: opts.claudeContract, retireLegacyAgents: opts.retireLegacyAgents });
+    console.log(`  drill folder ${slash(r.sub)}: ${r.copied.files} kit-related file(s) copied${r.copied.links ? `, ${r.copied.links} link(s) not copied` : ''}; empty runtime; new repo for pushurl`);
+    if (r.applied) {
+      console.log(`  apply ${r.applied.id ?? '(empty plan)'}: ${r.applied.created} created, ${r.applied.modified} modified (${r.applied.merged} merged), `
+        + `${r.applied.removed} removed, ${r.applied.pushurl} pushurl; ${r.applied.changed} path(s) changed`);
+    }
+    if (r.rollback) {
+      for (const n of r.rollback.notes) console.log(`  note: ${n}`);
+      for (const p of r.rollback.problems) console.log(`  rollback MISMATCH ${p}`);
+    }
+    for (const m of r.mismatches) console.log(`  after rollback differs from before: ${m}`);
+    for (const m of r.sourceChanged) console.log(`  SOURCE CHANGED ${m}`);
+    console.log(`  drill folder ${r.removed ? 'removed' : 'NOT removed'}; source runtime, repo .git/config files and home targets ${r.sourceChanged.length ? 'CHANGED' : 'unchanged'}`);
+    console.log(r.ok ? 'deploy-kit: drill passed: apply then rollback gave back every file hash'
+      : 'deploy-kit: drill FAILED; see above');
+    return r.ok ? 0 : 1;
+  }
+
   const options = opts.expectClean
     ? (({ claude_contract: c, retire_legacy_agents: r }) => ({ claudeContract: c, retireLegacyAgents: r }))(recordedOptions(local))
     : { claudeContract: opts.claudeContract, retireLegacyAgents: opts.retireLegacyAgents };
   const plan = buildPlan(roots, { ...options, local });
   assertInsideRoots(plan);
+
+  if (opts.mode === 'apply') {
+    if (plan.conflicts.length) {
+      printPlan(plan, opts.localConfig);
+      throw new DeployError(`the plan has ${plan.conflicts.length} conflict(s); nothing was written`);
+    }
+    const r = applyDeploy(plan, {
+      localConfig: opts.localConfig, local, checkProcesses: processCheckApplies('apply', roots.home), allowRunning: opts.allowRunning,
+    });
+    console.log(`deploy-kit: apply: home ${slash(roots.home)}; runtime ${slash(roots.runtime)}; projects root ${slash(roots.projectsRoot)}`);
+    console.log(`  ${gateLine(r.gate)}`);
+    console.log(`  claude contract ${plan.options.claude_contract}; retire legacy agents ${plan.options.retire_legacy_agents ? 'yes' : 'no'} (recorded as deploy_options in ${slash(opts.localConfig)})`);
+    if (!r.id) { console.log('deploy-kit: the plan is empty; nothing to deploy'); return 0; }
+    const c = r.counts;
+    console.log(`  backup: ${r.journal.modified.length + r.journal.removed.length} target(s) in ${slash(path.join(r.dir, BACKUP_DIR))} (step-0 format, hashes checked)`);
+    console.log(`  written: ${c.created} created, ${c.modified} modified (${c.merged} merged), ${c.removed} removed, ${c.pushurl} pushurl; journal ${slash(path.join(r.dir, JOURNAL))}`);
+    console.log(`deploy-kit: deploy id ${r.id}`);
+    console.log(`deploy-kit: roll back with: ${rollbackCommand(r.id, opts.localConfig)}`);
+    return 0;
+  }
+
   if (opts.json) console.log(JSON.stringify(planJson(plan, { expectClean: opts.expectClean }), null, 2));
   else printPlan(plan, opts.localConfig, { expectClean: opts.expectClean });
   if (opts.expectClean) return planIsEmpty(plan) ? 0 : 1;
@@ -534,7 +1549,8 @@ if (invokedDirectly) {
   try {
     process.exitCode = run(process.argv.slice(2));
   } catch (e) {
-    console.error(e instanceof UsageError ? `deploy-kit: ${e.message}\n${USAGE}` : `deploy-kit: error: ${e.stack || e}`);
-    process.exitCode = 2;
+    if (e instanceof UsageError) console.error(`deploy-kit: ${e.message}\n${USAGE}`);
+    else console.error(e instanceof DeployError ? `deploy-kit: ${e.message}` : `deploy-kit: error: ${e.stack || e}`);
+    process.exitCode = e instanceof DeployError ? 1 : 2;
   }
 }
