@@ -1,0 +1,195 @@
+{
+  "model": "opus",
+  "env": {
+    "DEMO_TELEMETRY": "0",
+    "CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS": "6",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max-fixture-sentinel-7f3a"
+  },
+  "subagentPromptCacheTtl": "1h",
+  "worktree": {
+    "baseRef": "head"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm test)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push *)",
+      "Bash(git -C * push)",
+      "Bash(git -C * push *)",
+      "Bash(git -c * push)",
+      "Bash(git -c * push *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo edit *)",
+      "Bash(gh repo fork *)",
+      "Bash(gh repo rename *)",
+      "Bash(gh repo archive *)",
+      "Bash(gh repo unarchive *)",
+      "Bash(gh repo sync *)",
+      "Bash(gh repo deploy-key add *)",
+      "Bash(gh repo deploy-key delete *)",
+      "Bash(gh repo autolink create *)",
+      "Bash(gh repo autolink delete *)",
+      "Bash(gh release create *)",
+      "Bash(gh release delete *)",
+      "Bash(gh release edit *)",
+      "Bash(gh release upload *)",
+      "Bash(gh release delete-asset *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh pr reopen *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr review *)",
+      "Bash(gh pr ready *)",
+      "Bash(gh pr lock *)",
+      "Bash(gh pr unlock *)",
+      "Bash(gh pr revert *)",
+      "Bash(gh pr update-branch *)",
+      "Bash(gh workflow run *)",
+      "Bash(gh workflow enable *)",
+      "Bash(gh workflow disable *)",
+      "Bash(gh api *-X POST*)",
+      "Bash(gh api *--method POST*)",
+      "Bash(gh api *--method=POST*)",
+      "Bash(gh api *-X PUT*)",
+      "Bash(gh api *--method PUT*)",
+      "Bash(gh api *--method=PUT*)",
+      "Bash(gh api *-X PATCH*)",
+      "Bash(gh api *--method PATCH*)",
+      "Bash(gh api *--method=PATCH*)",
+      "Bash(gh api *-X DELETE*)",
+      "Bash(gh api *--method DELETE*)",
+      "Bash(gh api *--method=DELETE*)",
+      "Bash(npm publish *)",
+      "PowerShell(git push *)",
+      "PowerShell(git -C * push)",
+      "PowerShell(git -C * push *)",
+      "PowerShell(git -c * push)",
+      "PowerShell(git -c * push *)",
+      "PowerShell(gh repo create *)",
+      "PowerShell(gh repo delete *)",
+      "PowerShell(gh repo edit *)",
+      "PowerShell(gh repo fork *)",
+      "PowerShell(gh repo rename *)",
+      "PowerShell(gh repo archive *)",
+      "PowerShell(gh repo unarchive *)",
+      "PowerShell(gh repo sync *)",
+      "PowerShell(gh repo deploy-key add *)",
+      "PowerShell(gh repo deploy-key delete *)",
+      "PowerShell(gh repo autolink create *)",
+      "PowerShell(gh repo autolink delete *)",
+      "PowerShell(gh release create *)",
+      "PowerShell(gh release delete *)",
+      "PowerShell(gh release edit *)",
+      "PowerShell(gh release upload *)",
+      "PowerShell(gh release delete-asset *)",
+      "PowerShell(gh pr create *)",
+      "PowerShell(gh pr merge *)",
+      "PowerShell(gh pr close *)",
+      "PowerShell(gh pr reopen *)",
+      "PowerShell(gh pr edit *)",
+      "PowerShell(gh pr comment *)",
+      "PowerShell(gh pr review *)",
+      "PowerShell(gh pr ready *)",
+      "PowerShell(gh pr lock *)",
+      "PowerShell(gh pr unlock *)",
+      "PowerShell(gh pr revert *)",
+      "PowerShell(gh pr update-branch *)",
+      "PowerShell(gh workflow run *)",
+      "PowerShell(gh workflow enable *)",
+      "PowerShell(gh workflow disable *)",
+      "PowerShell(gh api *-X POST*)",
+      "PowerShell(gh api *--method POST*)",
+      "PowerShell(gh api *--method=POST*)",
+      "PowerShell(gh api *-X PUT*)",
+      "PowerShell(gh api *--method PUT*)",
+      "PowerShell(gh api *--method=PUT*)",
+      "PowerShell(gh api *-X PATCH*)",
+      "PowerShell(gh api *--method PATCH*)",
+      "PowerShell(gh api *--method=PATCH*)",
+      "PowerShell(gh api *-X DELETE*)",
+      "PowerShell(gh api *--method DELETE*)",
+      "PowerShell(gh api *--method=DELETE*)",
+      "PowerShell(npm publish *)",
+      "mcp__claude_ai_Gmail__send_message",
+      "mcp__claude_ai_Gmail__reply",
+      "mcp__claude_ai_Gmail__forward",
+      "mcp__claude_ai_Google_Drive__share_file",
+      "mcp__claude_ai_Google_Calendar__create_event",
+      "mcp__claude_ai_Google_Calendar__update_event",
+      "mcp__claude_ai_Google_Calendar__respond_to_event",
+      "Edit(<projects-posix>/demo/frozen/**)",
+      "Read(<projects-posix>/demo/customer-data/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<node>",
+            "args": [
+              "<runtime>/hooks/guard.mjs",
+              "--platform",
+              "claude"
+            ],
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__project-manager__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<node>",
+            "args": [
+              "<runtime>/hooks/guard.mjs",
+              "--platform",
+              "claude"
+            ],
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<node>",
+            "args": [
+              "<runtime>/hooks/session-start.mjs",
+              "--platform",
+              "claude"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo done"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "demo-plugin@example": true
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Synthetic Codex hooks of a fake user directory (check-kit fixture).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write|mcp__project[-_]manager__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<node>\" \"<runtime>/hooks/guard.mjs\" --platform codex",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

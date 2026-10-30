@@ -1,0 +1,8 @@
+{
+  "env": {
+    "DEMO_FLAG": "1"
+  },
+  "permissions": {
+    "allow": ["Bash(npm test)"]
+  }
+}

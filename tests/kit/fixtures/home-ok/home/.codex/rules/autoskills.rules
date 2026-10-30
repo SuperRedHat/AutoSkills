@@ -1,0 +1,75 @@
+# AutoSkills 3.0 第 1 批：Codex 的 execpolicy 规则（ADR-006 §2.5）。部署时复制到 ~/.codex/rules/autoskills.rules。
+#
+# 只当提醒，不是硬拦截：prefix_rule 只按命令开头的几个词匹配简单命令。匹配不到的写法有：
+# - git -C <目录> push、git -c <键>=<值> push、git.exe 或 git 的完整路径；
+# - bash -lc、powershell.exe -Command 包裹的命令，用 ; 串起来的复合命令，写进脚本再运行的间接执行；
+# - 写在端点之后的 gh api -X/--method（只有紧跟在 api 后面的能匹配）。
+# 这些写法由守卫钩子（hooks/guard.mjs）和 pushurl = no_push 兜底；Codex 的钩子出错时会放行。
+# 实际判定结果见 tests/kit/codex-rules.test.mjs 的输出。
+#
+# Codex 是否加载 rules 目录里 default.rules 以外的文件，由部署冒烟的拒绝来源确认（AS3-121）；
+# 不加载就把下面的规则追加到 default.rules。
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "AutoSkills：代理不推送；需要推送时由用户本人在普通终端里做。",
+    match = ["git push", "git push origin main", "git push https://example.invalid/owner/repo.git main"],
+    not_match = ["git status", "git commit -m push", "git pull"],
+)
+
+prefix_rule(
+    pattern = ["gh", "repo", ["create", "delete", "edit", "fork", "rename", "archive", "unarchive", "sync"]],
+    decision = "forbidden",
+    justification = "AutoSkills：gh repo 的写操作由用户本人做。",
+    match = ["gh repo create x", "gh repo edit --visibility public"],
+    not_match = ["gh repo view", "gh repo list", "gh repo clone owner/repo"],
+)
+
+prefix_rule(
+    pattern = ["gh", "repo", ["deploy-key", "autolink"], ["add", "create", "delete"]],
+    decision = "forbidden",
+    justification = "AutoSkills：gh repo 的写操作由用户本人做。",
+    match = ["gh repo deploy-key add key.pub", "gh repo autolink create x y"],
+    not_match = ["gh repo deploy-key list"],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", ["create", "delete", "edit", "upload", "delete-asset"]],
+    decision = "forbidden",
+    justification = "AutoSkills：发布由用户本人做。",
+    match = ["gh release create x", "gh release upload v1 a.zip"],
+    not_match = ["gh release list", "gh release view v1", "gh release download v1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["create", "merge", "close", "reopen", "edit", "comment", "review", "ready", "lock", "unlock", "revert", "update-branch"]],
+    decision = "forbidden",
+    justification = "AutoSkills：PR 的写操作由用户本人做。",
+    match = ["gh pr create --fill", "gh pr merge 1"],
+    not_match = ["gh pr view 1", "gh pr list", "gh pr diff 1", "gh pr checks 1", "gh pr status"],
+)
+
+prefix_rule(
+    pattern = ["gh", "workflow", ["run", "enable", "disable"]],
+    decision = "forbidden",
+    justification = "AutoSkills：触发或改动 GitHub 工作流由用户本人做。",
+    match = ["gh workflow run ci.yml"],
+    not_match = ["gh workflow list", "gh workflow view ci.yml"],
+)
+
+prefix_rule(
+    pattern = ["gh", "api", ["-X", "--method"], ["POST", "PUT", "PATCH", "DELETE", "post", "put", "patch", "delete"]],
+    decision = "forbidden",
+    justification = "AutoSkills：带写方法的 gh api 由用户本人做；写在端点之后的 -X 由守卫钩子兜底。",
+    match = ["gh api -X POST repos/owner/repo/issues", "gh api --method DELETE repos/owner/repo"],
+    not_match = ["gh api repos/owner/repo", "gh api -X GET repos/owner/repo"],
+)
+
+prefix_rule(
+    pattern = ["npm", "publish"],
+    decision = "forbidden",
+    justification = "AutoSkills：发布由用户本人做。",
+    match = ["npm publish", "npm publish --dry-run"],
+    not_match = ["npm pack", "npm test"],
+)

@@ -1,0 +1,13 @@
+# Synthetic Codex config of a fake user directory (check-kit fixture).
+model = "gpt-5"
+model_reasoning_effort = "medium"
+
+[projects.'<projects>/demo']
+trust_level = "trusted"
+
+[desktop]
+followUpQueueMode = "steer"
+
+[mcp_servers.project-manager]
+command = "node"
+args = ["<home>/.claude/mcp-project-manager/dist/index.js"]

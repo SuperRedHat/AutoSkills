@@ -1,0 +1,7 @@
+{
+  "readonly_dirs": ["<projects>/demo/frozen"],
+  "customer_data_dirs": ["<projects>/demo/customer-data"],
+  "runtime": "<runtime>",
+  "portable_node": "<node>",
+  "projects_root": "<projects>"
+}

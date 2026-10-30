@@ -1,0 +1,9 @@
+# Synthetic Codex config of a fake user directory before a deploy (check-kit fixture).
+model = "gpt-5"
+model_reasoning_effort = "xhigh"
+
+[desktop]
+followUpQueueMode = "queue"
+
+[agents]
+default_subagent_reasoning_effort = "medium"
