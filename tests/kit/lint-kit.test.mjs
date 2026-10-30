@@ -416,7 +416,8 @@ describe('contract', () => {
   });
 
   test('Claude global file: @AGENTS.md first, at most 10 more lines', () => {
-    const lines = (k) => `@AGENTS.md\n\n${'- Claude 专属条款。\n'.repeat(k)}`;
+    // The first Claude-only line names project-verifier, which the file must do (contract/claude-verifier).
+    const lines = (k) => `@AGENTS.md\n\n- 用 project-verifier 子代理做独立校验。\n${'- Claude 专属条款。\n'.repeat(k - 1)}`;
     assert.equal(check(contractRoot({ 'templates/global-claude-CLAUDE.md': lines(10) })).code, 0);
     const long = check(contractRoot({ 'templates/global-claude-CLAUDE.md': lines(11) }));
     assert.equal(long.code, 1);
@@ -459,6 +460,59 @@ describe('contract', () => {
     assert.match(c.out, /contract\/p0-term: P0 term in a batch-1 template: runner/);
     assert.match(c.out, /contract\/p0-term: P0 term in a batch-1 template: 回执/);
   });
+
+  test('Claude global file must name project-verifier: pass and fail', () => {
+    const claude = tpl('global-claude-CLAUDE.md');
+    assert.match(claude, /project-verifier/);
+    assert.equal(check(contractRoot()).code, 0);
+    const r = check(contractRoot({ 'templates/global-claude-CLAUDE.md': without(claude, /project-verifier/) }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /templates\/global-claude-CLAUDE\.md: contract\/claude-verifier: missing the project-verifier subagent/);
+    assert.equal(r.out.split('\n').filter((l) => / contract\//.test(l)).length, 1, r.out);
+  });
+
+  test('goal.txt must hold the key lines of the batch-1 /goal: pass and fail', () => {
+    const goal = tpl('goal.txt');
+    assert.equal(check(contractRoot({ 'templates/goal.txt': goal })).code, 0);
+    const cases = [
+      ['验证命令实际跑过并通过', goal.replace('验证命令实际跑过并通过', '验证命令通过')],
+      ['没有就绪任务，本身不等于完成', without(goal, /没有就绪任务/)],
+    ];
+    for (const [line, text] of cases) {
+      assert.notEqual(text, goal, line);
+      const r = check(contractRoot({ 'templates/goal.txt': text }));
+      assert.equal(r.code, 1, `${line}\n${r.out}`);
+      assert.match(r.out, new RegExp(`templates/goal\\.txt: contract/goal-template: missing the key lines of the batch-1 /goal \\(v2 appendix B\\): no match for ${line}$`, 'm'));
+      assert.equal(r.out.split('\n').filter((l) => / contract\//.test(l)).length, 1, r.out);
+    }
+  });
+});
+
+describe('source', () => {
+  const BOM = String.fromCharCode(0xfeff);
+
+  test('pass: the kit surface of the repo, and the escape \\uFEFF', () => {
+    const r = lint('--check', 'source');
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.match(r.out, /ok \[source\]/);
+    const root = tempRoot({ 'scripts/a.mjs': "const strip = (t) => t.replace(/^\\uFEFF/, '');\n", 'skills/x/SKILL.md': `${BOM}---\n` });
+    assert.equal(lint('--root', root, '--check', 'source').code, 0, 'only .mjs files are checked');
+  });
+
+  test('fail: a literal U+FEFF in a .mjs file, also as a leading BOM, with line and column', () => {
+    const root = tempRoot({
+      'scripts/lib/strip.mjs': `// strip\nconst strip = (t) => t.replace(/^${BOM}/, '');\n`,
+      'hooks/bom.mjs': `${BOM}export const x = 1;\n`,
+    });
+    const r = lint('--root', root, '--check', 'source');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /^scripts\/lib\/strip\.mjs:2:34: source\/literal-bom: literal U\+FEFF in the source; write the escape \\uFEFF$/m);
+    assert.match(r.out, /^hooks\/bom\.mjs:1:1: source\/literal-bom:/m);
+    assert.equal(r.out.split('\n').filter((l) => / source\//.test(l)).length, 2, r.out);
+    const one = lint('--root', root, '--check', 'source', '--path', 'hooks/bom.mjs');
+    assert.equal(one.code, 1);
+    assert.doesNotMatch(one.out, /strip\.mjs/);
+  });
 });
 
 describe('cli', () => {
@@ -488,7 +542,7 @@ describe('cli', () => {
     });
     const r = lint('--root', root, '--check', 'all');
     assert.equal(r.code, 0, r.out + r.err);
-    assert.match(r.out, /ok \[privacy,tools,skills,legacy,contract\]/);
+    assert.match(r.out, /ok \[privacy,tools,skills,legacy,contract,source\]/);
   });
 
   test('read-only: a full run leaves the tree unchanged, and the source has no write calls', () => {

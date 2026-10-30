@@ -187,7 +187,7 @@ export function readLocalConfig(file) {
     throw new UsageError(`local config ${file} not found; create it first with: node scripts/deploy-kit.mjs --init-local`);
   }
   let cfg;
-  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) {
     throw new UsageError(`local config ${file} cannot be read: ${e.message}`);
   }
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new UsageError(`local config ${file}: not a JSON object`);
@@ -270,7 +270,7 @@ export function listFiles(dir) {
 }
 
 function readText(file) {
-  return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+  return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
 }
 
 /**

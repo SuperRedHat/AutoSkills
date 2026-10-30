@@ -109,7 +109,7 @@ function isMeasurementRepo(key) {
 export function loadLocalConfig(file) {
   if (!fs.existsSync(file)) return { found: false, readonlyDirs: [] };
   let cfg;
-  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) {
     throw new UsageError(`local config ${file} cannot be read: ${e.message}`);
   }
   const dirs = cfg && cfg.readonly_dirs !== undefined ? cfg.readonly_dirs : [];
@@ -296,7 +296,7 @@ export function applyPlan(plan, logFile) {
  */
 export function readLog(file) {
   let log;
-  try { log = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+  try { log = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) {
     throw new UsageError(`log ${file} cannot be read: ${e.message}`);
   }
   if (!log || log.tool !== LOG_TOOL || !Array.isArray(log.entries)) throw new UsageError(`${file} is not a set-pushurl log`);

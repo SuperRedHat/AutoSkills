@@ -97,9 +97,10 @@
 // 1 while it is in place. check-kit recognises the neutral contract files by NEUTRAL_MARKER.
 //
 // --drill <dir> rehearses a deploy (v2 appendix C) inside <dir>/<timestamp>/, which must lie inside
-// <kit repo>/_private/: a drill home with copies of the kit-related files of the source home (never
-// ~/.claude.json), an empty runtime and a new git repository for pushurl. It applies, rolls back, compares
-// the hash of every file with the state before and removes the timestamp folder. The source runtime, the
+// <kit repo>/_private/eval/ (not _private/rt, _private/deploy or elsewhere in _private/; anything else exits
+// 2): a drill home with copies of the kit-related files of the source home (never ~/.claude.json), an empty
+// runtime and a new git repository for pushurl. It applies, rolls back, compares the hash of every file with
+// the state before and removes the timestamp folder. The source runtime, the
 // .git/config of the repositories under the source projects root and the source home targets are hashed
 // before and after; any change exits 1.
 //
@@ -541,7 +542,7 @@ const hashOf = (p) => { try { return sha256(fs.readFileSync(p)); } catch { retur
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const stable = (v) => JSON.stringify(v);
 const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
-const parseJson = (text) => JSON.parse(text.replace(/^﻿/, ''));
+const parseJson = (text) => JSON.parse(text.replace(/^\uFEFF/, ''));
 
 function writeJsonFile(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -561,9 +562,12 @@ export function newDeployId(now = new Date()) {
   return `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}-${crypto.randomBytes(2).toString('hex')}`;
 }
 
-/** dest resolved; it must lie inside <repo>/_private/ (not be _private itself), as stage and drill folders do. */
-function privateFolder(dest, flag, repo) {
-  const priv = realPathOf(path.join(repo, '_private'));
+/**
+ * dest resolved; it must lie inside <repo>/_private/ (not be _private itself), as stage and drill folders do.
+ * under narrows the parent further: drills only go below _private/eval/, never next to the runtime or the backups.
+ */
+function privateFolder(dest, flag, repo, under = '') {
+  const priv = realPathOf(path.join(repo, '_private', under));
   const abs = path.resolve(dest);
   const real = realPathOf(abs);
   if (!within(real, priv) || pathKey(real) === pathKey(priv)) {
@@ -635,7 +639,7 @@ export function processCheckApplies(mode, home, realHome = os.homedir()) {
  */
 export function readIgnorePids(file) {
   let list;
-  try { list = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+  try { list = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) {
     throw new UsageError(`--ignore-pids file ${slash(file)} cannot be read: ${e.message}`);
   }
   if (!Array.isArray(list)) throw new UsageError(`--ignore-pids file ${slash(file)}: not a JSON list of {"pid", "created"}`);
@@ -967,7 +971,7 @@ function mergeRecord(entry, beforeBuf) {
   const before = beforeBuf === null ? null : beforeBuf.toString('utf8');
   const after = entry.content.toString('utf8');
   if (kind === 'json') return { kind, ops: jsonDiff(before === null ? {} : parseJson(before), parseJson(after)) };
-  if (kind === 'toml') return { kind, ...tomlRecord(before, after, fs.readFileSync(entry.source, 'utf8').replace(/^﻿/, '')) };
+  if (kind === 'toml') return { kind, ...tomlRecord(before, after, fs.readFileSync(entry.source, 'utf8').replace(/^\uFEFF/, '')) };
   return { kind, hunks: lineHunks(splitLines(before), splitLines(after)) };
 }
 
@@ -985,7 +989,7 @@ function readJournal(dir) {
 
 /** Set (or with undefined remove) deploy_options in the local config; the other keys and their order stay. */
 function writeDeployOptions(localConfig, value) {
-  const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+  const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^\uFEFF/, ''));
   if (value === undefined) delete cfg.deploy_options;
   else cfg.deploy_options = value;
   writeJsonFile(localConfig, cfg);
@@ -1072,7 +1076,7 @@ export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkPr
     throw new UsageError(`restore_tool ${restoreTool ? slash(restoreTool) : '(not set)'} not found in the local config; --rollback needs the step-0 restore.mjs`);
   }
   const counts = { created: 0, modified: 0, merged: 0, removed: 0, pushurl: 0 };
-  const rawLocal = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+  const rawLocal = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^\uFEFF/, ''));
   if (planIsEmpty(plan)) {
     if (!neutral && stable(rawLocal.deploy_options) !== stable(plan.options)) writeDeployOptions(localConfig, plan.options);
     return { id: null, dir: null, journal: null, gate, counts };
@@ -1274,7 +1278,7 @@ function doRollback(j, dir, { wholeFile, restoreTool, localConfig, readonlyDirs 
   // deploy_options: back to the value before the apply, unless something else wrote it since.
   if (j.deploy_options_recorded) {
     try {
-      const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
+      const cfg = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^\uFEFF/, ''));
       if (stable(cfg.deploy_options) === stable(j.options)) writeDeployOptions(localConfig, j.deploy_options_before ?? undefined);
       else notes.push('deploy_options in the local config changed since the apply; left as it is');
     } catch (e) { notes.push(`deploy_options not restored: ${e.message}`); }
@@ -1367,7 +1371,7 @@ export const NEUTRAL_KEPT = [
 
 /** True when text is the neutral content of a contract file (a BOM, CRLF and surrounding blanks allowed). */
 export function isNeutralText(text) {
-  return String(text).replace(/^﻿/, '').trim() === NEUTRAL_LINE.trim();
+  return String(text).replace(/^\uFEFF/, '').trim() === NEUTRAL_LINE.trim();
 }
 
 /**
@@ -1501,14 +1505,14 @@ function copyTree(src, dest, counts) {
 /**
  * The restore drill (v2 appendix C): apply and roll back on a copy of the kit-related files of the source
  * home, inside <dir>/<timestamp>/, then compare hashes. The timestamp folder is removed at the end.
- * @param {string} dir a folder inside <repo>/_private/
+ * @param {string} dir a folder inside <repo>/_private/eval/
  * @param {{roots: object, local: object, claudeContract?: string, retireLegacyAgents?: boolean, repo?: string}} opts
  *   roots and local: the source (by default the real user directory, runtime and projects root)
  * @returns {{ok: boolean, sub: string, copied: object, applied: object, rollback: object|null, mismatches: string[],
  *   sourceChanged: string[], removed: boolean}}
  */
 export function runDrill(dir, { roots: src, local: srcLocal, claudeContract = DEFAULT_OPTIONS.claude_contract, retireLegacyAgents = false, repo = KIT_REPO }) {
-  const base = privateFolder(dir, '--drill', repo);
+  const base = privateFolder(dir, '--drill', repo, 'eval');
   if (!srcLocal.restore_tool || !fs.existsSync(srcLocal.restore_tool)) {
     throw new UsageError(`restore_tool ${srcLocal.restore_tool ? slash(srcLocal.restore_tool) : '(not set)'} not found in the local config`);
   }

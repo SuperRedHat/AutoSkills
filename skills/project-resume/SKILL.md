@@ -20,6 +20,8 @@ description: 在新会话里，或用户说"继续""继续项目""接着上次�
 
 ## 3. 接着做
 - 卡在 in_progress 的任务接着做（1.5.1 不允许 in_progress→todo）：先在本会话重跑它的 verification_commands，按结果补实现或往下推进。notes 里写着"受阻"的，阻塞没解除就跳过。
+- 卡在 auto_verified 的任务（会话在 auto_verified 和 done 或 awaiting_manual_acceptance 之间中断）也接着处理：在本会话重跑它的 verification_commands；通过就按验收字段推进，规则同 project-next 第 6 步；不通过按 project-next 的"受阻"处理，任务留在 auto_verified（1.5.1 不允许退回 in_progress）。
+- 写 notes 前先用 `get_task_by_id` 读出原内容，把新的一段接在后面整段传入：1.5.1 的 `edit_task`、`update_task_status` 会整段覆盖 notes，不能丢掉已记的假设、受阻原因和提交号。
 - 然后进入 project-next 的循环（取就绪任务 → 实现 → 验证 → 独立校验 → 提交 → 推进状态 → 取下一个），按同样的规则只在五种停点停下。
 - 状态迁移只用 1.5.1 允许的：todo→in_progress→auto_verified→done 或 awaiting_manual_acceptance；awaiting_manual_acceptance 之后只交给 project-feedback。
 - 子代理只做只读工作，它的报告只算线索；重型套件只由主会话跑，一次一个。

@@ -14,6 +14,8 @@
 //   - powershell -EncodedCommand <base64>;
 //   - commands built at run time: $g = 'git'; & $g push, git $(echo push), aliases defined outside the
 //     command (git config alias.p push, then git p);
+//   - $( ) and backticks inside an unquoted bash here-doc (<<EOF) or a PowerShell @"..."@ here-string:
+//     the shell expands them, the guard reads the body as data (pushurl = no_push is the backstop);
 //   - writes into a read-only folder through a shell command (rule 2 sees only the write tools);
 //   - a subagent call without agent_id looks like the main session to rule 3 (C0 E2, AS3-117).
 // On one Windows account the guard only prevents mistakes; a deliberate bypass is out of its reach.
@@ -255,6 +257,31 @@ describe('rule 1, Bash form', () => {
       'npm run publish-docs',
       '',
     ], 'allow');
+  });
+
+  test("ANSI-C quotes $'...': \\' and other escapes are read as bash does; an open quote is still an error", () => {
+    expectAll((c) => decision('Bash', c), [
+      "echo $'it\\'s done'",
+      "git commit -m $'fix: don\\'t drop notes\\n\\nsecond line'",
+      "printf $'a\\tb\\\\' && git status",
+      "echo $'git push is left to the owner\\''",
+    ], 'allow');
+    expectAll((c) => decision('Bash', c), [
+      "git $'push' origin main",
+      "git $'\\x70ush'",
+      "git $'\\160ush' origin",
+      "$'git' push",
+      "git commit -m $'it\\'s' && git push",
+    ], 'deny');
+    const cfg = ['--config', path.join(tempDir(), 'missing.json')];
+    const ok = runGuard(claudeInput('Bash', "git commit -m $'it\\'s done'"), cfg);
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(ok.out, '');
+    for (const open of ["echo $'it\\'s", "echo $'abc", "git commit -m 'it\\'s'"]) {
+      const r = runGuard(claudeInput('Bash', open), cfg);
+      assert.equal(r.code, 2, `${open}: exit code`);
+      assert.match(r.err, /单引号没有结束/, open);
+    }
   });
 
   test('allow: the heredoc commit message pattern, even with push lines, quotes and parentheses in the body', () => {
@@ -709,6 +736,12 @@ describe('known gaps (ADR-006 §4 residual risks, allowed on purpose)', () => {
       'git p',
     ], 'allow');
   });
+
+  test('substitutions in unquoted here-doc and @"..."@ here-string bodies are not seen', () => {
+    assert.equal(decision('Bash', 'cat <<EOF\n$(git push)\nEOF'), 'allow');
+    assert.equal(decision('Bash', 'cat <<EOF\n`git push`\nEOF'), 'allow');
+    assert.equal(decision('PowerShell', 'Write-Output @"\n$(git push)\n"@'), 'allow');
+  });
 });
 
 describe('hook contract (spawned guard)', () => {
@@ -722,6 +755,26 @@ describe('hook contract (spawned guard)', () => {
     assert.equal(j.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(j.hookSpecificOutput.permissionDecisionReason, new RegExp(REASON_HINT));
     assert.match(j.hookSpecificOutput.permissionDecisionReason, /git push/);
+  });
+
+  test('started through a junction (symlink elsewhere) to hooks/: the guard still runs and push is still denied', () => {
+    const link = dirLink(path.join(REPO, 'hooks'), path.join(tempDir(), 'hooks-link'));
+    const viaLink = path.join(link, 'guard.mjs');
+    assert.notEqual(fs.realpathSync(viaLink).toLowerCase(), viaLink.toLowerCase(), 'the path really goes through a link');
+    const cfg = ['--config', path.join(tempDir(), 'missing.json')];
+    const spawnLinked = (file, input, args) => spawnSync(process.execPath, [file, ...args], { input: JSON.stringify(input), encoding: 'utf8' });
+    const deny = spawnLinked(viaLink, claudeInput('Bash', 'git push origin main'), cfg);
+    assert.equal(deny.status, 0, deny.stderr);
+    assert.equal(JSON.parse(deny.stdout).hookSpecificOutput.permissionDecision, 'deny');
+    const ps = spawnLinked(viaLink, claudeInput('PowerShell', '& git.exe push'), cfg);
+    assert.equal(JSON.parse(ps.stdout).hookSpecificOutput.permissionDecision, 'deny');
+    const self = spawnSync(process.execPath, [viaLink, '--selftest'], { encoding: 'utf8', input: '' });
+    assert.equal(self.status, 0, self.stderr);
+    assert.match(self.stdout, /ok \(\d+ samples\)/, '--selftest prints its result, so main() ran');
+    // The SessionStart hook has the same entry check.
+    const start = spawnLinked(path.join(link, 'session-start.mjs'), { session_id: 'synthetic-session', source: 'startup', hook_event_name: 'SessionStart' }, cfg);
+    assert.equal(start.status, 0, start.stderr);
+    assert.equal(JSON.parse(start.stdout).hookSpecificOutput.hookEventName, 'SessionStart');
   });
 
   test('deny on Codex input uses the same output; allow prints nothing', () => {

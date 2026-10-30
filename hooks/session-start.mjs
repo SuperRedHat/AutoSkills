@@ -125,7 +125,7 @@ function main(argv) {
     process.stderr.write(`AutoSkills SessionStart 钩子：${e.message}，这次不写心跳。\n`);
   }
   let input = null;
-  try { input = JSON.parse(fs.readFileSync(0, 'utf8').replace(/^﻿/, '')); } catch { /* handled below */ }
+  try { input = JSON.parse(fs.readFileSync(0, 'utf8').replace(/^\uFEFF/, '')); } catch { /* handled below */ }
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     input = null;
     process.stderr.write('AutoSkills SessionStart 钩子：输入不是 JSON 对象，提示照常输出，会话 id 记为未知。\n');
@@ -140,9 +140,12 @@ function main(argv) {
   return 0;
 }
 
+// Both sides by real path: Node gives the main module its real path, so a start through a junction or
+// symlink would otherwise never run main() and allow everything without a word.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
-  const a = path.resolve(process.argv[1]), b = SELF;
+  let a, b;
+  try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
 if (invokedDirectly) process.exitCode = main(process.argv.slice(2));

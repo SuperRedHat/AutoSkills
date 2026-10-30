@@ -143,7 +143,7 @@ function envGet(env, name) {
 function readJson(file) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch { return { exists: false, value: null }; }
-  try { return { exists: true, value: JSON.parse(text.replace(/^﻿/, '')) }; } catch (e) {
+  try { return { exists: true, value: JSON.parse(text.replace(/^\uFEFF/, '')) }; } catch (e) {
     return { exists: true, value: null, error: `not valid JSON (${e.message})` };
   }
 }
@@ -258,7 +258,7 @@ function section(name) {
 
 function readFragment(...p) {
   const file = path.join(KIT_REPO, ...p);
-  try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) {
     throw new UsageError(`kit source ${slash(file)} cannot be read: ${e.message}`);
   }
 }
@@ -1006,7 +1006,7 @@ export function pushurlChecks(ctx, sec) {
  */
 export function oldReferences(text) {
   const out = [];
-  String(text).replace(/^﻿/, '').split(/\r?\n/).forEach((line, i) => {
+  String(text).replace(/^\uFEFF/, '').split(/\r?\n/).forEach((line, i) => {
     const hits = [];
     const trimmed = line.trim();
     let first = trimmed.length;

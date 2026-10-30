@@ -1287,6 +1287,18 @@ test('--drill applies and rolls back on a copy inside _private/, checks every ha
   assert.deepEqual(fs.readdirSync(outside), []);
 });
 
+test('--drill accepts only folders below _private/eval/: _private/rt, _private/deploy and the rest of _private/ exit 2', () => {
+  const sb = sandbox({ restore: true });
+  const tag = `drill-refused-test-${process.pid}`;
+  for (const dest of [path.join(REPO, '_private', 'rt', tag), path.join(REPO, '_private', 'deploy', tag), path.join(REPO, '_private', tag),
+    path.join(REPO, '_private', 'eval')]) {
+    const r = run(['--drill', dest, ...sb.rootArgs]);
+    assert.equal(r.status, 2, `${dest}\n${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, /--drill writes only to a folder inside .*_private\/eval/, dest);
+    assert.equal(fs.existsSync(dest), dest.endsWith(`${path.sep}eval`), `nothing created at ${dest}`);
+  }
+});
+
 // ---------- reverse merges ----------
 
 test('jsonDiff and reverseJson take out what a merge added and put back what it replaced', () => {

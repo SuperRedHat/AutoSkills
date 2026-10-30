@@ -46,11 +46,16 @@
 //            global-codex-AGENTS.md is a second source. Every scanned file: no old rules (design before
 //            code, module-by-module confirmation, asking on vague requirements, the state-machine
 //            description, tech-stack defaults) and no P0 terms (run_id, runner, receipts, dispatch, leases,
-//            the verification executor). This group has no allow marker.
+//            the verification executor). A scanned global-claude-CLAUDE.md must name the project-verifier
+//            subagent, and a scanned goal.txt must hold the key lines of the batch-1 /goal (v2 appendix B):
+//            "验证命令实际跑过并通过" and "没有就绪任务，本身不等于完成". This group has no allow marker.
+//   source   .mjs files hold no literal U+FEFF (an invisible character in the source): write the escape
+//            \uFEFF instead, as in a regex that strips a BOM. This group has no allow marker.
 //
 // Scan surface:
 //   Without --path: skills/, templates/, config/, hooks/, scripts/ and mcp-manifest.json; privacy adds
-//   tests/. tools defaults to skills/ and templates/, skills to skills/, contract to templates/. With
+//   tests/. tools defaults to skills/ and templates/, skills to skills/, contract to templates/, source to
+//   the .mjs files of the kit surface. With
 //   --path, exactly the named files and directories. README.md and docs/ are scanned only when named.
 //   legacy never scans files under tests/. Directory walks skip .git, node_modules and the historical
 //   records (ADR-001..005, audit and migration reports in docs/, mcp/*/tests/fixtures/); a file named
@@ -80,12 +85,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const USAGE = 'usage: node scripts/lint-kit.mjs --check <privacy,tools,skills,legacy,contract|all> [--path <file|dir>]... [--root <dir>]\n'
+const USAGE = 'usage: node scripts/lint-kit.mjs --check <privacy,tools,skills,legacy,contract,source|all> [--path <file|dir>]... [--root <dir>]\n'
   + '       node scripts/lint-kit.mjs --git-log <range> [--check privacy] [--root <dir>]';
 
 const SELF = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = path.resolve(path.dirname(SELF), '..');
-const GROUPS = ['privacy', 'tools', 'skills', 'legacy', 'contract'];
+const GROUPS = ['privacy', 'tools', 'skills', 'legacy', 'contract', 'source'];
 
 const KIT_SURFACE = ['skills', 'templates', 'config', 'hooks', 'scripts', 'mcp-manifest.json'];
 const DEFAULT_SURFACE = {
@@ -94,6 +99,7 @@ const DEFAULT_SURFACE = {
   skills: ['skills'],
   legacy: KIT_SURFACE,
   contract: ['templates'],
+  source: KIT_SURFACE,
 };
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 // Historical records: kept as written, not part of the kit (repo-relative, forward slashes).
@@ -142,6 +148,11 @@ const CONTRACT_SOURCE = 'global-AGENTS.md';
 const CONTRACT_MAX_LINES = 60;
 const CLAUDE_GLOBAL = 'global-claude-CLAUDE.md';
 const CLAUDE_EXTRA_MAX = 10;
+// What other batch-1 templates must carry, by file name: every pattern must match somewhere in the file.
+const TEMPLATE_REQUIRED = {
+  [CLAUDE_GLOBAL]: [{ rule: 'claude-verifier', what: 'the project-verifier subagent', res: [/project-verifier/] }],
+  'goal.txt': [{ rule: 'goal-template', what: 'the key lines of the batch-1 /goal (v2 appendix B)', res: [/验证命令实际跑过并通过/, /没有就绪任务，本身不等于完成/] }],
+};
 // Former second sources of the global rules, replaced by templates/global-AGENTS.md.
 const RETIRED_SOURCES = ['global-codex-AGENTS.md'];
 // Clauses the contract must carry: every pattern of an entry must match somewhere in the file.
@@ -555,6 +566,11 @@ function contractCheck(files, load, needSource) {
     const add = (line, col, rule, msg) => out.push({ rel: f.rel, line, col, rule, msg });
     const base = path.basename(f.abs);
     if (RETIRED_SOURCES.includes(base)) add(null, null, 'single-source', 'retired second source of the global rules; templates/global-AGENTS.md replaces it');
+    const text = doc.lines.join('\n');
+    for (const req of TEMPLATE_REQUIRED[base] || []) {
+      const miss = req.res.filter((re) => !re.test(text));
+      if (miss.length) add(null, null, req.rule, `missing ${req.what}: no match for ${miss.map((re) => re.source).join(', ')}`);
+    }
     if (base === CLAUDE_GLOBAL) {
       if (doc.lines[0].trim() !== '@AGENTS.md') add(0, 0, 'claude-import', 'the first line must be @AGENTS.md (import the contract, do not copy it)');
       const extra = doc.lines.slice(1).filter((l) => l.trim()).length;
@@ -563,6 +579,23 @@ function contractCheck(files, load, needSource) {
     doc.lines.forEach((line, i) => {
       for (const r of OLD_RULES) for (const m of line.matchAll(r.re)) add(i, m.index, 'old-rule', `old rule (${r.what}): ${m[0]}`);
       for (const m of line.matchAll(P0_TERMS)) add(i, m.index, 'p0-term', `P0 term in a batch-1 template: ${m[0]}`);
+    });
+  }
+  return out;
+}
+
+// ---------- source ----------
+
+/** Literal U+FEFF characters in a .mjs file, a leading BOM included (readText would strip that one). */
+function sourceCheck(files) {
+  const out = [];
+  for (const f of files.filter((x) => /\.mjs$/i.test(x.abs))) {
+    const buf = fs.readFileSync(f.abs);
+    if (buf.subarray(0, 8192).includes(0)) continue;
+    buf.toString('utf8').split(/\r?\n/).forEach((line, i) => {
+      for (let col = line.indexOf('\uFEFF'); col >= 0; col = line.indexOf('\uFEFF', col + 1)) {
+        out.push({ rel: f.rel, line: i, col, group: 'source', rule: 'literal-bom', msg: 'literal U+FEFF in the source; write the escape \\uFEFF' });
+      }
     });
   }
   return out;
@@ -641,6 +674,7 @@ function run(argv) {
     if (g === 'legacy') files = files.filter((f) => !f.rel.startsWith('tests/'));
     files.forEach((f) => seen.add(f.abs));
     if (g === 'skills') { findings.push(...skillsCheck(root, files, !!paths)); continue; }
+    if (g === 'source') { findings.push(...sourceCheck(files)); continue; }
     if (g === 'contract') {
       const needSource = !paths || paths.some((p) => fs.statSync(path.resolve(root, p)).isDirectory());
       findings.push(...contractCheck(files.filter((f) => !samePath(f.abs, SELF)), load, needSource).map((x) => ({ ...x, group: g })));

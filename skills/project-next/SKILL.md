@@ -27,6 +27,7 @@ description: 按自主契约循环做任务：取就绪任务、实现、验证�
 ### 2. 开始并实现
 - `update_task_status(id, "in_progress")`，然后按任务的描述、验收标准和 files 实现。
 - 常规选择用合理默认并在 notes 里记下假设；不为单个任务、提交或步骤交接请求确认。
+- 1.5.1 的 `edit_task`、`update_task_status` 会整段覆盖 notes：每次写 notes 前先用 `get_task_by_id` 读出原内容，把新的一段接在后面整段传入，不丢掉已记的假设、受阻原因和提交号。
 
 ### 3. 验证（证据）
 - 在仓库根目录逐条照原样执行 verification_commands，不改写、不拼接、不跳过。条目是 PowerShell 写法时，Claude 上用 PowerShell 工具执行。
@@ -46,6 +47,7 @@ description: 按自主契约循环做任务：取就绪任务、实现、验证�
 ### 5. 提交
 - Conventional Commits，说明里带任务 id，例如 `feat(api): add export endpoint (T3.2)`。
 - 只 `git add` 本任务 files 里列出的、在仓库里的路径（括号里的说明不是路径；标了删除的路径照样 add，用来暂存删除）。不用 -A，不用 `.`，也不用 -f。
+- 实现确实需要改 files 之外的文件时，把它们逐个点名一并提交，并在提交说明和 notes 里写明是哪些文件、为什么改；不留下未提交又没记录的改动。
 - 提交号用 `git rev-parse HEAD` 读出，写进 notes 或 `add_log`。只改了 `_private/` 等不进 git 的路径时，在 notes 写"未提交：<原因>"。
 
 ### 6. 推进状态，取下一个

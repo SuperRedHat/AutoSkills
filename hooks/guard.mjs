@@ -49,7 +49,12 @@
 //
 // Parsing: Bash, PowerShell and cmd text is split into simple commands at ; && || | & and newlines,
 // ( ) groups, { } blocks and $( ) @( ) `...` substitutions (also inside double quotes). Quotes and escapes
-// are removed, comments, here-doc and here-string bodies skipped, redirections dropped. Each command is
+// are removed (bash $'...' with its backslash escapes, \' included), comments skipped, redirections
+// dropped. Here-doc and here-string bodies are skipped too, read as data: that is exact only for a quoted
+// bash here-doc (<<'EOF') and a PowerShell @'...'@ here-string. In an unquoted here-doc (<<EOF) and an
+// @"..."@ here-string the shell still expands $( ) and backticks, so a push written there runs unseen
+// (ADR-006 §4; reading the bodies would block everyday doc and commit-message commands). The repo's
+// pushurl = no_push is what stops that push. Each command is
 // checked after stripping VAR=value prefixes, reserved words (then, do ...) and wrappers (env, command,
 // builtin, exec, nohup, time, sudo, nice, timeout, xargs) and after unwrapping bash/sh -c, powershell/pwsh -Command, cmd /c and
 // Start-Process. The PowerShell & call operator separates like any & does, so "& git push" is git push.
@@ -86,6 +91,8 @@
 //     pwsh -File), Invoke-Expression, encoded commands (-EncodedCommand);
 //   - commands built at run time: variables ($g push, & $git push), substitutions that produce the
 //     subcommand (git $(echo push)), git and gh aliases defined outside the command.
+//   - substitutions inside an unquoted bash here-doc or a PowerShell @"..."@ here-string body (see
+//     Parsing above); pushurl = no_push is the backstop.
 //   - writes into a read-only folder through a shell command (Bash, PowerShell, a patch fed to apply_patch
 //     through a shell here-doc): rule 2 sees only the write tools.
 //   - subagent calls without agent_id (C0 E2): then rule 3 cannot tell them from the main session.
@@ -168,6 +175,7 @@ function scan(src, start, dialect, depth, closer) {
       i = e + 2;
       continue;
     }
+    if (bash && c === '$' && d === "'") { const r = readAnsiC(src, i + 1); word = (word ?? '') + r.text; i = r.end; continue; }
     if (c === "'" && !cmd) { const r = readSingle(src, i, ps); word = (word ?? '') + r.text; i = r.end; continue; }
     if (c === '"') {
       const r = readDouble(src, i, dialect, depth);
@@ -273,6 +281,37 @@ function readSingle(src, i, ps) {
     }
     text += ch;
     j++;
+  }
+}
+
+// Bash ANSI-C quoting $'...' (i is at the opening quote): backslash escapes as bash expands them, so
+// $'it\'s' is one word and $'\x70ush' reads as push. A quote without its closer is still an error.
+const ANSI_C_SIMPLE = {
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+};
+function readAnsiC(src, i) {
+  let text = '';
+  let j = i + 1;
+  for (;;) {
+    if (j >= src.length) throw new ParseError('单引号没有结束');
+    const ch = src[j];
+    if (ch === "'") return { text, end: j + 1 };
+    if (ch !== '\\') { text += ch; j++; continue; }
+    const nx = src[j + 1];
+    if (nx === undefined) throw new ParseError('单引号没有结束');
+    if (Object.hasOwn(ANSI_C_SIMPLE, nx)) { text += ANSI_C_SIMPLE[nx]; j += 2; continue; }
+    let m;
+    if ((m = /^[0-7]{1,3}/.exec(src.slice(j + 1, j + 4)))) { text += String.fromCharCode(parseInt(m[0], 8) & 0xff); j += 1 + m[0].length; continue; }
+    const hex = { x: 2, u: 4, U: 8 }[nx];
+    if (hex && (m = new RegExp(`^[0-9A-Fa-f]{1,${hex}}`).exec(src.slice(j + 2, j + 2 + hex)))) {
+      const cp = parseInt(m[0], 16);
+      text += cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+      j += 2 + m[0].length;
+      continue;
+    }
+    if (nx === 'c' && j + 2 < src.length && src[j + 2] !== "'") { text += String.fromCharCode(src.charCodeAt(j + 2) & 0x1f); j += 3; continue; }
+    text += ch + nx; // an unknown escape stays as written
+    j += 2;
   }
 }
 
@@ -1090,9 +1129,12 @@ function main(argv) {
   return code;
 }
 
+// Both sides by real path: Node gives the main module its real path, so a start through a junction or
+// symlink would otherwise never run main() and allow everything without a word.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
-  const a = path.resolve(process.argv[1]), b = SELF;
+  let a, b;
+  try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
 if (invokedDirectly) process.exitCode = main(process.argv.slice(2));
