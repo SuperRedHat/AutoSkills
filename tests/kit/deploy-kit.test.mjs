@@ -2,7 +2,8 @@
 // test copies the hand-written fixtures in tests/kit/fixtures/deploy/ into an OS temp dir and passes
 // --home, --runtime, --projects-root and --local-config there, so the script never reads targets in the
 // real user directory; the git repositories the pushurl plan looks at are created in the temp projects
-// root. --apply and --rollback keep their deploy records next to the temp local config. The --stage tests
+// root. --apply, --neutral --apply and --rollback keep their records next to the temp local config; the
+// process check is driven by fake process lists (--ignore-pids included). The --stage tests
 // write only to folders under <repo>/_private/stage/ named deploy-kit-test-*, the --drill test only to
 // <repo>/_private/eval/restore-drill-test-*, both removed at the end. The rollback runs the step-0 restore
 // tool (<repo>/_private/redesign-2026-10/step0/restore.mjs, git-excluded). The last test checks that the real
@@ -19,9 +20,10 @@ import { fileURLToPath } from 'node:url';
 import {
   buildPlan, STAGE_MANIFEST, applyDeploy, rollbackDeploy, DeployError, processCheckApplies, isAgentProcess, listProcesses,
   jsonDiff, reverseJson, LABEL_WHOLE, LABEL_MERGE, JOURNAL,
+  buildNeutralPlan, neutralsInPlace, isNeutralText, readIgnorePids, NEUTRAL_LINE, NEUTRAL_MARKER, NEUTRAL_KEPT,
 } from '../../scripts/deploy-kit.mjs';
 import {
-  KIT_REPO, KIT_SKILLS, LEGACY_SKILL_DIRS, targetMap, mergeWorkflowRules, WF_BEGIN, WF_END,
+  KIT_REPO, KIT_SKILLS, LEGACY_SKILL_DIRS, UsageError, targetMap, mergeWorkflowRules, WF_BEGIN, WF_END,
   readLocalConfig, mergeClaudeSettings, mergeCodexConfig, claudePathRule, isKitHook, within, pathKey,
 } from '../../scripts/lib/kit-targets.mjs';
 import { scanToml, setValue, getValue, keyValues, removeProjectsByPrefix, removeValue, removeEmptyTable, TomlEditError } from '../../scripts/lib/toml-edit.mjs';
@@ -588,10 +590,13 @@ test('all three roots are redirected; runtime and projects root default to the l
   assert.deepEqual(moved.pushurl, []);
 });
 
-test('unknown options, misplaced options, a missing restore tool and the modes of later tasks exit 2', () => {
+test('unknown options, misplaced options, a missing restore tool and --neutral with options it does not take exit 2', () => {
   const sb = sandbox();
   // --apply without a restore tool (the sandbox config points to a missing one) is a setup error.
-  for (const args of [['--bogus'], ['--apply'], ['--rollback', 'x'], ['--neutral'], ['--stage', 'x'], ['--init-local', '--json'],
+  for (const args of [['--bogus'], ['--apply'], ['--rollback', 'x'], ['--stage', 'x'], ['--init-local', '--json'],
+    ['--neutral', '--expect-clean'], ['--neutral', '--claude-contract', 'inline'], ['--neutral', '--retire-legacy-agents'],
+    ['--neutral', '--rollback', '20261030-000000-abcd'], ['--neutral', '--stage', 'x', '--layout', 'project'], ['--neutral', '--drill', 'x'],
+    ['--neutral', '--init-local'], ['--neutral', '--apply', '--json'], ['--neutral', '--apply', '--dry-run'], ['--neutral', '--whole-file'],
     ['--expect-clean', '--claude-contract', 'inline'], ['--expect-clean', '--retire-legacy-agents'], ['--layout', 'project'], ['--force'],
     ['--apply', '--dry-run'], ['--apply', '--json'], ['--apply', '--expect-clean'], ['--apply', '--rollback', '20261030-000000-abcd'],
     ['--whole-file'], ['--allow-running'], ['--drill', 'x', '--json'], ['--drill', 'x', '--apply']]) {
@@ -1050,6 +1055,208 @@ test('the process list is read as structured data', () => {
   assert.match(self.name, /^node/i);
   for (const p of list) assert.ok(Number.isInteger(p.pid) && typeof p.name === 'string', JSON.stringify(p));
   if (process.platform === 'win32') assert.ok(!Number.isNaN(Date.parse(self.created)), 'creation time for --ignore-pids (AS3-114)');
+});
+
+// ---------- --neutral and --ignore-pids ----------
+
+// Words of a workflow rule; the neutral line must hold none of them.
+const RULE_WORDS = /must|never|always|should|don't|do not|skill|project-|rule|goal|verif|commit|push|test|必须|禁止|不要|不得|技能|规则|验证|提交|推送|测量/i;
+const kitSkillPaths = (sb) => { const t = targetMap(rootsOf(sb)); return [t.claudeSkills, t.agentsSkills].flatMap((b) => KIT_SKILLS.map((s) => path.join(b, s))); };
+const contractPaths = (sb) => { const t = targetMap(rootsOf(sb)); return [t.claudeMd, t.claudeAgentsMd, t.codexAgentsMd]; };
+
+test('the neutral plan covers only the 3 contract files and the 7 kit skills on both platforms; its one line holds no rule', () => {
+  // One line, an HTML comment with the marker check-kit looks for (the kit's name and "neutral"), and no rule.
+  assert.match(NEUTRAL_LINE, /^<!--[^\n]*-->\n$/);
+  assert.equal(NEUTRAL_MARKER, 'autoskills:neutral');
+  assert.ok(NEUTRAL_LINE.includes(NEUTRAL_MARKER));
+  assert.doesNotMatch(NEUTRAL_LINE.replace(NEUTRAL_MARKER, ''), RULE_WORDS);
+  assert.equal(NEUTRAL_LINE.replace(NEUTRAL_MARKER, '').replace(/[<>!\-\s]/g, ''), '', 'nothing but the marker');
+  const contract = fs.readFileSync(path.join(REPO, 'templates', 'global-AGENTS.md'), 'utf8');
+  assert.ok(!contract.split(/\r?\n/).some((l) => l.trim() && NEUTRAL_LINE.includes(l.trim())), 'no contract line');
+  assert.ok(isNeutralText(NEUTRAL_LINE) && isNeutralText(`﻿${NEUTRAL_LINE.trim()}\r\n`));
+  assert.ok(!isNeutralText(`# Rules\n${NEUTRAL_LINE}`) && !isNeutralText(contract));
+
+  // A home without the kit: the contract files there are replaced (or created) and the one kit-named skill goes.
+  const sb = sandbox();
+  const before = treeHash(sb.root);
+  const fresh = planOf(sb, '--neutral');
+  assert.equal(fresh.mode, 'neutral-dry-run');
+  assert.deepEqual(paths(fresh.create), [inHome(sb, '.claude', 'AGENTS.md')]);
+  assert.deepEqual(paths(fresh.modify), [inHome(sb, '.claude', 'CLAUDE.md'), inHome(sb, '.codex', 'AGENTS.md')]);
+  assert.deepEqual(paths(fresh.remove), [inHome(sb, '.claude', 'skills', 'project-next')]);
+  assert.deepEqual([fresh.pushurl, fresh.conflicts, fresh.kept], [[], [], NEUTRAL_KEPT]);
+  const text = run([...sb.rootArgs, '--neutral', '--dry-run']);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /--neutral dry-run, nothing is written/);
+  assert.match(text.stdout, /no kit deploy in place under/);
+  assert.match(text.stdout, /kept as deployed: ~\/\.claude\/settings\.json, ~\/\.codex\/config\.toml, ~\/\.codex\/hooks\.json, ~\/\.codex\/rules\/, <runtime>\/hooks\/, ~\/\.claude\/agents\/, MCP registrations/);
+  assert.match(text.stdout, /neutral: 1 to create, 2 to modify, 1 to remove, 0 unchanged/);
+  assert.deepEqual(treeHash(sb.root), before, 'the dry-run writes nothing');
+
+  // After a deploy: the 3 contract files and the 14 kit skill folders, nothing else.
+  materialize(sb);
+  const deployed = buildNeutralPlan(rootsOf(sb));
+  assert.equal(deployed.kind, 'neutral');
+  assert.deepEqual(deployed.create, []);
+  assert.deepEqual(deployed.modify.map((e) => pathKey(e.path)), contractPaths(sb).map(pathKey));
+  for (const e of deployed.modify) assert.ok(e.content.equals(Buffer.from(NEUTRAL_LINE)) && e.mode === 'whole', e.path);
+  assert.deepEqual(deployed.remove.map((e) => pathKey(e.path)).sort(), kitSkillPaths(sb).map(pathKey).sort());
+  for (const e of deployed.remove) assert.ok(e.kind === 'dir' && e.files.includes('SKILL.md'), e.path);
+  assert.deepEqual([deployed.pushurl, deployed.conflicts, deployed.listed], [[], [], []]);
+  // A folder where a contract file goes is a conflict (exit 1), as in the deploy plan.
+  fs.rmSync(path.join(sb.home, '.codex', 'AGENTS.md'));
+  fs.mkdirSync(path.join(sb.home, '.codex', 'AGENTS.md'));
+  const conflict = run([...sb.rootArgs, '--neutral']);
+  assert.equal(conflict.status, 1);
+  assert.match(conflict.stdout, /conflicts \(1\):[\s\S]*~\/\.codex\/AGENTS\.md {2}a folder stands where the neutral puts a file/);
+});
+
+test('deploy, neutral and the neutral rollback give back the deployed state byte for byte; --expect-clean fails while neutral', () => {
+  const sb = sandbox({ restore: true });
+  const d = apply(sb, '--retire-legacy-agents');
+  const deployedHome = treeHash(sb.home);
+  const deployedRuntime = treeHash(sb.runtime);
+  const repoDeployed = sha(demoConfig(sb));
+  const localDeployed = fs.readFileSync(sb.localConfig);
+  assert.equal(run([...sb.rootArgs, '--dry-run', '--expect-clean']).status, 0);
+  const h = (...p) => treeHash(path.join(sb.home, ...p));
+  const kept = () => ({
+    settings: h('.claude', 'settings.json'), toml: h('.codex', 'config.toml'), hooks: h('.codex', 'hooks.json'), rules: h('.codex', 'rules'),
+    agents: h('.claude', 'agents'), claudeJson: h('.claude.json'), dist: h('.claude', 'mcp-project-manager'), runtime: treeHash(sb.runtime),
+  });
+  const keptDeployed = kept();
+  const keep = untouched(sb);
+
+  const n = run([...sb.rootArgs, '--neutral', '--apply']);
+  assert.equal(n.status, 0, n.stdout + n.stderr);
+  const id = /neutral id (\S+)/.exec(n.stdout)?.[1];
+  assert.match(id, /^\d{8}-\d{6}-[0-9a-f]{4}$/);
+  assert.notEqual(id, d.id);
+  // The driver can take the id and the rollback command straight from the output.
+  assert.match(n.stdout, new RegExp(`roll back with: node scripts/deploy-kit\\.mjs --rollback ${id} --local-config "`));
+  assert.match(n.stdout, /process check: skipped/);
+  assert.match(n.stdout, /written: 0 created, 3 modified, 14 removed/);
+  const j = journalOf(sb, id);
+  assert.deepEqual([j.kind, j.status, j.deploy_options_recorded, j.pushurl, j.merges], ['neutral', 'applied', false, null, []]);
+  assert.deepEqual(j.kept, NEUTRAL_KEPT);
+  assert.equal(journalOf(sb, d.id).kind, 'deploy');
+  // The neutral state: one line in each contract file, no kit skill; settings, hooks, rules, agent
+  // definitions, MCP registrations, runtime, pushurl and the local config stay as deployed.
+  for (const p of contractPaths(sb)) assert.equal(fs.readFileSync(p, 'utf8'), NEUTRAL_LINE, p);
+  for (const p of kitSkillPaths(sb)) assert.ok(!fs.existsSync(p), p);
+  assert.deepEqual(kept(), keptDeployed);
+  assert.deepEqual(untouched(sb), keep);
+  assert.equal(sha(demoConfig(sb)), repoDeployed);
+  assert.ok(fs.readFileSync(sb.localConfig).equals(localDeployed), 'a neutral records no deploy options');
+  assert.deepEqual(neutralsInPlace(sb.localConfig).map((r) => r.id), [id]);
+  const neutralHome = treeHash(sb.home);
+
+  // --expect-clean fails and names the neutral; a deploy, a second neutral and the deploy's rollback are refused.
+  const ec = run([...sb.rootArgs, '--dry-run', '--expect-clean']);
+  assert.equal(ec.status, 1);
+  assert.match(ec.stdout, new RegExp(`neutral ${id} is in place .*roll it back with: node scripts/deploy-kit\\.mjs --rollback ${id}`));
+  assert.match(ec.stdout, /expect-clean: the plan is not empty/);
+  assert.deepEqual(JSON.parse(run([...sb.rootArgs, '--expect-clean', '--json']).stdout).neutral_in_place, [id]);
+  for (const args of [['--apply'], ['--neutral', '--apply']]) {
+    const r = run([...sb.rootArgs, ...args]);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, new RegExp(`neutral ${id} is in place; roll it back first`));
+  }
+  const early = rollback(sb, d.id);
+  assert.equal(early.status, 1);
+  assert.match(early.stderr, new RegExp(`roll back the latest first: ${id}`));
+  assert.match(run([...sb.rootArgs, '--neutral']).stdout, new RegExp(`neutral ${id} is in place`));
+  assert.deepEqual(treeHash(sb.home), neutralHome, 'the refused calls wrote nothing');
+
+  const r = rollback(sb, id);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, new RegExp(`rolled back neutral ${id}`));
+  // The deploy left an empty references/ in project-next (its old file went); the backup holds files only,
+  // so the journal's folder list brings it back.
+  assert.equal(treeHash(path.join(sb.home, '.claude', 'skills', 'project-next', 'references'))['.'], 'dir');
+  assert.deepEqual(treeHash(sb.home), deployedHome);
+  assert.deepEqual(treeHash(sb.runtime), deployedRuntime);
+  assert.equal(sha(demoConfig(sb)), repoDeployed);
+  assert.ok(fs.readFileSync(sb.localConfig).equals(localDeployed));
+  assert.equal(journalOf(sb, id).status, 'rolled-back');
+  assert.deepEqual(neutralsInPlace(sb.localConfig), []);
+  const clean = run([...sb.rootArgs, '--dry-run', '--expect-clean']);
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.doesNotMatch(clean.stdout, /neutral .* is in place/);
+  // The deploy underneath still rolls back.
+  assert.equal(rollback(sb, d.id).status, 0);
+});
+
+test('--ignore-pids lets through only the processes whose PID and creation time both match (fake process list)', () => {
+  const sb = sandbox({ restore: true });
+  const homeBefore = treeHash(sb.home);
+  const local = localOf(sb);
+  const A = '2026-10-30T08:00:00.1234567Z';
+  const B = '2026-10-30T08:05:00.7654321Z';
+  const procs = () => [
+    { pid: 4242, name: 'claude.exe', created: A, command_line: '' },
+    { pid: 5151, name: 'node.exe', created: B, command_line: 'node C:/example/npm/node_modules/@openai/codex/bin/codex.js' },
+    { pid: 6000, name: 'explorer.exe', created: A, command_line: '' },
+  ];
+  const neutralApply = (ignorePids, lister = procs) => applyDeploy(buildNeutralPlan(rootsOf(sb)), { localConfig: sb.localConfig, local, checkProcesses: true, listProcesses: lister, ignorePids });
+  for (const [ignore, refused] of [
+    [[], /running: claude\.exe \(pid 4242\), node\.exe \(pid 5151\);/],
+    [[{ pid: 4242, created: A }], /running: node\.exe \(pid 5151\);/],
+    // the right PID with another creation time is another process (Windows reuses PIDs)
+    [[{ pid: 4242, created: A }, { pid: 5151, created: A }], /running: node\.exe \(pid 5151\);/],
+    // the right creation time with another PID
+    [[{ pid: 4243, created: A }, { pid: 5151, created: B }], /running: claude\.exe \(pid 4242\);/],
+    // the same instant written differently is not an exact match
+    [[{ pid: 4242, created: '2026-10-30T08:00:00.123Z' }, { pid: 5151, created: B }], /running: claude\.exe \(pid 4242\);/],
+  ]) {
+    assert.throws(() => neutralApply(ignore), (e) => e instanceof DeployError && refused.test(e.message), JSON.stringify(ignore));
+  }
+  // A process without a creation time never matches.
+  assert.throws(() => neutralApply([{ pid: 4242, created: A }], () => [{ pid: 4242, name: 'claude.exe', created: null, command_line: '' }]), /claude\.exe \(pid 4242\)/);
+  assert.deepEqual(treeHash(sb.home), homeBefore);
+  assert.ok(!fs.existsSync(path.join(sb.privateDir, 'deploy')), 'refused before the backup');
+
+  // Every agent process listed exactly: the neutral goes in, and the gate names what it let through.
+  const all = [{ pid: 4242, created: A }, { pid: 5151, created: B }];
+  const a = neutralApply(all);
+  assert.equal(a.gate.status, 'clear');
+  assert.deepEqual(a.gate.ignored.map((p) => p.pid), [4242, 5151]);
+  assert.ok(fs.existsSync(path.join(sb.home, '.claude', 'AGENTS.md')), 'the missing contract file was created');
+  // The rollback applies the same rule: one more agent process refuses it, the listed ones do not.
+  const more = () => [...procs(), { pid: 7777, name: 'codex.exe', created: B, command_line: '' }];
+  assert.throws(() => rollbackDeploy(a.id, { localConfig: sb.localConfig, checkProcesses: true, listProcesses: more, ignorePids: all }), /running: codex\.exe \(pid 7777\);/);
+  assert.equal(journalOf(sb, a.id).status, 'applied');
+  const rb = rollbackDeploy(a.id, { localConfig: sb.localConfig, checkProcesses: true, listProcesses: procs, ignorePids: all });
+  assert.equal(rb.ok, true, rb.problems.join('\n'));
+  assert.deepEqual(rb.gate.ignored.map((p) => p.pid), [4242, 5151]);
+  assert.deepEqual(treeHash(sb.home), homeBefore, 'the created contract file is gone again');
+
+  // The file: a JSON list of {pid, created}; anything else is a usage error (exit 2) before anything runs.
+  const file = (name, text) => { const p = path.join(sb.root, name); fs.writeFileSync(p, text); return p; };
+  const ok = file('ok.json', JSON.stringify(all));
+  assert.deepEqual(readIgnorePids(ok), all);
+  assert.deepEqual(readIgnorePids(file('bom.json', '﻿[]')), []);
+  assert.throws(() => readIgnorePids(path.join(sb.root, 'missing.json')), UsageError);
+  for (const [name, text] of [['broken.json', '['], ['object.json', '{"pid": 4242, "created": "x"}'], ['string-pid.json', '[{"pid": "4242", "created": "x"}]'],
+    ['zero-pid.json', '[{"pid": 0, "created": "x"}]'], ['no-created.json', '[{"pid": 4242}]'], ['blank-created.json', '[{"pid": 4242, "created": " "}]']]) {
+    const p = file(name, text);
+    assert.throws(() => readIgnorePids(p), UsageError, name);
+    const r = run([...sb.rootArgs, '--neutral', '--apply', '--ignore-pids', p]);
+    assert.equal(r.status, 2, name);
+    assert.match(r.stderr, /--ignore-pids file/, name);
+  }
+  // It goes only with --apply (kit or neutral) and --rollback.
+  for (const args of [['--ignore-pids', ok], ['--neutral', '--ignore-pids', ok], ['--expect-clean', '--ignore-pids', ok], ['--apply', '--ignore-pids', '']]) {
+    assert.equal(run([...sb.rootArgs, ...args]).status, 2, args.join(' '));
+  }
+  assert.ok(!fs.existsSync(path.join(sb.home, '.claude', 'AGENTS.md')));
+  // On the command line (a redirected home, so the check itself is skipped).
+  const n = run([...sb.rootArgs, '--neutral', '--apply', '--ignore-pids', ok]);
+  assert.equal(n.status, 0, n.stdout + n.stderr);
+  const id = /neutral id (\S+)/.exec(n.stdout)?.[1];
+  const back = run(['--rollback', id, '--local-config', sb.localConfig, '--ignore-pids', ok]);
+  assert.equal(back.status, 0, back.stdout + back.stderr);
+  assert.deepEqual(treeHash(sb.home), homeBefore);
 });
 
 const drillDirs = [];

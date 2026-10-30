@@ -2,8 +2,9 @@
 // deploy-kit: deploy the AutoSkills kit to the user level (ADR-006 §2.7). Zero dependencies (Node >= 18).
 // The default is a dry-run that prints what a deploy would create, modify and remove, with a reason per item,
 // and writes nothing. --apply writes after a backup and keeps a journal; --rollback <deploy id> undoes one
-// deploy; --drill rehearses apply and rollback on a copy. The other writing modes are --init-local (the local
-// config) and --stage (a project-layout copy inside _private/ for the measurement scripts).
+// deploy; --drill rehearses apply and rollback on a copy; --neutral parks the kit's user-level skills and contract
+// for a measurement and is rolled back like a deploy. The other writing modes are --init-local (the local config)
+// and --stage (a project-layout copy inside _private/ for the measurement scripts).
 //
 // Usage:
 //   node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]
@@ -11,8 +12,14 @@
 //   node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>]
 //                               [--projects-root <dir>] [--local-config <file>]
 //   node scripts/deploy-kit.mjs --apply [--claude-contract import|inline] [--retire-legacy-agents] [--allow-running]
-//                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
-//   node scripts/deploy-kit.mjs --rollback <deploy id> [--whole-file] [--allow-running] [--local-config <file>]
+//                               [--ignore-pids <file>] [--home <dir>] [--runtime <dir>] [--projects-root <dir>]
+//                               [--local-config <file>]
+//   node scripts/deploy-kit.mjs --neutral [--dry-run] [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>]
+//                               [--local-config <file>]
+//   node scripts/deploy-kit.mjs --neutral --apply [--allow-running] [--ignore-pids <file>] [--home <dir>]
+//                               [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --rollback <deploy or neutral id> [--whole-file] [--allow-running] [--ignore-pids <file>]
+//                               [--local-config <file>]
 //   node scripts/deploy-kit.mjs --drill <dir> [--claude-contract import|inline] [--retire-legacy-agents]
 //                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
 //   node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]
@@ -45,8 +52,13 @@
 // <kit repo>/_private/deploy/, git-excluded):
 //   1. Running agents: on the real user directory it lists processes (structured output of Get-CimInstance on
 //      Windows, ps elsewhere; no localized text is parsed) and refuses while a claude or codex process runs,
-//      unless --allow-running. The check applies only to --apply, --neutral --apply (AS3-114) and --rollback
-//      on the real user directory; dry-run, --drill, --stage and a redirected --home never check.
+//      unless --allow-running. The check applies only to --apply, --neutral --apply and --rollback on the real
+//      user directory; dry-run, --drill, --stage and a redirected --home never check. --ignore-pids <file> lets
+//      through the processes listed in a JSON list of {"pid": <number>, "created": "<creation time>"}: a
+//      process passes only when both its PID and its creation time (as listProcesses reports it, UTC ISO 8601)
+//      match an entry; every other claude or codex process still refuses. The measurement driver lists the
+//      processes it started this way when it rolls back the neutral (AS3-120b). --apply is also refused while
+//      a neutral is in place: roll the neutral back first.
 //   2. Backup: every file the plan modifies or removes is copied to backup/ in the step-0 format
 //      (files/<drive>/<path> plus manifest.json with home, sources, links and files[].label/src/rel/size/
 //      sha256). Merged targets (settings.json, config.toml, workflow-rules.md) are labelled kit-merge, all
@@ -63,7 +75,8 @@
 //   - whole targets (skills, contract, agent definitions, hooks.json, rules, runtime files): the step-0
 //     restore tool (restore_tool in the local config) runs as restore.mjs --backup <dir> --only kit-whole
 //     --apply; it does not delete files, so the journal's created files and folders are removed here, removed
-//     links are made again and the pushurl originals restored.
+//     links are made again, removed folders get their subfolders back (empty ones included; the backup holds
+//     files only) and the pushurl originals restored.
 //   - merged targets (settings.json, config.toml, workflow-rules.md) are reversed from the journal: only the
 //     kit's keys, list entries and sections go and the target keys get their earlier values back; everything
 //     written since (a Codex trust section, a /config change) stays. A file that changed since the apply gets
@@ -71,6 +84,18 @@
 //   Every target is checked at the end: whole targets against the backup hashes, merged ones for "kit keys
 //   gone, target keys restored". A mismatch exits 1. After several deploys, roll back the latest first: an
 //   earlier deploy id is refused while a later one is still in place.
+// --neutral (v2 appendix D) parks the user level for a measurement, so the kit version under test is read
+// only from the test repo's project level (Claude prefers a user-level skill over a project one of the same
+// name; Codex lists both). The plan: remove the 7 kit skill folders from ~/.claude/skills and ~/.agents/skills
+// and put the one line NEUTRAL_LINE (an HTML comment, no rule) in ~/.claude/CLAUDE.md, ~/.claude/AGENTS.md and
+// ~/.codex/AGENTS.md (created when missing). settings.json, config.toml, hooks.json, the Codex rules, the
+// runtime hooks, the agent definitions and the MCP registrations stay as deployed; the journal lists them
+// under kept for the measurement manifest. Without --apply it is a dry-run. --neutral --apply goes through the
+// same process check, backup and journal as --apply (journal kind "neutral", no deploy_options), prints the
+// neutral id and the rollback command; --rollback <neutral id> restores the deployed state byte for byte. A
+// deploy below the neutral cannot be rolled back before it (latest first), and --dry-run --expect-clean exits
+// 1 while it is in place. check-kit recognises the neutral contract files by NEUTRAL_MARKER.
+//
 // --drill <dir> rehearses a deploy (v2 appendix C) inside <dir>/<timestamp>/, which must lie inside
 // <kit repo>/_private/: a drill home with copies of the kit-related files of the source home (never
 // ~/.claude.json), an empty runtime and a new git repository for pushurl. It applies, rolls back, compares
@@ -102,11 +127,11 @@
 // Exit codes: 0 = plan printed (with --expect-clean: the plan is empty), local config written or already
 // current, stage written, deployed, rolled back and verified, or drill passed. 1 = the plan has conflicts (a
 // folder where a file must go, a merged file that cannot be read); with --expect-clean the plan is not empty;
-// --apply refused (a claude or codex process runs, conflicts) or failed and rolled back; --rollback left a
-// target that does not match; the drill found a difference. 2 = usage or setup error (unknown option, missing
+// --apply or --neutral --apply refused (a claude or codex process runs, conflicts, a neutral in place) or failed
+// and rolled back; --rollback left a target that does not match; the drill found a difference. 2 = usage or setup error (unknown option, missing
 // local config, portable_node or restore tool, a kit source missing in the repo, a stage or drill folder
-// outside _private/ or not replaceable, an unknown or already rolled back deploy id, a mode that is not
-// implemented yet).
+// outside _private/ or not replaceable, an unknown or already rolled back deploy id, an --ignore-pids file
+// that is not a list of PID and creation time).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -125,9 +150,12 @@ import { planRepos, scanRepos, applyPlan, readLog, revertLog, NO_PUSH } from './
 const USAGE = 'usage: node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]\n'
   + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
   + '       node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
-  + '       node scripts/deploy-kit.mjs --apply [--claude-contract import|inline] [--retire-legacy-agents] [--allow-running]\n'
+  + '       node scripts/deploy-kit.mjs --apply [--claude-contract import|inline] [--retire-legacy-agents] [--allow-running] [--ignore-pids <file>]\n'
   + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
-  + '       node scripts/deploy-kit.mjs --rollback <deploy id> [--whole-file] [--allow-running] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --neutral [--dry-run] [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --neutral --apply [--allow-running] [--ignore-pids <file>]\n'
+  + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --rollback <deploy or neutral id> [--whole-file] [--allow-running] [--ignore-pids <file>] [--local-config <file>]\n'
   + '       node scripts/deploy-kit.mjs --drill <dir> [--claude-contract import|inline] [--retire-legacy-agents]\n'
   + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
   + '       node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]\n'
@@ -135,8 +163,6 @@ const USAGE = 'usage: node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude
 
 const SELF = fileURLToPath(import.meta.url);
 const WIN = process.platform === 'win32';
-// Modes of later tasks: named here so the message says where they come from, not "unknown option".
-const LATER = { neutral: 'AS3-114' };
 const STAGE_LAYOUTS = ['project'];
 export const STAGE_MANIFEST = 'stage-manifest.json';
 const CANARIES = {
@@ -258,13 +284,16 @@ function pushurlShown(e, s) {
   return own ? `${s(e.repo)}/.git/config` : s(e.config);
 }
 
-/** JSON form of the plan: absolute paths with /, no file content. expectClean adds expect_clean and clean. */
-export function planJson(plan, { expectClean = false } = {}) {
+/** JSON form of the plan: absolute paths with /, no file content. expectClean adds expect_clean and clean;
+ *  neutralInPlace (ids) is added when given; a neutral plan has mode neutral-dry-run and its kept list. */
+export function planJson(plan, { expectClean = false, neutralInPlace } = {}) {
   const roots = { home: slash(plan.roots.home), runtime: slash(plan.roots.runtime), projects_root: slash(plan.roots.projectsRoot) };
   const file = (e) => ({ path: slash(e.path), group: e.group, mode: e.mode, reason: e.reason, ...(e.source ? { source: slash(e.source) } : {}) });
   return {
-    tool: 'deploy-kit', mode: 'dry-run', roots, options: plan.options,
+    tool: 'deploy-kit', mode: plan.kind === 'neutral' ? 'neutral-dry-run' : 'dry-run', roots, options: plan.options,
     ...(expectClean ? { expect_clean: true, clean: planIsEmpty(plan) } : {}),
+    ...(neutralInPlace ? { neutral_in_place: neutralInPlace } : {}),
+    ...(plan.kept ? { kept: plan.kept } : {}),
     create: plan.create.map(file), modify: plan.modify.map(file),
     remove: plan.remove.map((e) => ({ path: slash(e.path), kind: e.kind, files: e.files, group: e.group, reason: e.reason })),
     pushurl: plan.pushurl.map((e) => ({ repo: slash(e.repo), config: slash(e.config), remote: e.remote, original: e.original, value: NO_PUSH, reason: e.reason })),
@@ -275,7 +304,7 @@ export function planJson(plan, { expectClean = false } = {}) {
   };
 }
 
-function printPlan(plan, localConfig, { expectClean = false } = {}) {
+function printPlan(plan, localConfig, { expectClean = false, neutralInPlace = [] } = {}) {
   const s = (p) => shown(p, plan.roots);
   console.log(`deploy-kit: dry-run${expectClean ? ' --expect-clean' : ''}, nothing is written`);
   console.log(`  home ${slash(plan.roots.home)}; runtime ${slash(plan.roots.runtime)}; projects root ${slash(plan.roots.projectsRoot)}`);
@@ -298,6 +327,10 @@ function printPlan(plan, localConfig, { expectClean = false } = {}) {
   console.log(`  never touched: ${neverTouch(plan.roots).map(s).join(', ')}; ~/.workflow-core scripts/, docs/, backups/; the project-manager registration`);
   console.log(`deploy-kit: ${plan.create.length} to create, ${plan.modify.length + plan.pushurl.length} to modify (${plan.pushurl.length} pushurl), `
     + `${plan.remove.length} to remove, ${plan.unchanged} unchanged, ${plan.listed.length} listed${plan.conflicts.length ? `, ${plan.conflicts.length} conflict(s)` : ''}`);
+  if (neutralInPlace.length) {
+    console.log(`deploy-kit: neutral ${neutralInPlace.join(', ')} is in place (the kit skills and contract are parked for a measurement); `
+      + `roll it back with: ${rollbackCommand(neutralInPlace[neutralInPlace.length - 1], localConfig)}`);
+  }
   if (expectClean) {
     console.log(planIsEmpty(plan) ? 'deploy-kit: expect-clean: the plan is empty; the deploy is in place'
       : 'deploy-kit: expect-clean: the plan is not empty; the deployed state differs from the kit');
@@ -592,23 +625,55 @@ export function processCheckApplies(mode, home, realHome = os.homedir()) {
   return pathKey(realPathOf(home)) === pathKey(realPathOf(realHome));
 }
 
-function processGate({ check, allowRunning = false, lister = listProcesses }) {
-  if (!check) return { status: 'skipped', running: [] };
+/**
+ * Read an --ignore-pids file: a JSON list of {pid, created}, created being the creation time exactly as
+ * listProcesses reports it. Reads only.
+ * @param {string} file
+ * @returns {{pid: number, created: string}[]}
+ * @throws {UsageError} the file cannot be read, is not JSON, or an entry lacks a positive integer pid or a
+ *   non-empty created string
+ */
+export function readIgnorePids(file) {
+  let list;
+  try { list = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+    throw new UsageError(`--ignore-pids file ${slash(file)} cannot be read: ${e.message}`);
+  }
+  if (!Array.isArray(list)) throw new UsageError(`--ignore-pids file ${slash(file)}: not a JSON list of {"pid", "created"}`);
+  return list.map((it, i) => {
+    if (!isObject(it) || !Number.isInteger(it.pid) || it.pid <= 0 || typeof it.created !== 'string' || !it.created.trim()) {
+      throw new UsageError(`--ignore-pids file ${slash(file)}: entry ${i} needs a positive integer pid and a creation time string (created)`);
+    }
+    return { pid: it.pid, created: it.created };
+  });
+}
+
+/** True when an --ignore-pids entry names this very process: same PID and the same creation time. A PID
+ *  alone is not enough, since Windows reuses PIDs; a process without a known creation time never matches. */
+const ignoredBy = (ignore, p) => p.created != null && ignore.some((i) => i.pid === p.pid && i.created === p.created);
+
+function processGate({ check, allowRunning = false, lister = listProcesses, ignorePids = [] }) {
+  if (!check) return { status: 'skipped', running: [], ignored: [] };
   let list;
   try { list = lister(); } catch (e) {
-    if (allowRunning) return { status: 'unknown', running: [], note: e.message };
+    if (allowRunning) return { status: 'unknown', running: [], ignored: [], note: e.message };
     throw new DeployError(`cannot list the running processes (${e.message}); close every Claude Code and Codex session and retry, or pass --allow-running`);
   }
-  const running = list.filter(isAgentProcess);
+  const agents = list.filter(isAgentProcess);
+  const ignored = agents.filter((p) => ignoredBy(ignorePids, p));
+  const running = agents.filter((p) => !ignored.includes(p));
   if (running.length && !allowRunning) {
     throw new DeployError(`claude or codex is running: ${running.map((p) => `${p.name} (pid ${p.pid})`).join(', ')}; `
-      + 'close every Claude Code and Codex session (desktop background chats included) and retry, or pass --allow-running');
+      + 'close every Claude Code and Codex session (desktop background chats included) and retry, or pass --allow-running'
+      + `${ignored.length ? ` (${ignored.length} process(es) let through by --ignore-pids)` : ''}`);
   }
-  return { status: running.length ? 'allowed' : 'clear', running };
+  return { status: running.length ? 'allowed' : 'clear', running, ignored };
 }
 
 function gateLine(g) {
   if (g.status === 'skipped') return 'process check: skipped (not the real user directory)';
+  if (g.status === 'clear' && g.ignored.length) {
+    return `process check: no other claude or codex process running; ${g.ignored.map((p) => `${p.name} (pid ${p.pid})`).join(', ')} let through by --ignore-pids`;
+  }
   if (g.status === 'clear') return 'process check: no claude or codex process running';
   if (g.status === 'unknown') return `process check: could not list processes (${g.note}); continuing because of --allow-running`;
   return `process check: ${g.running.length} claude or codex process(es) running; continuing because of --allow-running`;
@@ -931,6 +996,21 @@ function kitHead(repo) {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
+/** Subfolders under dir, relative with / separators, sorted; links are not entered. */
+function listDirs(dir) {
+  const out = [];
+  const walk = (d, rel) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (!ent.isDirectory()) continue;
+      const r = rel ? `${rel}/${ent.name}` : ent.name;
+      out.push(r);
+      walk(path.join(d, ent.name), r);
+    }
+  };
+  walk(dir, '');
+  return out;
+}
+
 /** Remove a file, a link (never its target) or nothing. */
 function removePath(p, kind) {
   let st;
@@ -966,20 +1046,27 @@ function pruneEmpty(dir) {
 /**
  * Carry out a deploy plan: process check, backup, writes with a journal, deploy options. A failure after the
  * backup rolls the targets back at once (merged files from the backup too) and throws.
- * @param {object} plan from buildPlan
+ * @param {object} plan from buildPlan, or from buildNeutralPlan (kind 'neutral': no deploy options recorded)
  * @param {{localConfig: string, local: object, repo?: string, checkProcesses?: boolean, allowRunning?: boolean,
- *   listProcesses?: function, failAt?: number}} opts checkProcesses: run the running-agent check (the CLI sets it
- *   from processCheckApplies); listProcesses replaces the process lister (tests); failAt makes write step n fail
- *   after a partial write (tests of the automatic rollback)
+ *   listProcesses?: function, ignorePids?: object[], failAt?: number}} opts checkProcesses: run the running-agent
+ *   check (the CLI sets it from processCheckApplies); listProcesses replaces the process lister (tests);
+ *   ignorePids: the entries of an --ignore-pids file; failAt makes write step n fail after a partial write (tests
+ *   of the automatic rollback)
  * @returns {{id: string|null, dir: string|null, journal: object|null, gate: object, counts: object}} id null: the plan
  *   was empty, only the deploy options were recorded
- * @throws {DeployError} conflicts, running agents, a failed backup, or a failed write (rolled back)
+ * @throws {DeployError} conflicts, a neutral in place, running agents, a failed backup, or a failed write (rolled back)
  * @throws {UsageError} the restore tool is missing (a rollback would be impossible)
  */
-export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkProcesses = false, allowRunning = false, listProcesses: lister, failAt = 0 }) {
+export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkProcesses = false, allowRunning = false, listProcesses: lister, ignorePids = [], failAt = 0 }) {
+  const neutral = plan.kind === 'neutral';
   if (plan.conflicts.length) throw new DeployError(`the plan has ${plan.conflicts.length} conflict(s); run a dry-run to see them, fix them and retry`);
   assertInsideRoots(plan);
-  const gate = processGate({ check: checkProcesses, allowRunning, lister });
+  // A deploy or a second neutral on top of a neutral would be undone by the neutral's rollback.
+  const parked = neutralsInPlace(localConfig);
+  if (parked.length) {
+    throw new DeployError(`neutral ${parked.map((r) => r.id).join(', ')} is in place; roll it back first: ${rollbackCommand(parked[parked.length - 1].id, localConfig)}`);
+  }
+  const gate = processGate({ check: checkProcesses, allowRunning, lister, ignorePids });
   const restoreTool = local.restore_tool;
   if (!restoreTool || !fs.existsSync(restoreTool)) {
     throw new UsageError(`restore_tool ${restoreTool ? slash(restoreTool) : '(not set)'} not found in the local config; --rollback needs the step-0 restore.mjs`);
@@ -987,7 +1074,7 @@ export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkPr
   const counts = { created: 0, modified: 0, merged: 0, removed: 0, pushurl: 0 };
   const rawLocal = JSON.parse(fs.readFileSync(localConfig, 'utf8').replace(/^﻿/, ''));
   if (planIsEmpty(plan)) {
-    if (stable(rawLocal.deploy_options) !== stable(plan.options)) writeDeployOptions(localConfig, plan.options);
+    if (!neutral && stable(rawLocal.deploy_options) !== stable(plan.options)) writeDeployOptions(localConfig, plan.options);
     return { id: null, dir: null, journal: null, gate, counts };
   }
 
@@ -1009,8 +1096,8 @@ export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkPr
   const backupOf = new Map(manifest.files.map((f) => [pathKey(f.src), f]));
 
   const journal = {
-    tool: 'deploy-kit', version: 1, id, applied_at: new Date().toISOString(), status: 'applying', kit_head: kitHead(repo),
-    options: plan.options,
+    tool: 'deploy-kit', version: 1, id, kind: neutral ? 'neutral' : 'deploy', applied_at: new Date().toISOString(), status: 'applying', kit_head: kitHead(repo),
+    options: plan.options, ...(neutral ? { kept: NEUTRAL_KEPT } : {}),
     roots: { home: plan.roots.home, runtime: plan.roots.runtime, projects_root: plan.roots.projectsRoot },
     local_config: path.resolve(localConfig), restore_tool: restoreTool, backup: BACKUP_DIR,
     created: [], created_dirs: [], modified: [], removed: [], merges: [], pushurl: null,
@@ -1053,7 +1140,10 @@ export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkPr
     for (const e of plan.remove) {
       let target = null;
       if (e.kind === 'link') { try { target = fs.readlinkSync(e.path); } catch { /* gone */ } }
-      journal.removed.push({ path: e.path, kind: e.kind, files: e.files, group: e.group, ...(target ? { target, dir_link: fs.statSync(e.path, { throwIfNoEntry: false })?.isDirectory() ?? false } : {}) });
+      journal.removed.push({
+        path: e.path, kind: e.kind, files: e.files, group: e.group, ...(e.kind === 'dir' ? { dirs: listDirs(e.path) } : {}),
+        ...(target ? { target, dir_link: fs.statSync(e.path, { throwIfNoEntry: false })?.isDirectory() ?? false } : {}),
+      });
       save();
       tick(null);
       removePath(e.path, e.kind);
@@ -1068,9 +1158,11 @@ export function applyDeploy(plan, { localConfig, local, repo = KIT_REPO, checkPr
       counts.pushurl = plan.pushurl.length;
     }
     tick(null);
-    journal.deploy_options_recorded = true;
-    save();
-    writeDeployOptions(localConfig, plan.options);
+    if (!neutral) {
+      journal.deploy_options_recorded = true;
+      save();
+      writeDeployOptions(localConfig, plan.options);
+    }
     journal.status = 'applied';
     save();
   } catch (err) {
@@ -1116,6 +1208,10 @@ function doRollback(j, dir, { wholeFile, restoreTool, localConfig, readonlyDirs 
     if (!fs.existsSync(rm.path)) {
       try { fs.symlinkSync(rm.target, rm.path, rm.dir_link ? 'junction' : 'file'); } catch (e) { problems.push(`link ${slash(rm.path)} not made again: ${e.message}`); }
     }
+  }
+  // The backup holds files only: removed folders get their (possibly empty) subfolders back.
+  for (const rm of j.removed.filter((x) => x.kind === 'dir' && Array.isArray(x.dirs))) {
+    for (const d of ['', ...rm.dirs]) fs.mkdirSync(path.join(rm.path, ...d.split('/').filter(Boolean)), { recursive: true });
   }
 
   // Merged targets: reverse what the kit added, keep the rest.
@@ -1205,6 +1301,9 @@ function doRollback(j, dir, { wholeFile, restoreTool, localConfig, readonlyDirs 
     }
   }
   for (const rm of j.removed.filter((x) => x.kind === 'link' && x.target)) if (!fs.existsSync(rm.path)) problems.push(`link ${slash(rm.path)} is missing`);
+  for (const rm of j.removed.filter((x) => x.kind === 'dir' && Array.isArray(x.dirs))) {
+    for (const d of rm.dirs) if (!fs.existsSync(path.join(rm.path, ...d.split('/')))) problems.push(`folder ${slash(path.join(rm.path, ...d.split('/')))} is missing`);
+  }
   return { ok: !problems.length, problems: [...new Set(problems)], notes, diffs };
 }
 
@@ -1223,12 +1322,13 @@ function deployRecords(root) {
  * Roll back one deploy. Refused while a later deploy is still in place (roll back the latest first).
  * @param {string} id
  * @param {{localConfig: string, wholeFile?: boolean, checkProcesses?: boolean|null, allowRunning?: boolean,
- *   listProcesses?: function}} opts checkProcesses null: decided by processCheckApplies from the deploy's home
+ *   listProcesses?: function, ignorePids?: object[]}} opts checkProcesses null: decided by processCheckApplies from
+ *   the deploy's home; ignorePids: the entries of an --ignore-pids file
  * @returns {{id: string, ok: boolean, problems: string[], notes: string[], diffs: object[], gate: object, journal: object}}
  * @throws {UsageError} unknown or malformed id, already rolled back, restore tool missing
  * @throws {DeployError} a later deploy is in place, or claude or codex is running
  */
-export function rollbackDeploy(id, { localConfig, wholeFile = false, checkProcesses = null, allowRunning = false, listProcesses: lister }) {
+export function rollbackDeploy(id, { localConfig, wholeFile = false, checkProcesses = null, allowRunning = false, listProcesses: lister, ignorePids = [] }) {
   if (!DEPLOY_ID_RE.test(id)) throw new UsageError(`not a deploy id: ${id} (form 20261030-091500-ab12)`);
   const root = deployRootOf(localConfig);
   const dir = path.join(root, id);
@@ -1240,7 +1340,7 @@ export function rollbackDeploy(id, { localConfig, wholeFile = false, checkProces
     throw new DeployError(`deploy ${id} has later deploys still in place; roll back the latest first: ${later.reverse().map((r) => r.id).join(', ')}`);
   }
   const check = checkProcesses ?? processCheckApplies('rollback', j.roots.home);
-  const gate = processGate({ check, allowRunning, lister });
+  const gate = processGate({ check, allowRunning, lister, ignorePids });
   let local = {};
   try { local = readLocalConfig(localConfig); } catch { /* fall back to the journal */ }
   const restoreTool = local.restore_tool || j.restore_tool;
@@ -1250,6 +1350,93 @@ export function rollbackDeploy(id, { localConfig, wholeFile = false, checkProces
   j.rollback = { at: new Date().toISOString(), whole_file: wholeFile, automatic: false, problems: rb.problems, notes: rb.notes };
   writeJsonFile(path.join(dir, JOURNAL), j);
   return { id, ...rb, gate, journal: j };
+}
+
+// ---------- neutral (measurement) ----------
+
+// The one line each contract file holds while the user level is neutral (v2 appendix D). An HTML comment:
+// no rule, skill, tool or hint that a measurement runs, so neither platform reads workflow instructions from
+// the user level. check-kit recognises the neutral state by NEUTRAL_MARKER (isNeutralText).
+export const NEUTRAL_MARKER = 'autoskills:neutral';
+export const NEUTRAL_LINE = `<!-- ${NEUTRAL_MARKER} -->\n`;
+// What a neutral leaves as deployed; the journal lists it (kept) for the measurement manifest.
+export const NEUTRAL_KEPT = [
+  '~/.claude/settings.json', '~/.codex/config.toml', '~/.codex/hooks.json', '~/.codex/rules/', '<runtime>/hooks/',
+  '~/.claude/agents/', 'MCP registrations (~/.claude.json, mcp_servers in ~/.codex/config.toml)',
+];
+
+/** True when text is the neutral content of a contract file (a BOM, CRLF and surrounding blanks allowed). */
+export function isNeutralText(text) {
+  return String(text).replace(/^﻿/, '').trim() === NEUTRAL_LINE.trim();
+}
+
+/**
+ * The neutral plan: NEUTRAL_LINE in ~/.claude/CLAUDE.md, ~/.claude/AGENTS.md and ~/.codex/AGENTS.md (created
+ * when missing), and the 7 kit skill folders in ~/.claude/skills and ~/.agents/skills removed. Nothing else is
+ * planned. Reads only.
+ * @param {{home: string, runtime: string, projectsRoot: string}} roots
+ * @returns {object} a plan in the shape of buildPlan with kind 'neutral', options null, no pushurl and kept
+ */
+export function buildNeutralPlan(roots) {
+  const t = targetMap(roots);
+  const plan = {
+    kind: 'neutral', roots, options: null, kept: NEUTRAL_KEPT,
+    create: [], modify: [], remove: [], pushurl: [], listed: [], conflicts: [], unchanged: 0, pushurlPlan: null,
+  };
+  const content = Buffer.from(NEUTRAL_LINE, 'utf8');
+  for (const p of [t.claudeMd, t.claudeAgentsMd, t.codexAgentsMd]) {
+    let st = null;
+    try { st = fs.lstatSync(p); } catch { /* missing: create */ }
+    const e = { path: p, content, group: 'contract', mode: 'whole', reason: 'one neutral line in place of the contract: no workflow rule at the user level while measuring (v2 appendix D)' };
+    if (!st) plan.create.push(e);
+    else if (!st.isFile()) plan.conflicts.push({ path: p, reason: `a ${st.isDirectory() ? 'folder' : 'link'} stands where the neutral puts a file` });
+    else if (sameBytes(p, content)) plan.unchanged++;
+    else plan.modify.push(e);
+  }
+  for (const dir of kitSkillDirs(roots)) {
+    let st;
+    try { st = fs.lstatSync(dir); } catch { continue; }
+    const kind = st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file';
+    plan.remove.push({
+      path: dir, kind, files: kind === 'dir' ? listFiles(dir) : [], group: 'skills',
+      reason: 'kit skill moved out while measuring: a user-level copy shadows (Claude) or doubles (Codex) the project-level one under test',
+    });
+  }
+  return plan;
+}
+
+/** The neutral records still in place under the deploy root of localConfig, oldest first. */
+export function neutralsInPlace(localConfig) {
+  return deployRecords(deployRootOf(localConfig)).filter((r) => r.journal.kind === 'neutral' && IN_PLACE.includes(r.journal.status));
+}
+
+/** The kit deploys still in place (not neutrals), oldest first. */
+function kitDeploysInPlace(localConfig) {
+  return deployRecords(deployRootOf(localConfig)).filter((r) => r.journal.kind !== 'neutral' && r.journal.status === 'applied');
+}
+
+function printNeutralPlan(plan, localConfig) {
+  const s = (p) => shown(p, plan.roots);
+  const deploys = kitDeploysInPlace(localConfig);
+  const parked = neutralsInPlace(localConfig);
+  console.log('deploy-kit: --neutral dry-run, nothing is written');
+  console.log(`  home ${slash(plan.roots.home)}; local config ${slash(localConfig)}`);
+  console.log(deploys.length ? `  kit deploy in place: ${deploys.map((r) => r.id).join(', ')}`
+    : `  no kit deploy in place under ${slash(deployRootOf(localConfig))}: the neutral parks what is there now`);
+  const group = (title, list, sign, line) => {
+    console.log(`${title} (${list.length}):`);
+    for (const e of list) console.log(`  ${sign} ${line(e)}`);
+  };
+  group('create', plan.create, '+', (e) => `${s(e.path)}  [${e.group}] ${e.reason}`);
+  group('modify', plan.modify, '~', (e) => `${s(e.path)}  [${e.group}] ${e.reason}`);
+  group('remove', plan.remove, '-', (e) => `${s(e.path)}${e.kind === 'dir' ? `/ (${e.files.length} file(s))` : e.kind === 'link' ? ' (link only, the target stays)' : ''}  [${e.group}] ${e.reason}`);
+  if (plan.conflicts.length) group('conflicts', plan.conflicts, '!', (e) => `${s(e.path)}  ${e.reason}`);
+  console.log(`  kept as deployed: ${plan.kept.join(', ')}`);
+  console.log(`deploy-kit: neutral: ${plan.create.length} to create, ${plan.modify.length} to modify, ${plan.remove.length} to remove, ${plan.unchanged} unchanged`
+    + `${plan.conflicts.length ? `, ${plan.conflicts.length} conflict(s)` : ''}`);
+  if (parked.length) {
+    console.log(`deploy-kit: neutral ${parked.map((r) => r.id).join(', ')} is in place; roll it back with: ${rollbackCommand(parked[parked.length - 1].id, localConfig)}`);
+  }
 }
 
 // ---------- drill ----------
@@ -1379,7 +1566,7 @@ function parseCli(argv) {
         'claude-contract': { type: 'string' }, 'retire-legacy-agents': { type: 'boolean' },
         home: { type: 'string' }, runtime: { type: 'string' }, 'projects-root': { type: 'string' }, 'local-config': { type: 'string' },
         apply: { type: 'boolean' }, rollback: { type: 'string' }, drill: { type: 'string' }, neutral: { type: 'boolean' },
-        'whole-file': { type: 'boolean' }, 'allow-running': { type: 'boolean' },
+        'whole-file': { type: 'boolean' }, 'allow-running': { type: 'boolean' }, 'ignore-pids': { type: 'string' },
         stage: { type: 'string' }, layout: { type: 'string' }, force: { type: 'boolean' }, 'expect-clean': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -1389,14 +1576,22 @@ function parseCli(argv) {
     throw new UsageError(e.message);
   }
   if (a.help) return { help: true };
-  for (const [flag, task] of Object.entries(LATER)) {
-    if (a[flag] !== undefined) throw new UsageError(`--${flag} is not implemented yet (${task})`);
-  }
   const given = (...flags) => flags.filter((f) => a[f] !== undefined).map((f) => `--${f}`);
   const modes = given('apply', 'rollback', 'drill', 'stage', 'init-local');
   if (modes.length > 1) throw new UsageError(`${modes.join(' and ')} exclude each other`);
   if (a['whole-file'] !== undefined && a.rollback === undefined) throw new UsageError('--whole-file goes with --rollback');
   if (a['allow-running'] !== undefined && a.apply === undefined && a.rollback === undefined) throw new UsageError('--allow-running goes with --apply or --rollback');
+  if (a['ignore-pids'] !== undefined && a.apply === undefined && a.rollback === undefined) throw new UsageError('--ignore-pids goes with --apply or --rollback');
+  if (a.neutral) {
+    // The neutral plan is fixed: no deploy options, no expect-clean of its own, no other mode.
+    const extra = given('rollback', 'drill', 'stage', 'init-local', 'expect-clean', 'claude-contract', 'retire-legacy-agents');
+    if (extra.length) throw new UsageError(`--neutral takes only --dry-run, --apply, --json, --allow-running, --ignore-pids and the root options (not ${extra.join(', ')})`);
+  }
+  let ignorePids = [];
+  if (a['ignore-pids'] !== undefined) {
+    if (!a['ignore-pids'].trim()) throw new UsageError('--ignore-pids needs a file');
+    ignorePids = readIgnorePids(path.resolve(a['ignore-pids']));
+  }
   if (a['init-local'] && (a['dry-run'] || a.json || a.home !== undefined || a['claude-contract'] !== undefined || a['retire-legacy-agents'])) {
     throw new UsageError('--init-local takes only --runtime, --projects-root and --local-config');
   }
@@ -1416,13 +1611,13 @@ function parseCli(argv) {
   if (a.rollback !== undefined) {
     // The roots come from the deploy's journal; only the local config says where the deploy records are.
     const extra = given('dry-run', 'json', 'expect-clean', 'claude-contract', 'retire-legacy-agents', 'home', 'runtime', 'projects-root');
-    if (extra.length) throw new UsageError(`--rollback takes only --whole-file, --allow-running and --local-config (not ${extra.join(', ')})`);
+    if (extra.length) throw new UsageError(`--rollback takes only --whole-file, --allow-running, --ignore-pids and --local-config (not ${extra.join(', ')})`);
     if (!a.rollback.trim()) throw new UsageError('--rollback needs a deploy id');
-    return { mode: 'rollback', id: a.rollback.trim(), wholeFile: !!a['whole-file'], allowRunning: !!a['allow-running'], localConfig };
+    return { mode: 'rollback', id: a.rollback.trim(), wholeFile: !!a['whole-file'], allowRunning: !!a['allow-running'], ignorePids, localConfig };
   }
   if (a.apply || a.drill !== undefined) {
     const extra = given('dry-run', 'json', 'expect-clean');
-    const flag = a.apply ? '--apply' : '--drill';
+    const flag = a.apply ? (a.neutral ? '--neutral --apply' : '--apply') : '--drill';
     if (extra.length) throw new UsageError(`${flag} does not take ${extra.join(', ')}`);
     if (a.drill !== undefined && !a.drill.trim()) throw new UsageError('--drill needs a folder');
   }
@@ -1433,9 +1628,10 @@ function parseCli(argv) {
   }
   const contract = a['claude-contract'] ?? DEFAULT_OPTIONS.claude_contract;
   if (!CLAUDE_CONTRACT_MODES.includes(contract)) throw new UsageError(`--claude-contract must be import or inline: ${contract}`);
-  const mode = a['init-local'] ? 'init-local' : a.apply ? 'apply' : a.drill !== undefined ? 'drill' : 'dry-run';
+  const mode = a.neutral ? (a.apply ? 'neutral-apply' : 'neutral')
+    : a['init-local'] ? 'init-local' : a.apply ? 'apply' : a.drill !== undefined ? 'drill' : 'dry-run';
   return {
-    mode, json: !!a.json, claudeContract: contract, expectClean: !!a['expect-clean'], drill: a.drill, allowRunning: !!a['allow-running'],
+    mode, json: !!a.json, claudeContract: contract, expectClean: !!a['expect-clean'], drill: a.drill, allowRunning: !!a['allow-running'], ignorePids,
     retireLegacyAgents: !!a['retire-legacy-agents'], home: a.home, runtime: a.runtime, projectsRoot: a['projects-root'], localConfig,
   };
 }
@@ -1451,7 +1647,7 @@ function printRollback(r) {
   for (const n of r.notes) console.log(`  note: ${n}`);
   for (const d of r.diffs) console.log(`  diff of ${slash(d.path)} since the apply (- as deployed, + now):\n${d.diff}`);
   for (const p of r.problems) console.log(`  MISMATCH ${p}`);
-  console.log(r.ok ? `deploy-kit: rolled back ${r.id}; every target checked (whole files against the backup hashes, merged files: kit keys gone, earlier values back)`
+  console.log(r.ok ? `deploy-kit: rolled back ${r.journal.kind === 'neutral' ? 'neutral ' : ''}${r.id}; every target checked (whole files against the backup hashes, merged files: kit keys gone, earlier values back)`
     : `deploy-kit: rollback ${r.id} left ${r.problems.length} mismatch(es); see above (--whole-file restores the merged files from the backup)`);
 }
 
@@ -1479,7 +1675,7 @@ function run(argv) {
   }
 
   if (opts.mode === 'rollback') {
-    const r = rollbackDeploy(opts.id, { localConfig: opts.localConfig, wholeFile: opts.wholeFile, allowRunning: opts.allowRunning });
+    const r = rollbackDeploy(opts.id, { localConfig: opts.localConfig, wholeFile: opts.wholeFile, allowRunning: opts.allowRunning, ignorePids: opts.ignorePids });
     printRollback(r);
     return r.ok ? 0 : 1;
   }
@@ -1508,6 +1704,33 @@ function run(argv) {
     return r.ok ? 0 : 1;
   }
 
+  if (opts.mode === 'neutral' || opts.mode === 'neutral-apply') {
+    const plan = buildNeutralPlan(roots);
+    assertInsideRoots(plan);
+    if (opts.mode === 'neutral') {
+      if (opts.json) console.log(JSON.stringify(planJson(plan, { neutralInPlace: neutralsInPlace(opts.localConfig).map((x) => x.id) }), null, 2));
+      else printNeutralPlan(plan, opts.localConfig);
+      return plan.conflicts.length ? 1 : 0;
+    }
+    if (plan.conflicts.length) {
+      printNeutralPlan(plan, opts.localConfig);
+      throw new DeployError(`the neutral plan has ${plan.conflicts.length} conflict(s); nothing was written`);
+    }
+    const r = applyDeploy(plan, {
+      localConfig: opts.localConfig, local, checkProcesses: processCheckApplies('neutral-apply', roots.home), allowRunning: opts.allowRunning, ignorePids: opts.ignorePids,
+    });
+    console.log(`deploy-kit: neutral: home ${slash(roots.home)}`);
+    console.log(`  ${gateLine(r.gate)}`);
+    if (!r.id) { console.log('deploy-kit: the user level is already neutral; nothing to write'); return 0; }
+    const c = r.counts;
+    console.log(`  backup: ${r.journal.modified.length + r.journal.removed.length} target(s) in ${slash(path.join(r.dir, BACKUP_DIR))} (step-0 format, hashes checked)`);
+    console.log(`  written: ${c.created} created, ${c.modified} modified, ${c.removed} removed; journal ${slash(path.join(r.dir, JOURNAL))}`);
+    console.log(`  kept as deployed: ${NEUTRAL_KEPT.join(', ')}`);
+    console.log(`deploy-kit: neutral id ${r.id}`);
+    console.log(`deploy-kit: roll back with: ${rollbackCommand(r.id, opts.localConfig)}`);
+    return 0;
+  }
+
   const options = opts.expectClean
     ? (({ claude_contract: c, retire_legacy_agents: r }) => ({ claudeContract: c, retireLegacyAgents: r }))(recordedOptions(local))
     : { claudeContract: opts.claudeContract, retireLegacyAgents: opts.retireLegacyAgents };
@@ -1520,7 +1743,7 @@ function run(argv) {
       throw new DeployError(`the plan has ${plan.conflicts.length} conflict(s); nothing was written`);
     }
     const r = applyDeploy(plan, {
-      localConfig: opts.localConfig, local, checkProcesses: processCheckApplies('apply', roots.home), allowRunning: opts.allowRunning,
+      localConfig: opts.localConfig, local, checkProcesses: processCheckApplies('apply', roots.home), allowRunning: opts.allowRunning, ignorePids: opts.ignorePids,
     });
     console.log(`deploy-kit: apply: home ${slash(roots.home)}; runtime ${slash(roots.runtime)}; projects root ${slash(roots.projectsRoot)}`);
     console.log(`  ${gateLine(r.gate)}`);
@@ -1534,8 +1757,9 @@ function run(argv) {
     return 0;
   }
 
-  if (opts.json) console.log(JSON.stringify(planJson(plan, { expectClean: opts.expectClean }), null, 2));
-  else printPlan(plan, opts.localConfig, { expectClean: opts.expectClean });
+  const neutralInPlace = neutralsInPlace(opts.localConfig).map((x) => x.id);
+  if (opts.json) console.log(JSON.stringify(planJson(plan, { expectClean: opts.expectClean, neutralInPlace }), null, 2));
+  else printPlan(plan, opts.localConfig, { expectClean: opts.expectClean, neutralInPlace });
   if (opts.expectClean) return planIsEmpty(plan) ? 0 : 1;
   return plan.conflicts.length ? 1 : 0;
 }
