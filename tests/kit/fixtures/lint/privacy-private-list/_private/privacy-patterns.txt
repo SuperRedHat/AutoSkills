@@ -1,0 +1,4 @@
+# Synthetic private word list for the lint-kit tests (fake names only).
+Zorblax Industries
+雾松岭
+re:QX-\d{4}
