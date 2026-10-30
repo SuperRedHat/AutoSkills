@@ -1,0 +1,15 @@
+{
+  "tool": "deploy-kit",
+  "version": 1,
+  "id": "20261030-080000-a1b2",
+  "kind": "neutral",
+  "applied_at": "2026-10-30T08:00:00.000Z",
+  "status": "applied",
+  "kit_head": null,
+  "options": null,
+  "kept": [],
+  "created": [],
+  "modified": [],
+  "removed": [],
+  "merges": []
+}

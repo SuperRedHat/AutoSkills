@@ -10,5 +10,10 @@ A hand-written synthetic fake user directory with gaps, for tests/kit/check-kit.
 - Codex: model_reasoning_effort is xhigh, followUpQueueMode is queue, agents.default_subagent_reasoning_effort
   is set; no hooks.json, no rules file, no project-manager registration.
 - No project-manager build (the test writes no dist/index.js here).
+- No contract files, no kit skills, no project-verifier.md.
+- No heartbeat files (the hooks never ran), and runtime/hooks/guard.mjs is a stub whose --selftest prints
+  nothing.
+- projects/app becomes a repository (git-remotes.json) whose origin has no pushurl; its mirror remote is
+  already no_push.
 
 CLAUDE_CODE_EFFORT_LEVEL is set nowhere, so those rows pass.

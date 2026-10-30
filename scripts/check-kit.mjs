@@ -2,6 +2,7 @@
 // check-kit: read-only health check of the AutoSkills kit at the user level (ADR-006 §2.7). Zero
 // dependencies (Node >= 18). It prints a PASS, WARN, FAIL table; every FAIL names its fix, which for most
 // rows is a new run of deploy-kit.
+// lint-kit: allow-legacy check 6 reports old references by name: the retired skills and CouncilFlow
 //
 // Usage:
 //   node scripts/check-kit.mjs [--report-only] [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>]
@@ -13,8 +14,7 @@
 // the deny rules are generated from and the portable Node; without it those rows cannot be checked and the
 // local config row is a FAIL. Tests pass all roots and a local config in a temp dir.
 //
-// Checks (AS3-116a; AS3-116b adds duplicate skills, agent definitions, hook heartbeats, pushurl and the
-// project rule files):
+// Checks (1-2 from AS3-116a, 3-6 from AS3-116b):
 //   1. Effective config (v2 §3.5/§3.6, ADR-006 §2.5/§2.6):
 //      Claude  every kit key of config/claude/settings.fragment.json (worktree.baseRef, subagentPromptCacheTtl,
 //              env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS) as Claude sees it: managed settings win over
@@ -34,6 +34,31 @@
 //      PATH resolves to (WARN when it is the npm package or older than the desktop app's), the system and the
 //      portable Node, git, and the SHA-256 of the deployed project-manager dist/index.js (1.5.1 starts with
 //      dfe5f8a6; another build is a WARN, a missing one a FAIL). A missing tool is a WARN.
+//   3. Skill copies and agent definitions (v2 §3.6, ADR-006 §2.7), compared by name across ~/.claude/skills,
+//      ~/.agents/skills, ~/.codex/skills, ~/.gemini/skills, ~/.codex/agents/skills and ~/.workflow-core/skills:
+//      the 7 kit skills in ~/.claude/skills and ~/.agents/skills each equal to the repo folder (file set and
+//      bytes); the contract files equal to what deploy-kit writes in the recorded claude_contract mode; a
+//      retired skill in ~/.claude/skills or ~/.agents/skills, or any project-* copy in the other four, is a
+//      FAIL (an old copy or a duplicate). ~/.claude/agents/project-verifier.md must exist and equal the repo
+//      copy. The neutral profile of deploy-kit (contract files holding NEUTRAL_MARKER, or a neutral journal
+//      in place) is a FAIL that names --rollback <neutral id>, a WARN under --report-only; the contract and
+//      kit skill rows are left out while it is in place (they are parked). WARN only, each with a delete
+//      command you may run or not: folders whose name starts with "{" (a failed brace expansion), files in
+//      ~/.workflow-core/templates/ the kit no longer ships (such as global-codex-AGENTS.md), and the 3 old
+//      agents that --retire-legacy-agents archives.
+//   4. Hooks: for every hook script and platform the fragments register (config/claude/settings.fragment.json,
+//      config/codex/hooks.json), the last heartbeat in <runtime>/hooks/heartbeat/<hook>.jsonl. None at all is
+//      a FAIL (the hook never ran); one older than HEARTBEAT_STALE_DAYS is a WARN. The Codex hook trust
+//      state: reported when config.toml holds a hook trust entry, else "unknown (未知)" as a WARN. The
+//      deployed guard's --selftest runs its built-in samples (no stdin, no config, no heartbeat) with the
+//      portable Node; anything but "guard selftest: ok" is a FAIL.
+//   5. pushurl: every repository with remotes under the projects root has pushurl = no_push in its repo
+//      config. The scan is set-pushurl's own (planRepos: lstat walk, links never entered, worktrees once,
+//      measurement repos skipped); repos in a read-only folder are reported as skipped (跳过), a WARN.
+//   6. Project rule files: CLAUDE.md, AGENTS.md, AGENTS.override.md and .claude/CLAUDE.md of the projects
+//      root, of each folder in it and of each repository the scan finds. Lines that name a retired skill
+//      or CouncilFlow (or council) are listed with a one-line replacement each, as a WARN. Nothing is
+//      changed; set_project_dir stays valid in batch 1 and is not reported.
 //
 // Read only: nothing under the roots is written. CLIs are started only for --version, with
 // DISABLE_AUTOUPDATER=1 so none of them updates itself, and codex with CODEX_HOME pointed at an OS temp dir
@@ -41,7 +66,8 @@
 // version is read from its package.json instead of running it. Codex's SQLite files are never opened. The
 // registry and the Appx package are read through PowerShell's structured output (ConvertTo-Json; only value
 // names and error type names, no localized text). Environment values and secrets are never printed: the
-// environment rows name where a variable is set, not its value.
+// environment rows name where a variable is set, not its value. The pushurl scan runs only reading git
+// commands (rev-parse, remote, config --get-all); the guard runs only with --selftest.
 //
 // Exit codes: 0 = no FAIL, or --report-only (always 0; for the state before a deploy). 1 = at least one
 // FAIL. 2 = usage error (unknown option, empty path, a local config that exists but cannot be read).
@@ -53,10 +79,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  KIT_REPO, DEFAULT_LOCAL_CONFIG, KIT_HOOK_SCRIPTS, UsageError,
-  targetMap, readLocalConfig, claudePathRule, isKitHook, slash, pathKey, within,
+  KIT_REPO, DEFAULT_LOCAL_CONFIG, KIT_HOOK_SCRIPTS, KIT_SKILLS, RETIRED_SKILLS, KIT_AGENTS, LEGACY_AGENTS, LEGACY_SKILL_DIRS,
+  DEFAULT_OPTIONS, UsageError, targetMap, readLocalConfig, recordedOptions, desiredFiles, listFiles, claudePathRule, isKitHook,
+  slash, pathKey, within,
 } from './lib/kit-targets.mjs';
 import { keyValues, getValue, TomlEditError } from './lib/toml-edit.mjs';
+import { isNeutralText, neutralsInPlace, deployRootOf } from './deploy-kit.mjs';
+import { planRepos, scanRepos, DEFAULT_DEPTH, NO_PUSH } from './set-pushurl.mjs';
 
 const USAGE = 'usage: node scripts/check-kit.mjs [--report-only] [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]';
 
@@ -72,6 +101,30 @@ const CODEX_FORBIDDEN_KEY = ['agents', 'default_subagent_reasoning_effort'];
 const PM_SERVER_NAMES = ['project-manager', 'project_manager'];
 const MAX_LISTED = 4;
 const VERSION_TIMEOUT_MS = 30_000;
+const SELFTEST_TIMEOUT_MS = 60_000;
+// A heartbeat older than this is reported (WARN), never a FAIL: the hook did run once.
+export const HEARTBEAT_STALE_DAYS = 7;
+// The folders check 3 compares by name (v2 §3.6): the two the kit deploys to, then the old copy locations.
+const SKILL_BASES = ['claudeSkills', 'agentsSkills', 'codexSkills', 'geminiSkills', 'codexAgentSkills', 'workflowSkills'];
+// Project rule files check 6 reads in each project folder.
+const RULE_FILES = [['CLAUDE.md'], ['AGENTS.md'], ['AGENTS.override.md'], ['.claude', 'CLAUDE.md']];
+// What replaces each retired name (ADR-006 §2.2, §2.3): one line per hit in check 6.
+const REPLACEMENTS = {
+  'project-ask': 'ask in the chat; for a second opinion use project-consult',
+  'project-discuss': 'project-consult (a prompt file for an outside model)',
+  'project-init': 'project-plan (it took over init, design and change)',
+  'project-design': 'project-plan (it took over init, design and change)',
+  'project-change': 'project-plan (it took over init, design and change)',
+  'project-review': 'the platform\'s own review command; risky tasks get the project-verifier check in project-next',
+  councilflow: 'drop it (retired in AutoSkills 3.0); for a second opinion use project-consult',
+};
+const OLD_REFERENCES = [
+  { key: 'councilflow', re: /councilflow/gi },
+  // The council command or its .council folder (the same reading as lint-kit's legacy group).
+  { key: 'councilflow', re: /(?<![A-Za-z])council(?!flow)/gi },
+  { key: null, re: new RegExp(`(?<![A-Za-z0-9_-])(?:${RETIRED_SKILLS.join('|')})(?![A-Za-z0-9_-])`, 'g') },
+];
+const LINE_SHOWN = 120;
 
 // ---------- small helpers ----------
 
@@ -172,7 +225,9 @@ export function makeContext(cli = {}) {
     cli.home ? ` --home ${q(cli.home)}` : '', cli.runtime ? ` --runtime ${q(cli.runtime)}` : '',
     cli.projectsRoot ? ` --projects-root ${q(cli.projectsRoot)}` : '', cli.localConfig ? ` --local-config ${q(cli.localConfig)}` : '',
   ].join('');
-  return { roots, t, local, localConfig, localError, rootArgs };
+  // deploy-kit --rollback takes only the local config, not the roots (the journal holds them).
+  const localArg = cli.localConfig ? ` --local-config ${q(cli.localConfig)}` : '';
+  return { roots, t, local, localConfig, localError, rootArgs, localArg };
 }
 
 /** The path as shown: ~/... under home, <runtime>/... and <projects>/... under those roots, else absolute. */
@@ -189,10 +244,15 @@ function shown(p, roots) {
 
 const deployFix = (ctx) => `re-run deploy-kit: node scripts/deploy-kit.mjs --apply${ctx.rootArgs} (preview with --dry-run)`;
 
-/** Collects the rows of one section. */
+/**
+ * Collects the rows of one section. A FAIL always carries its fix; a WARN may carry one (a delete command
+ * you may run or not). lines: further lines listed under the row (check 6).
+ */
 function section(name) {
   const rows = [];
-  const add = (status, id, item, detail, fix) => rows.push({ section: name, id, item, status, detail, ...(status === 'FAIL' ? { fix } : {}) });
+  const add = (status, id, item, detail, fix, lines) => rows.push({
+    section: name, id, item, status, detail, ...(status === 'FAIL' || fix ? { fix } : {}), ...(lines?.length ? { lines } : {}),
+  });
   return { rows, pass: (...a) => add('PASS', ...a), warn: (...a) => add('WARN', ...a), fail: (...a) => add('FAIL', ...a) };
 }
 
@@ -631,16 +691,404 @@ export function versionChecks(ctx, sec, { facts, env = process.env, run = runVer
   }
 }
 
-// ---------- run ----------
+// ---------- check 3: skill copies and agent definitions ----------
+
+/** A PowerShell command that deletes p (a folder with -Recurse); the path in single quotes. */
+export function removeCommand(p, dir) {
+  return `Remove-Item -LiteralPath '${path.resolve(p).replace(/'/g, "''")}'${dir ? ' -Recurse' : ''}`;
+}
+
+/** Entry names of a folder, sorted; [] when it cannot be read. */
+function names(dir) {
+  try { return fs.readdirSync(dir).sort(); } catch { return []; }
+}
+
+/** True for a real folder (a link to one is not followed). */
+function isDir(p) {
+  try { return fs.lstatSync(p).isDirectory(); } catch { return false; }
+}
+
+function readBytes(p) {
+  try { return fs.readFileSync(p); } catch { return null; }
+}
 
 /**
- * Run checks 1 and 2. Reads only (CLIs are started for --version as runVersion describes).
- * @param {object} ctx makeContext
- * @param {{env?: object, facts?: object, managed?: string[], run?: Function}} [deps] tests replace the
- *   environment, the Windows facts, the managed settings files and the version runner
- * @returns {{section: string, id: string, item: string, status: string, detail: string, fix?: string}[]}
+ * How a deployed folder differs from the wanted files: 'missing', 'differs' (another file set or other
+ * bytes) or null when it is the same.
+ * @param {string} dir
+ * @param {{rel: string, content: Buffer}[]} want files relative to dir with / separators
  */
-export function runChecks(ctx, { env = process.env, facts, managed = managedSettingsFiles(), run = runVersion } = {}) {
+function folderState(dir, want) {
+  if (!isDir(dir)) return 'missing';
+  let have;
+  try { have = listFiles(dir); } catch { return 'differs'; }
+  if ([...have].sort().join('\n') !== want.map((w) => w.rel).sort().join('\n')) return 'differs';
+  return want.every((w) => readBytes(path.join(dir, ...w.rel.split('/')))?.equals(w.content)) ? null : 'differs';
+}
+
+/**
+ * Check 3. The wanted contract, skill and agent files come from kit-targets' desiredFiles (the bytes
+ * deploy-kit writes), in the claude_contract mode the local config records.
+ * @param {object} ctx makeContext
+ * @param {object} sec section collector
+ * @param {{reportOnly?: boolean}} [opts] the neutral row is a WARN under --report-only, else a FAIL
+ */
+export function copyChecks(ctx, sec, { reportOnly = false } = {}) {
+  const { t, roots } = ctx;
+  const s = (p) => shown(p, roots);
+  let options = { ...DEFAULT_OPTIONS };
+  try { options = recordedOptions(ctx.local); } catch { /* malformed deploy_options: deploy-kit reports it */ }
+  const fullRoots = { home: roots.home, runtime: roots.runtime ?? roots.home, projectsRoot: roots.projectsRoot ?? roots.home };
+  const desired = desiredFiles(fullRoots, { claudeContract: options.claude_contract });
+  const wantAt = (p) => desired.find((d) => pathKey(d.path) === pathKey(p));
+
+  // Neutral profile: the contract files hold the neutral line, or a neutral journal is still in place.
+  const contractFiles = [t.claudeMd, t.claudeAgentsMd, t.codexAgentsMd];
+  const neutralFiles = contractFiles.filter((p) => { const b = readBytes(p); return b !== null && isNeutralText(b.toString('utf8')); });
+  const records = neutralsInPlace(ctx.localConfig);
+  const neutral = neutralFiles.length > 0 || records.length > 0;
+  const neutralItem = 'neutral profile (deploy-kit --neutral)';
+  if (neutral) {
+    const id = records.length ? records[records.length - 1].id : null;
+    const detail = `neutral ${id ?? '(no journal found)'} in place: ${neutralFiles.length} of 3 contract files hold the neutral line; the kit skills and contract are parked for a measurement (their rows are skipped)`;
+    const fix = id
+      ? `roll the neutral back: node scripts/deploy-kit.mjs --rollback ${id}${ctx.localArg}`
+      : `roll the neutral back: node scripts/deploy-kit.mjs --rollback <neutral id>${ctx.localArg}; no neutral journal is in place under ${s(deployRootOf(ctx.localConfig))}, so without one ${deployFix(ctx)}`;
+    sec[reportOnly ? 'warn' : 'fail']('kit.neutral', neutralItem, detail, fix);
+  } else {
+    sec.pass('kit.neutral', neutralItem, 'not in place');
+    const bad = contractFiles.map((p) => {
+      const b = readBytes(p);
+      return b === null ? `${s(p)} missing` : b.equals(wantAt(p).content) ? null : `${s(p)} differs`;
+    }).filter(Boolean);
+    const item = 'contract files (~/.claude/AGENTS.md and CLAUDE.md, ~/.codex/AGENTS.md)';
+    if (bad.length) sec.fail('contract', item, `${listSome(bad)} (claude_contract ${options.claude_contract})`, deployFix(ctx));
+    else sec.pass('contract', item, `match the repo (claude_contract ${options.claude_contract})`);
+
+    for (const [key, label] of [['claudeSkills', 'claude'], ['agentsSkills', 'agents']]) {
+      const base = t[key];
+      const states = KIT_SKILLS.map((skill) => {
+        const dir = path.join(base, skill);
+        const want = desired.filter((d) => d.group === 'skills' && within(d.path, dir))
+          .map((d) => ({ rel: path.relative(dir, d.path).split(path.sep).join('/'), content: d.content }));
+        const st = folderState(dir, want);
+        return st ? `${skill} ${st}` : null;
+      }).filter(Boolean);
+      const item = `kit skills in ${s(base)}`;
+      if (states.length) sec.fail(`skills.kit.${label}`, item, `${states.length} of ${KIT_SKILLS.length}: ${listSome(states)}`, deployFix(ctx));
+      else sec.pass(`skills.kit.${label}`, item, `${KIT_SKILLS.length} skills match the repo`);
+    }
+  }
+
+  // Retired skills where the kit deploys: an old copy next to the kit skills. deploy-kit removes them from
+  // ~/.claude/skills only (LEGACY_SKILL_DIRS); in ~/.agents/skills they are deleted by hand.
+  for (const [key, label, byDeploy] of [['claudeSkills', 'claude', true], ['agentsSkills', 'agents', false]]) {
+    const base = t[key];
+    const old = names(base).filter((n) => RETIRED_SKILLS.includes(n));
+    const item = `retired skills in ${s(base)}`;
+    if (!old.length) { sec.pass(`skills.retired.${label}`, item, 'none'); continue; }
+    const fix = byDeploy ? deployFix(ctx) : `delete them (deploy-kit does not remove them here): ${old.map((n) => removeCommand(path.join(base, n), true)).join('; ')}`;
+    sec.fail(`skills.retired.${label}`, item, `${old.length} old cop${old.length === 1 ? 'y' : 'ies'}: ${listSome(old)}`, fix);
+  }
+
+  // The old copy locations: any project-* folder there is an old copy, and one named like a kit skill is a
+  // duplicate a platform may list beside the deployed one. deploy-kit removes them after a backup.
+  for (const loc of LEGACY_SKILL_DIRS.filter((l) => l.key !== 'claudeSkills')) {
+    const base = t[loc.key];
+    const old = names(base).filter((n) => /^project-/.test(n));
+    const id = `skills.old.${loc.key.replace(/Skills$/, '').replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+    const item = `old skill copies in ${s(base)}`;
+    if (!old.length) { sec.pass(id, item, 'none'); continue; }
+    const dup = old.filter((n) => KIT_SKILLS.includes(n));
+    sec.fail(id, item, `${old.length} project-* folder(s): ${listSome(old)}${dup.length ? `; ${dup.length} share a name with a kit skill (duplicate)` : ''}`, deployFix(ctx));
+  }
+
+  // Folders from a failed brace expansion ({project-init,project-next,...}): deploy-kit only lists them.
+  const braces = SKILL_BASES.flatMap((key) => names(t[key]).filter((n) => n.startsWith('{')).map((n) => path.join(t[key], n)));
+  if (braces.length) {
+    sec.warn('skills.brace', 'folders named {...} (failed brace expansion)', `${braces.length}: ${listSome(braces.map(s))}; not a skill; delete or keep, your call`,
+      braces.map((p) => removeCommand(p, isDir(p))).join('; '));
+  }
+
+  // Files in ~/.workflow-core/templates the kit no longer ships (such as global-codex-AGENTS.md); deploy-kit
+  // leaves them and lists them.
+  let stale = [];
+  try {
+    const own = new Set(listFiles(path.join(KIT_REPO, 'templates')));
+    stale = listFiles(t.workflowTemplates).filter((rel) => !own.has(rel)).map((rel) => path.join(t.workflowTemplates, ...rel.split('/')));
+  } catch { /* no deployed templates */ }
+  if (stale.length) {
+    sec.warn('templates.stale', 'outdated templates', `${stale.length} file(s) the kit no longer ships: ${listSome(stale.map(s))}; delete or keep, your call`,
+      stale.map((p) => removeCommand(p, false)).join('; '));
+  }
+
+  // Agent definitions: the verifier must be there and equal the repo copy.
+  for (const agent of KIT_AGENTS) {
+    const p = path.join(t.claudeAgents, `${agent}.md`);
+    const b = readBytes(p);
+    const item = `agent definition ${agent}`;
+    if (b === null) sec.fail(`agents.${agent}`, item, `${s(p)} does not exist (risky tasks and milestones get no independent check)`, deployFix(ctx));
+    else if (!b.equals(wantAt(p).content)) sec.fail(`agents.${agent}`, item, `${s(p)} differs from config/claude/agents/${agent}.md`, deployFix(ctx));
+    else sec.pass(`agents.${agent}`, item, `${s(p)} matches the repo`);
+  }
+  const legacy = LEGACY_AGENTS.map((a) => path.join(t.claudeAgents, `${a}.md`)).filter(isFile);
+  if (legacy.length) {
+    sec.warn('agents.legacy', 'old agents that call retired skills', `${listSome(legacy.map(s))}; kept unless you deploy with --retire-legacy-agents`,
+      `node scripts/deploy-kit.mjs --apply --retire-legacy-agents${ctx.rootArgs} archives, then removes them (preview with --dry-run)`);
+  }
+}
+
+// ---------- check 4: hooks ----------
+
+/**
+ * The hook scripts and platforms the fragments register, each once: [{hook, platform}] from
+ * config/claude/settings.fragment.json and config/codex/hooks.json (the platform from --platform).
+ */
+export function registeredHooks() {
+  const out = [];
+  const add = (hooks, fallback) => {
+    for (const groups of Object.values(isObject(hooks) ? hooks : {})) {
+      for (const g of Array.isArray(groups) ? groups : []) {
+        for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
+          const tokens = Array.isArray(h.args) ? [h.command, ...h.args] : commandTokens(h.command);
+          const i = tokens.indexOf('--platform');
+          const platform = i >= 0 && tokens[i + 1] ? tokens[i + 1] : fallback;
+          for (const hook of hookParts(h).scripts.map((x) => path.basename(x, '.mjs'))) {
+            if (!out.some((o) => o.hook === hook && o.platform === platform)) out.push({ hook, platform });
+          }
+        }
+      }
+    }
+  };
+  add(readFragment('config', 'claude', 'settings.fragment.json').hooks, 'claude');
+  add(readFragment('config', 'codex', 'hooks.json').hooks, 'codex');
+  return out;
+}
+
+/**
+ * The newest heartbeat time per platform in one heartbeat file ({ts, platform, event, decision} lines;
+ * lines that do not parse are skipped).
+ * @param {string} file
+ * @returns {{exists: boolean, last: Record<string, Date>}}
+ */
+export function lastHeartbeats(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return { exists: false, last: {} }; }
+  const last = {};
+  for (const line of text.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const at = new Date(e?.ts);
+    if (typeof e?.platform !== 'string' || Number.isNaN(at.getTime())) continue;
+    if (!last[e.platform] || at > last[e.platform]) last[e.platform] = at;
+  }
+  return { exists: true, last };
+}
+
+/**
+ * Codex hook trust as far as config.toml shows it: keys whose path names both a hook and trust. Where Codex
+ * really keeps the trust is settled by C0 (AS3-117); until then nothing found reads as unknown.
+ * @param {string|null} text config.toml, or null when it does not exist
+ * @returns {string[]} dotted key paths
+ */
+export function codexHookTrust(text) {
+  if (text === null) return [];
+  try {
+    // [projects.'<dir>'] trust_level is folder trust, even when the folder name holds "hook".
+    return keyValues(text).map((kv) => kv.path).filter((p) => p[0] !== 'projects' && p.some((x) => /hook/i.test(x)) && p.some((x) => /trust/i.test(x)))
+      .map((p) => p.join('.'));
+  } catch (e) {
+    if (e instanceof TomlEditError) return [];
+    throw e;
+  }
+}
+
+/**
+ * The guard's --selftest: its built-in samples only, in memory (no stdin, no config, no heartbeat).
+ * @param {string} node the Node to run it with
+ * @param {string} script the deployed guard.mjs
+ * @returns {{ok: boolean, out: string}} out: the last output line
+ */
+export function runSelftest(node, script) {
+  const r = spawnSync(node, [script, '--selftest'], { encoding: 'utf8', windowsHide: true, timeout: SELFTEST_TIMEOUT_MS });
+  if (r.error) return { ok: false, out: r.error.code || r.error.message };
+  const lines = `${r.stdout ?? ''}`.trim().split(/\r?\n/).filter(Boolean);
+  const out = lines[lines.length - 1] ?? '';
+  return { ok: r.status === 0 && /^guard selftest: ok \(\d+ samples\)$/.test(out), out: out || `exit ${r.status}, no output` };
+}
+
+/**
+ * Check 4.
+ * @param {object} ctx makeContext
+ * @param {object} sec section collector
+ * @param {{now?: Date, selftest?: Function}} [deps] tests fix the clock and may replace the selftest runner
+ */
+export function hookChecks(ctx, sec, { now = new Date(), selftest = runSelftest } = {}) {
+  const s = (p) => shown(p, ctx.roots);
+  const runtime = ctx.roots.runtime;
+  for (const { hook, platform } of registeredHooks()) {
+    const id = `hooks.heartbeat.${platform}.${hook}`;
+    const item = `heartbeat ${hook} (${platform})`;
+    if (!runtime) { sec.warn(id, item, 'no runtime root: the heartbeat folder is not known'); continue; }
+    const file = path.join(runtime, 'hooks', 'heartbeat', `${hook}.jsonl`);
+    const hb = lastHeartbeats(file);
+    const at = hb.last[platform];
+    if (!at) {
+      const how = platform === 'codex' ? 'trust the hook once in Codex /hooks, then run one tool call in Codex'
+        : `start a Claude Code session${hook === 'guard' ? ' and run one tool call' : ''}`;
+      sec.fail(id, item, hb.exists ? `no ${platform} line in ${s(file)}: the hook never ran` : `${s(file)} does not exist: the hook never ran`,
+        `${how}; if it stays empty, check the hook rows of check 1`);
+      continue;
+    }
+    const days = (now - at) / 86_400_000;
+    const age = days < 1 ? `${Math.max(0, Math.round(days * 24))} h ago` : `${Math.floor(days)} day(s) ago`;
+    if (days > HEARTBEAT_STALE_DAYS) sec.warn(id, item, `last ${at.toISOString()} (${age}; older than ${HEARTBEAT_STALE_DAYS} days)`);
+    else sec.pass(id, item, `last ${at.toISOString()} (${age})`);
+  }
+
+  let toml = null;
+  try { toml = fs.readFileSync(ctx.t.codexConfig, 'utf8'); } catch { /* missing */ }
+  const trust = codexHookTrust(toml);
+  if (trust.length) sec.pass('hooks.codex-trust', 'Codex hook trust', `read from ${s(ctx.t.codexConfig)}: ${listSome(trust)}`);
+  else sec.warn('hooks.codex-trust', 'Codex hook trust', `unknown (未知): no hook trust entry readable in ${s(ctx.t.codexConfig)}; trust the AutoSkills hook once in Codex /hooks`);
+
+  const item = 'guard --selftest (deployed rules)';
+  if (!runtime) { sec.warn('hooks.selftest.guard', item, 'no runtime root: the deployed guard is not known'); return; }
+  const guard = path.join(runtime, 'hooks', 'guard.mjs');
+  if (!isFile(guard)) { sec.fail('hooks.selftest.guard', item, `${s(guard)} does not exist`, deployFix(ctx)); return; }
+  const portable = ctx.local?.portable_node;
+  const node = portable && isFile(portable) ? portable : process.execPath;
+  const via = node === portable ? 'portable Node' : 'the Node running check-kit; the portable Node was not found';
+  const r = selftest(node, guard);
+  if (r.ok) sec.pass('hooks.selftest.guard', item, `${r.out} (${via})`);
+  else sec.fail('hooks.selftest.guard', item, `${s(guard)} --selftest: ${r.out} (${via})`, deployFix(ctx));
+}
+
+// ---------- check 5: pushurl ----------
+
+/**
+ * Check 5 with set-pushurl's own plan (read only: rev-parse, remote, config --get-all). A remote whose repo
+ * config is not no_push is a FAIL; repos in a read-only folder are skipped (跳过) and reported as a WARN.
+ */
+export function pushurlChecks(ctx, sec) {
+  const s = (p) => shown(p, ctx.roots);
+  const root = ctx.roots.projectsRoot;
+  const item = 'pushurl = no_push';
+  if (!root) { sec.warn('pushurl.repos', item, 'no projects root: not checked'); return; }
+  if (!isDir(root)) { sec.warn('pushurl.repos', item, `${s(root)} is not a folder: not checked`); return; }
+  const plan = planRepos(root, { readonlyDirs: ctx.local?.readonly_dirs ?? [] });
+  const missing = plan.repos.flatMap((r) => r.remotes.filter((m) => m.action === 'set').map((m) => `${s(r.path)} (${m.name})`));
+  const remotes = plan.repos.reduce((n, r) => n + r.remotes.length, 0);
+  const links = plan.links.length ? `; ${plan.links.length} link(s) not followed` : '';
+  if (missing.length) {
+    sec.fail('pushurl.repos', item, `${missing.length} of ${remotes} remote(s) in ${plan.repos.length} repo(s) without ${NO_PUSH}: ${listSome(missing)}${links}`, deployFix(ctx));
+  } else {
+    sec.pass('pushurl.repos', item, `${plan.repos.length} repo(s) with remotes, ${remotes} remote(s), all ${NO_PUSH}${links}${ctx.local ? '' : ' (no local config: read-only folders not known)'}`);
+  }
+  const outside = plan.repos.flatMap((r) => r.remotes.filter((m) => m.outside.length).map((m) => `${s(r.path)} (${m.name})`));
+  if (outside.length) {
+    sec.warn('pushurl.outside', 'pushurl set outside the repo config', `${listSome(outside)}: git also pushes to a pushurl from the global or an included config; check it by hand`);
+  }
+  const ro = plan.skipped.filter((x) => x.reason.startsWith('read-only dir'));
+  if (ro.length) {
+    sec.warn('pushurl.readonly', 'pushurl in read-only folders', `skipped (跳过): ${listSome(ro.map((x) => s(x.path)))}; their .git/config is not changed; set ${NO_PUSH} there by hand if you want`);
+  }
+  const failed = plan.skipped.filter((x) => x.reason.startsWith('git failed'));
+  if (failed.length) sec.warn('pushurl.git-failed', 'repos git could not read', listSome(failed.map((x) => `${s(x.path)}: ${x.reason}`)));
+}
+
+// ---------- check 6: project rule files ----------
+
+/**
+ * The lines of a rule file that name a retired skill or CouncilFlow, each with its replacement.
+ * @param {string} text
+ * @returns {{line: number, text: string, hits: string[], suggestion: string}[]}
+ */
+export function oldReferences(text) {
+  const out = [];
+  String(text).replace(/^﻿/, '').split(/\r?\n/).forEach((line, i) => {
+    const hits = [];
+    const trimmed = line.trim();
+    let first = trimmed.length;
+    for (const r of OLD_REFERENCES) {
+      for (const m of trimmed.matchAll(r.re)) {
+        const key = r.key ?? m[0];
+        if (!hits.includes(key)) hits.push(key);
+        first = Math.min(first, m.index);
+      }
+    }
+    if (!hits.length) return;
+    // A long line is cut to LINE_SHOWN characters around its first hit.
+    const start = trimmed.length > LINE_SHOWN && first > LINE_SHOWN - 40 ? first - 40 : 0;
+    const cut = trimmed.slice(start, start + LINE_SHOWN);
+    out.push({
+      line: i + 1, text: `${start ? '...' : ''}${cut}${start + LINE_SHOWN < trimmed.length ? '...' : ''}`, hits,
+      suggestion: hits.map((h) => `${h === 'councilflow' ? 'CouncilFlow' : h} -> ${REPLACEMENTS[h]}`).join('; '),
+    });
+  });
+  return out;
+}
+
+/** The rule files check 6 reads: in the projects root, each folder in it and each repo the scan finds. */
+export function projectRuleFiles(root) {
+  const dirs = [root, ...names(root).map((n) => path.join(root, n)).filter(isDir), ...scanRepos(root, { depth: DEFAULT_DEPTH }).candidates];
+  const seen = new Set();
+  const files = [];
+  for (const d of dirs) {
+    if (seen.has(pathKey(d))) continue;
+    seen.add(pathKey(d));
+    // Measurement repos under _private/eval/runs/ are skipped, as set-pushurl does.
+    if (/[\\/]_private[\\/]eval[\\/]runs(?:[\\/]|$)/i.test(path.resolve(d))) continue;
+    for (const f of RULE_FILES) {
+      const p = path.join(d, ...f);
+      if (isFile(p)) files.push(p);
+    }
+  }
+  return files;
+}
+
+/** Check 6: lists the lines and their replacements, never changes a file. */
+export function ruleFileChecks(ctx, sec) {
+  const s = (p) => shown(p, ctx.roots);
+  const root = ctx.roots.projectsRoot;
+  const item = 'project rule files (CLAUDE.md, AGENTS.md)';
+  if (!root) { sec.warn('rules.scan', item, 'no projects root: not scanned'); return; }
+  const files = isDir(root) ? projectRuleFiles(root) : [];
+  const found = [];
+  for (const f of files) {
+    let text;
+    try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    const refs = oldReferences(text);
+    if (refs.length) found.push({ f, refs });
+  }
+  if (!found.length) { sec.pass('rules.scan', item, `${files.length} file(s) read; none names a retired skill or CouncilFlow`); return; }
+  const count = found.reduce((n, x) => n + x.refs.length, 0);
+  sec.warn('rules.scan', item, `${found.length} of ${files.length} file(s) name a retired skill or CouncilFlow (${count} line(s)); listed below, nothing changed`);
+  const readonly = ctx.local?.readonly_dirs ?? [];
+  for (const { f, refs } of found) {
+    const ro = readonly.some((d) => within(f, d)) ? ' (read-only folder: change it only with its owner)' : '';
+    sec.warn(`rules.${s(f)}`, `rules ${s(f)}`, `${refs.length} line(s)${ro}`, null, refs.map((r) => `L${r.line}: ${r.text}  => ${r.suggestion}`));
+  }
+}
+
+// ---------- run ----------
+
+// The sections in report order, with their headings.
+const SECTIONS = [
+  ['config', '1. effective config'], ['versions', '2. versions'], ['copies', '3. skill copies and agent definitions'],
+  ['hooks', '4. hooks'], ['pushurl', '5. pushurl'], ['rules', '6. project rule files (listed only, never changed)'],
+];
+
+/**
+ * Run checks 1 to 6. Reads only (CLIs are started for --version as runVersion describes, the deployed
+ * guard only for --selftest, git only for reading commands).
+ * @param {object} ctx makeContext
+ * @param {{reportOnly?: boolean, env?: object, facts?: object, managed?: string[], run?: Function, now?: Date,
+ *   selftest?: Function}} [deps] reportOnly turns the neutral FAIL into a WARN; tests replace the environment,
+ *   the Windows facts, the managed settings files, the version runner, the clock and the selftest runner
+ * @returns {{section: string, id: string, item: string, status: string, detail: string, fix?: string, lines?: string[]}[]}
+ */
+export function runChecks(ctx, { reportOnly = false, env = process.env, facts, managed = managedSettingsFiles(), run = runVersion, now, selftest } = {}) {
   const f = facts ?? windowsFacts();
   const config = section('config');
   if (ctx.local) config.pass('local-config', 'local config', slash(ctx.localConfig));
@@ -650,7 +1098,15 @@ export function runChecks(ctx, { env = process.env, facts, managed = managedSett
   codexChecks(ctx, config);
   const versions = section('versions');
   versionChecks(ctx, versions, { facts: f, env, run });
-  return [...config.rows, ...versions.rows];
+  const copies = section('copies');
+  copyChecks(ctx, copies, { reportOnly });
+  const hooks = section('hooks');
+  hookChecks(ctx, hooks, { now, selftest });
+  const pushurl = section('pushurl');
+  pushurlChecks(ctx, pushurl);
+  const rules = section('rules');
+  ruleFileChecks(ctx, rules);
+  return [config, versions, copies, hooks, pushurl, rules].flatMap((x) => x.rows);
 }
 
 /** PASS, WARN and FAIL counts. */
@@ -665,11 +1121,14 @@ function printTable(ctx, rows, reportOnly) {
   console.log(`check-kit: read only${reportOnly ? ', --report-only (exit 0 whatever the result)' : ''}`);
   console.log(`  home ${slash(roots.home)}; runtime ${roots.runtime ? slash(roots.runtime) : '(not set)'}; projects root ${roots.projectsRoot ? slash(roots.projectsRoot) : '(not set)'}`);
   const width = Math.min(60, Math.max(...rows.map((r) => r.item.length)));
-  for (const name of ['config', 'versions']) {
-    console.log(name === 'config' ? '1. effective config' : '2. versions');
+  const pad = `  ${' '.repeat(4)}  ${' '.repeat(width)}  `;
+  for (const [name, heading] of SECTIONS) {
+    console.log(heading);
     for (const r of rows.filter((x) => x.section === name)) {
       console.log(`  ${r.status}  ${r.item.padEnd(width)}  ${r.detail}`);
-      if (r.fix) console.log(`  ${' '.repeat(4)}  ${' '.repeat(width)}  fix: ${r.fix}`);
+      for (const l of r.lines ?? []) console.log(`${pad}${l}`);
+      // A WARN's command is yours to run or not.
+      if (r.fix) console.log(`${pad}${r.status === 'FAIL' ? 'fix' : 'optional'}: ${r.fix}`);
     }
   }
   const c = countRows(rows);
@@ -702,7 +1161,7 @@ function run(argv) {
   const opts = parseCli(argv);
   if (opts.help) { console.log(USAGE); return 0; }
   const ctx = makeContext(opts);
-  const rows = runChecks(ctx);
+  const rows = runChecks(ctx, { reportOnly: opts.reportOnly });
   const counts = countRows(rows);
   const exit = opts.reportOnly || !counts.FAIL ? 0 : 1;
   if (opts.json) {

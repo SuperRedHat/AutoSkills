@@ -1,0 +1,1 @@
+{"origin": {"url": "https://example.com/acme/app.git"}, "mirror": {"url": "https://example.com/acme/app-mirror.git", "pushurl": "no_push"}}

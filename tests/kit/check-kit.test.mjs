@@ -1,6 +1,8 @@
-// Tests for scripts/check-kit.mjs (node:test, zero dependencies). The three hand-written fake user
-// directories in tests/kit/fixtures/home-*/ (deployed, before a deploy, CLAUDE_CODE_EFFORT_LEVEL set) are
-// copied into OS temp dirs, their placeholders filled, and check-kit runs on them as a CLI with --home,
+// Tests for scripts/check-kit.mjs (node:test, zero dependencies). The six hand-written fake user
+// directories in tests/kit/fixtures/home-*/ (deployed, before a deploy, CLAUDE_CODE_EFFORT_LEVEL set, old
+// and duplicate skill copies, neutral profile, no project-verifier) are copied into OS temp dirs, their
+// placeholders filled, the kit groups of their fixture.json installed from the repo and their
+// git-remotes.json markers turned into git repositories; check-kit runs on them as a CLI with --home,
 // --runtime, --projects-root and --local-config. Each temp tree and each fixture folder is hashed before and
 // after the runs to show that check-kit writes nothing. The version rows of those runs come from this machine
 // (they are WARN at worst and do not change the exit code); the unit tests drive the registry facts, the
@@ -16,14 +18,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   makeContext, runChecks, countRows, versionChecks, judgeCodexOnPath, findOnPath, npmPackageVersion, runVersion,
-  windowsFacts, compareVersions, commandTokens, tomlStrings, hookParts, EFFORT_VAR,
+  windowsFacts, compareVersions, commandTokens, tomlStrings, hookParts, EFFORT_VAR, HEARTBEAT_STALE_DAYS,
+  oldReferences, codexHookTrust, registeredHooks, lastHeartbeats, removeCommand, runSelftest,
 } from '../../scripts/check-kit.mjs';
-import { claudePathRule } from '../../scripts/lib/kit-targets.mjs';
+import { claudePathRule, desiredFiles, KIT_HOOK_SCRIPTS } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(REPO, 'scripts', 'check-kit.mjs');
 const FIXTURES = path.join(REPO, 'tests', 'kit', 'fixtures');
-const HOMES = ['home-ok', 'home-missing', 'home-effort'];
+const HOMES = ['home-ok', 'home-missing', 'home-effort', 'home-dup', 'home-neutral', 'home-noverifier'];
 const SENTINEL = 'max-fixture-sentinel-7f3a';
 const WIN = process.platform === 'win32';
 
@@ -60,27 +63,63 @@ function cleanEnv(extra = {}) {
   return { ...env, ...extra };
 }
 
+// Child git runs without inherited repo selectors, so a caller's GIT_DIR never redirects it.
+const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|NAMESPACE|PREFIX)$/i.test(k)));
+function git(args) {
+  const r = spawnSync('git', args, { encoding: 'utf8', env: GIT_ENV, windowsHide: true });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+}
+
+/** Every file under dir (absolute paths). */
+function filesUnder(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(path.join(dir, e.name)) : [path.join(dir, e.name)]));
+}
+
 /**
- * A temp copy of one fixture with its placeholders filled: <home>, <runtime>, <projects>, <projects-posix>
- * (Claude's rule form of the projects folder) and <node> (the Node that runs this test).
+ * A temp copy of one fixture (laid on its fixture.json base, if any) with its placeholders filled: <home>,
+ * <runtime>, <projects>, <projects-posix> (Claude's rule form of the projects folder), <node> (the Node that
+ * runs this test) and <recent> (one hour ago). Then the kit groups of fixture.json are installed from the
+ * repo where the tree has no file of its own, and every git-remotes.json becomes a repository with those
+ * remotes (the marker is removed).
  */
 function sandbox(name, { dist = true } = {}) {
   const root = tempDir(`check-kit-${name}-`);
+  const specFile = path.join(FIXTURES, name, 'fixture.json');
+  const spec = fs.existsSync(specFile) ? JSON.parse(fs.readFileSync(specFile, 'utf8')) : {};
+  if (spec.base) fs.cpSync(path.join(FIXTURES, spec.base), root, { recursive: true });
   fs.cpSync(path.join(FIXTURES, name), root, { recursive: true });
   const sb = { root, home: path.join(root, 'home'), runtime: path.join(root, 'runtime'), projects: path.join(root, 'projects'), local: path.join(root, 'local.json') };
   fs.mkdirSync(sb.projects, { recursive: true });
   const posix = claudePathRule('Edit', sb.projects).slice('Edit('.length, -'/**)'.length);
-  const fill = { '<home>': fwd(sb.home), '<runtime>': fwd(sb.runtime), '<projects-posix>': posix, '<projects>': fwd(sb.projects), '<node>': fwd(process.execPath) };
-  const walk = (d) => {
-    for (const n of fs.readdirSync(d)) {
-      const p = path.join(d, n);
-      if (fs.statSync(p).isDirectory()) { walk(p); continue; }
-      const text = fs.readFileSync(p, 'utf8');
-      const out = text.replace(/<projects-posix>|<projects>|<home>|<runtime>|<node>/g, (m) => fill[m]);
-      if (out !== text) fs.writeFileSync(p, out);
-    }
+  const fill = {
+    '<home>': fwd(sb.home), '<runtime>': fwd(sb.runtime), '<projects-posix>': posix, '<projects>': fwd(sb.projects), '<node>': fwd(process.execPath),
+    '<recent>': new Date(Date.now() - 3_600_000).toISOString(),
   };
-  walk(root);
+  for (const p of filesUnder(root)) {
+    const text = fs.readFileSync(p, 'utf8');
+    const out = text.replace(/<projects-posix>|<projects>|<home>|<runtime>|<node>|<recent>/g, (m) => fill[m]);
+    if (out !== text) fs.writeFileSync(p, out);
+  }
+  const kit = spec.kit ?? [];
+  const put = (file, content) => {
+    if (fs.existsSync(file)) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  };
+  for (const d of desiredFiles({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects })) {
+    if (kit.includes(d.group) && ['contract', 'skills', 'agents'].includes(d.group)) put(d.path, d.content);
+  }
+  if (kit.includes('hooks')) for (const n of KIT_HOOK_SCRIPTS) put(path.join(sb.runtime, 'hooks', n), fs.readFileSync(path.join(REPO, 'hooks', n)));
+  for (const marker of filesUnder(root).filter((p) => path.basename(p) === 'git-remotes.json')) {
+    const dir = path.dirname(marker);
+    const remotes = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    fs.rmSync(marker);
+    git(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
+    for (const [remote, r] of Object.entries(remotes)) {
+      git(['-C', dir, 'remote', 'add', remote, r.url]);
+      if (r.pushurl) git(['-C', dir, 'config', `remote.${remote}.pushurl`, r.pushurl]);
+    }
+  }
   if (dist) {
     const file = path.join(sb.home, '.claude', 'mcp-project-manager', 'dist', 'index.js');
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -105,24 +144,37 @@ function report(sb, { strict = true, env, status }) {
 const failIds = (rows) => rows.filter((r) => r.status === 'FAIL').map((r) => r.id).sort();
 const row = (rows, id) => { const r = rows.find((x) => x.id === id); assert.ok(r, `no row ${id}`); return r; };
 
-// ---------- the three fake user directories, through the CLI ----------
+// ---------- the six fake user directories, through the CLI ----------
 
-test('deployed home: no FAIL, strict exit 0, every config row passes, the tree is unchanged', () => {
+// Rows of checks 3-6 that are a WARN on a correct deploy: the Codex hook trust cannot be read yet (C0),
+// and home-ok has a repository in its read-only folder (pushurl skipped).
+const DEPLOYED_WARN = ['hooks.codex-trust', 'pushurl.readonly'];
+
+test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl and rules row passes, the tree is unchanged', () => {
   const sb = sandbox('home-ok');
   const before = treeHash(sb.root);
   const { json } = report(sb, { status: 0 });
   assert.deepEqual(failIds(json.rows), []);
-  for (const r of json.rows.filter((x) => x.section === 'config')) {
+  for (const r of json.rows.filter((x) => x.section !== 'versions')) {
     // The registry rows depend on this machine; every row from the fake home must pass.
     if (r.id === 'effort.hkcu' || r.id === 'effort.hklm') continue;
-    assert.equal(r.status, 'PASS', `${r.id}: ${r.detail}`);
+    assert.equal(r.status, DEPLOYED_WARN.includes(r.id) ? 'WARN' : 'PASS', `${r.id}: ${r.detail}`);
   }
+  for (const s of ['copies', 'hooks', 'pushurl', 'rules']) assert.ok(json.rows.some((r) => r.section === s), `no ${s} rows`);
   assert.match(row(json.rows, 'claude.deny.readonly').detail, /1 Edit rule/);
   assert.match(row(json.rows, 'claude.hook.paths').detail, /3 kit hook entries/);
   assert.equal(row(json.rows, 'version.project-manager').status, 'WARN', 'a synthetic build is not 1.5.1');
+  assert.match(row(json.rows, 'contract').detail, /claude_contract import/);
+  assert.match(row(json.rows, 'skills.kit.agents').detail, /7 skills match/);
+  assert.match(row(json.rows, 'hooks.selftest.guard').detail, /^guard selftest: ok \(\d+ samples\) \(portable Node\)/);
+  for (const id of ['hooks.heartbeat.claude.guard', 'hooks.heartbeat.claude.session-start', 'hooks.heartbeat.codex.guard']) assert.match(row(json.rows, id).detail, /1 h ago/);
+  assert.match(row(json.rows, 'hooks.codex-trust').detail, /unknown \(未知\)/);
+  assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
+  assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
   assert.equal(text.status, 0, text.stderr);
   assert.match(text.stdout, /0 FAIL/);
+  assert.match(text.stdout, /^6\. project rule files/m);
   assert.deepEqual(treeHash(sb.root), before);
 });
 
@@ -136,6 +188,9 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
     'claude.hook.paths', 'claude.subagentPromptCacheTtl', 'claude.worktree.baseRef',
     'codex.agents.default_subagent_reasoning_effort', 'codex.desktop.followUpQueueMode', 'codex.hooks', 'codex.model_reasoning_effort',
     'codex.project-manager', 'codex.rules', 'version.project-manager',
+    'contract', 'skills.kit.claude', 'skills.kit.agents', 'agents.project-verifier',
+    'hooks.heartbeat.claude.guard', 'hooks.heartbeat.claude.session-start', 'hooks.heartbeat.codex.guard', 'hooks.selftest.guard',
+    'pushurl.repos',
   ].sort());
   for (const r of json.rows.filter((x) => x.status === 'FAIL')) assert.ok(r.fix && r.fix.length > 10, `${r.id} has no fix`);
   assert.match(row(json.rows, 'claude.worktree.baseRef').fix, /deploy-kit\.mjs --apply --home /);
@@ -148,6 +203,12 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.doesNotMatch(row(json.rows, 'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS').detail, /"2"/);
   assert.match(row(json.rows, 'codex.agents.default_subagent_reasoning_effort').fix, /delete default_subagent_reasoning_effort/);
   for (const id of ['effort.process', 'effort.settings']) assert.equal(row(json.rows, id).status, 'PASS');
+  assert.match(row(json.rows, 'skills.kit.claude').detail, /^7 of 7: project-consult missing/);
+  assert.match(row(json.rows, 'hooks.heartbeat.codex.guard').detail, /does not exist: the hook never ran/);
+  assert.match(row(json.rows, 'hooks.heartbeat.codex.guard').fix, /Codex \/hooks/);
+  assert.match(row(json.rows, 'hooks.selftest.guard').detail, /no output/);
+  // Only origin lacks no_push; the mirror remote already has it.
+  assert.match(row(json.rows, 'pushurl.repos').detail, /^1 of 2 remote\(s\) in 1 repo\(s\) without no_push: <projects>\/app \(origin\)$/);
 
   const soft = report(sb, { strict: false, status: 0 });
   assert.equal(soft.json.report_only, true);
@@ -177,6 +238,111 @@ test('CLAUDE_CODE_EFFORT_LEVEL in the process and in two settings files: FAIL in
   assert.equal(report(sb, { strict: false, env, status: 0 }).json.counts.FAIL, 2);
   // Without the process variable only the settings row fails.
   assert.deepEqual(failIds(report(sb, { status: 1 }).json.rows), ['effort.settings']);
+  assert.deepEqual(treeHash(sb.root), before);
+});
+
+test('old and duplicate skill copies: FAIL in strict mode; brace folder, outdated template, old agent and rule-file lines are WARN; the tree is unchanged', () => {
+  const sb = sandbox('home-dup');
+  const before = treeHash(sb.root);
+  const { json } = report(sb, { status: 1 });
+  assert.deepEqual(failIds(json.rows), [
+    'skills.kit.agents', 'skills.old.codex', 'skills.old.codex-agent', 'skills.old.gemini', 'skills.old.workflow',
+    'skills.retired.agents', 'skills.retired.claude',
+  ].sort());
+  assert.match(row(json.rows, 'skills.kit.agents').detail, /^1 of 7: project-next differs$/);
+  assert.equal(row(json.rows, 'skills.kit.claude').status, 'PASS');
+  assert.match(row(json.rows, 'skills.retired.claude').detail, /project-init/);
+  assert.match(row(json.rows, 'skills.retired.claude').fix, /deploy-kit\.mjs --apply/);
+  assert.match(row(json.rows, 'skills.retired.agents').fix, /Remove-Item -LiteralPath '.*project-review' -Recurse/);
+  assert.match(row(json.rows, 'skills.old.codex').detail, /project-next; 1 share a name with a kit skill \(duplicate\)/);
+  const brace = row(json.rows, 'skills.brace');
+  assert.equal(brace.status, 'WARN');
+  assert.match(brace.fix, /^Remove-Item -LiteralPath '.*\{project-init,project-next\}' -Recurse$/);
+  const stale = row(json.rows, 'templates.stale');
+  assert.equal(stale.status, 'WARN');
+  assert.match(stale.detail, /global-codex-AGENTS\.md/);
+  assert.match(stale.fix, /^Remove-Item -LiteralPath '.*global-codex-AGENTS\.md'$/);
+  assert.equal(row(json.rows, 'agents.legacy').status, 'WARN');
+  assert.match(row(json.rows, 'agents.legacy').fix, /--retire-legacy-agents/);
+  assert.equal(row(json.rows, 'agents.project-verifier').status, 'PASS');
+
+  // Check 6 lists the lines with a replacement each; set_project_dir and the kit skill names are not reported.
+  assert.equal(row(json.rows, 'rules.scan').status, 'WARN');
+  const claudeMd = row(json.rows, 'rules.<projects>/legacy/CLAUDE.md');
+  assert.equal(claudeMd.status, 'WARN');
+  assert.equal(claudeMd.lines.length, 2);
+  assert.match(claudeMd.lines[0], /^L4: .*project-init -> project-plan.*; project-design -> project-plan/);
+  assert.match(claudeMd.lines[1], /^L5: .*CouncilFlow -> drop it/);
+  assert.ok(!claudeMd.lines.some((l) => /set_project_dir|project-next/.test(l.split('=>')[0])));
+  const agentsMd = row(json.rows, 'rules.<projects>/legacy/AGENTS.md');
+  assert.deepEqual(agentsMd.lines.map((l) => l.split(':')[0]), ['L3']);
+  assert.match(agentsMd.lines[0], /project-review -> the platform's own review command/);
+
+  const soft = report(sb, { strict: false, status: 0 });
+  assert.deepEqual(failIds(soft.json.rows), failIds(json.rows));
+  const text = cli([...sb.args, '--report-only']);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /L4: .*=> project-init -> project-plan/);
+  assert.match(text.stdout, /optional: Remove-Item -LiteralPath/);
+  assert.deepEqual(treeHash(sb.root), before);
+});
+
+test('a brace folder and an outdated template on a deployed home are WARN with a delete command; strict mode still exits 0', () => {
+  const sb = sandbox('home-ok');
+  fs.mkdirSync(path.join(sb.home, '.codex', 'agents', 'skills', '{project-init,project-plan}'), { recursive: true });
+  fs.mkdirSync(path.join(sb.home, '.workflow-core', 'templates'), { recursive: true });
+  fs.writeFileSync(path.join(sb.home, '.workflow-core', 'templates', 'global-codex-AGENTS.md'), '# synthetic\n');
+  const before = treeHash(sb.root);
+  const { json } = report(sb, { status: 0 });
+  assert.deepEqual(failIds(json.rows), []);
+  for (const id of ['skills.brace', 'templates.stale']) {
+    assert.equal(row(json.rows, id).status, 'WARN');
+    assert.match(row(json.rows, id).fix, /^Remove-Item -LiteralPath /);
+  }
+  assert.deepEqual(treeHash(sb.root), before);
+});
+
+test('neutral profile: FAIL naming --rollback <neutral id> in strict mode, WARN under --report-only; the tree is unchanged', () => {
+  const sb = sandbox('home-neutral');
+  const before = treeHash(sb.root);
+  const { json } = report(sb, { status: 1 });
+  assert.deepEqual(failIds(json.rows), ['kit.neutral']);
+  const n = row(json.rows, 'kit.neutral');
+  assert.match(n.detail, /^neutral 20261030-080000-a1b2 in place: 3 of 3 contract files/);
+  assert.match(n.fix, /node scripts\/deploy-kit\.mjs --rollback 20261030-080000-a1b2 --local-config "/);
+  // While parked, the contract and kit skill rows are left out.
+  for (const id of ['contract', 'skills.kit.claude', 'skills.kit.agents']) assert.ok(!json.rows.some((r) => r.id === id), id);
+  const soft = report(sb, { strict: false, status: 0 });
+  assert.equal(row(soft.json.rows, 'kit.neutral').status, 'WARN');
+  assert.equal(soft.json.counts.FAIL, 0);
+  const text = cli([...sb.args, '--report-only']);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /WARN {2}neutral profile/);
+  assert.deepEqual(treeHash(sb.root), before);
+});
+
+test('the neutral line without a journal is still a FAIL; the fix says no journal was found', () => {
+  const sb = sandbox('home-neutral');
+  const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: path.join(sb.root, 'elsewhere', 'local.json') });
+  const rows = runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions });
+  assert.equal(row(rows, 'kit.neutral').status, 'FAIL');
+  assert.match(row(rows, 'kit.neutral').detail, /no journal found/);
+  assert.match(row(rows, 'kit.neutral').fix, /--rollback <neutral id>/);
+  assert.equal(row(runChecks(ctx, { reportOnly: true, env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions }), 'kit.neutral').status, 'WARN');
+});
+
+test('no project-verifier.md: the only FAIL, with the deploy-kit fix; the tree is unchanged', () => {
+  const sb = sandbox('home-noverifier');
+  const before = treeHash(sb.root);
+  const { json } = report(sb, { status: 1 });
+  assert.deepEqual(failIds(json.rows), ['agents.project-verifier']);
+  assert.match(row(json.rows, 'agents.project-verifier').detail, /project-verifier\.md does not exist/);
+  assert.match(row(json.rows, 'agents.project-verifier').fix, /deploy-kit\.mjs --apply/);
+  assert.equal(report(sb, { strict: false, status: 0 }).json.counts.FAIL, 1);
+  // A verifier that differs from the repo copy is a FAIL too.
+  const sb2 = sandbox('home-ok');
+  fs.appendFileSync(path.join(sb2.home, '.claude', 'agents', 'project-verifier.md'), '\nedited\n');
+  assert.match(row(report(sb2, { status: 1 }).json.rows, 'agents.project-verifier').detail, /differs/);
   assert.deepEqual(treeHash(sb.root), before);
 });
 
@@ -318,6 +484,71 @@ test('helpers: command tokens, TOML strings, hook parts, row counts', () => {
   assert.deepEqual(hookParts({ command: '/opt/node', args: ['/rt/hooks/session-start.mjs', '--platform', 'claude'] }), { exe: '/opt/node', scripts: ['/rt/hooks/session-start.mjs'] });
   assert.deepEqual(hookParts({ command: '"/opt/node" "/rt/other/guard.mjs"' }).scripts, []);
   assert.deepEqual(countRows([{ status: 'PASS' }, { status: 'FAIL' }, { status: 'FAIL' }]), { PASS: 1, WARN: 0, FAIL: 2 });
+});
+
+test('heartbeats: an old one is a WARN, none is a FAIL; a failing selftest is a FAIL; the registered hooks come from the fragments', () => {
+  assert.deepEqual(registeredHooks(), [
+    { hook: 'guard', platform: 'claude' }, { hook: 'session-start', platform: 'claude' }, { hook: 'guard', platform: 'codex' },
+  ]);
+  const sb = sandbox('home-ok');
+  const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
+  const later = new Date(Date.now() + (HEARTBEAT_STALE_DAYS + 3) * 86_400_000);
+  const rows = runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions, now: later, selftest: () => ({ ok: false, out: 'guard selftest: 2 of 30 failed' }) });
+  for (const id of ['hooks.heartbeat.claude.guard', 'hooks.heartbeat.codex.guard']) {
+    assert.equal(row(rows, id).status, 'WARN');
+    assert.match(row(rows, id).detail, /older than 7 days/);
+  }
+  const st = row(rows, 'hooks.selftest.guard');
+  assert.equal(st.status, 'FAIL');
+  assert.match(st.detail, /2 of 30 failed/);
+  // A heartbeat file with only Claude lines: the Codex guard never ran.
+  const hb = path.join(sb.runtime, 'hooks', 'heartbeat', 'guard.jsonl');
+  fs.writeFileSync(hb, `${JSON.stringify({ ts: new Date().toISOString(), platform: 'claude', event: 'PreToolUse', decision: 'allow' })}\nnot json\n`);
+  assert.deepEqual(Object.keys(lastHeartbeats(hb).last), ['claude']);
+  const r = row(runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions }), 'hooks.heartbeat.codex.guard');
+  assert.equal(r.status, 'FAIL');
+  assert.match(r.detail, /no codex line/);
+});
+
+test('the deployed guard selftest runs the real samples and writes no heartbeat', () => {
+  const runtime = tempDir('check-kit-selftest-');
+  fs.mkdirSync(path.join(runtime, 'hooks'));
+  for (const n of KIT_HOOK_SCRIPTS) fs.copyFileSync(path.join(REPO, 'hooks', n), path.join(runtime, 'hooks', n));
+  fs.writeFileSync(path.join(runtime, 'hooks', 'hook-config.json'), JSON.stringify({ runtime: fwd(runtime) }));
+  const before = treeHash(runtime);
+  const r = runSelftest(process.execPath, path.join(runtime, 'hooks', 'guard.mjs'));
+  assert.ok(r.ok, r.out);
+  assert.match(r.out, /^guard selftest: ok \(\d+ samples\)$/);
+  assert.deepEqual(treeHash(runtime), before);
+  const stub = path.join(runtime, 'stub.mjs');
+  fs.writeFileSync(stub, '// prints nothing\n');
+  assert.equal(runSelftest(process.execPath, stub).ok, false);
+});
+
+test('Codex hook trust: unknown when config.toml shows none, reported when it holds a hook trust key', () => {
+  assert.deepEqual(codexHookTrust(null), []);
+  assert.deepEqual(codexHookTrust('model = "gpt-5"\n[projects.\'<projects>/hooks-demo\']\ntrust_level = "trusted"\n'), []);
+  assert.deepEqual(codexHookTrust('[hooks.trusted]\nguard = "sha256:00"\n'), ['hooks.trusted.guard']);
+  assert.deepEqual(codexHookTrust('[broken\n'), []);
+});
+
+test('rule-file lines: retired skills and CouncilFlow with a replacement each; kit skills and set_project_dir are not reported', () => {
+  const refs = oldReferences([
+    '先调用 set_project_dir。', '用 /project-next 和 $project-plan。', '旧流程：/project-init，然后 project-discuss。',
+    '分歧交给 CouncilFlow（council discuss）。', 'project-initiative 不是技能名。',
+  ].join('\r\n'));
+  assert.deepEqual(refs.map((r) => r.line), [3, 4]);
+  assert.deepEqual(refs[0].hits, ['project-init', 'project-discuss']);
+  assert.match(refs[0].suggestion, /^project-init -> project-plan .*; project-discuss -> project-consult/);
+  assert.deepEqual(refs[1].hits, ['councilflow']);
+  const long = oldReferences(`${'x'.repeat(300)} /project-review ${'y'.repeat(300)}`)[0];
+  assert.ok(long.text.startsWith('...') && long.text.endsWith('...') && long.text.includes('project-review'), long.text);
+});
+
+test('removeCommand quotes the path for PowerShell', () => {
+  const quoted = path.resolve('/tmp/it\'s');
+  assert.equal(removeCommand(quoted, true), `Remove-Item -LiteralPath '${quoted.replace('\'', '\'\'')}' -Recurse`);
+  assert.equal(removeCommand(path.resolve('/tmp/a.md'), false), `Remove-Item -LiteralPath '${path.resolve('/tmp/a.md')}'`);
 });
 
 test('usage errors exit 2', () => {
