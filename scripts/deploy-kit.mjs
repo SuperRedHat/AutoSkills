@@ -1,27 +1,47 @@
 #!/usr/bin/env node
 // deploy-kit: plan the deployment of the AutoSkills kit to the user level (ADR-006 §2.7). Zero
-// dependencies (Node >= 18). This version only plans: it prints what a deploy would create, modify and
-// remove, with a reason per item, and writes nothing. Writing, backup and rollback come with --apply and
-// --rollback (AS3-113); settings.json, config.toml, hooks, rules, the runtime area and pushurl join the
-// plan with AS3-112b.
+// dependencies (Node >= 18). This version plans the user-level deploy: it prints what a deploy would
+// create, modify and remove, with a reason per item, and writes nothing there. Writing, backup and rollback
+// come with --apply and --rollback (AS3-113). The only writing modes are --init-local (the local config)
+// and --stage (a project-layout copy inside _private/ for the measurement scripts).
 //
 // Usage:
 //   node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]
 //                               [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>]
+//                               [--projects-root <dir>] [--local-config <file>]
+//   node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]
 //   node scripts/deploy-kit.mjs --init-local [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]
 //
 // Roots: every target is resolved from three roots (scripts/lib/kit-targets.mjs): --home (default the user
 // directory), --runtime (default runtime in the local config) and --projects-root (default projects_root in
 // the local config). Tests pass all three, so they never read targets in the real user directory.
 //
-// Dry-run (the default): reads the contract, the 7 skills, the templates and the agent definition in this
-// repo, the local config and the current targets; prints the plan in three groups (create, modify, remove)
-// plus the folders that are only listed. A missing local config is an error that names --init-local.
+// Dry-run (the default): reads the contract, the 7 skills, the templates, the agent definition, the config
+// fragments and the hooks in this repo, the local config and the current targets; prints the plan in three
+// groups (create, modify, remove) plus what is only listed. A missing local config is an error that names
+// --init-local. The targets are those of scripts/lib/kit-targets.mjs: contract, CLAUDE.md, the 7 skills on
+// both platforms, project-verifier, templates, workflow-rules.md, settings.json, config.toml, the Codex
+// hooks.json and rules, the hook scripts and their config in <runtime>/hooks/, and pushurl = no_push for
+// every repository with remotes under the projects root (planned by scripts/set-pushurl.mjs; read-only
+// folders and measurement repos are skipped). Merged files (settings.json, config.toml, an existing
+// hooks.json, workflow-rules.md) keep everything that is not the kit's; a merged file that cannot be read
+// is a conflict. The project-manager registration is not touched (batch 1 keeps 1.5.1 on the system Node).
 //   --claude-contract import (default) writes ~/.claude/CLAUDE.md as @AGENTS.md plus the Claude-only lines;
 //   inline puts the contract text there instead, for when the import does not load.
 //   --retire-legacy-agents adds the 3 old agents (v2 decision 9) to the removals; without it they stay.
 //   Removals are limited to the old project-* copies; a folder whose name starts with "{" (a failed brace
 //   expansion) is listed, not removed.
+//   --expect-clean checks a deploy: exit 0 only when the plan is empty. It plans with the options the last
+//   --apply recorded in the local config (deploy_options: claude_contract, retire_legacy_agents; written by
+//   AS3-113), or the defaults when none are recorded, so it takes no option flags of its own.
+//
+// --stage <dir> --layout project writes the same kit content in the project layout into <dir>, which must
+// lie inside <kit repo>/_private/: .claude/AGENTS.md, .claude/CLAUDE.md (first line @AGENTS.md),
+// .claude/skills/<7>, .agents/skills/<7> and contract/AGENTS.md (the contract text the measurement scripts
+// build AGENTS.override.md from), plus stage-manifest.json (files and SHA-256). A non-empty <dir> is replaced
+// only with --force and only when it holds an earlier stage (its stage-manifest.json). It needs no local
+// config and reads no user-level file.
 //
 // --init-local writes only the local config (default <kit repo>/_private/kit-local.json) and the two canary
 // folders next to it (_private/eval/smoke/readonly-canary/ and customer-canary/, each with a note file):
@@ -37,26 +57,35 @@
 // An existing local config is kept: lists only gain entries, set values stay unless --runtime or
 // --projects-root names a new one, deploy_options and other keys stay. Nothing is written when nothing changes.
 //
-// Exit codes: 0 = plan printed (or local config written / already current). 1 = the plan has conflicts (a
-// folder where a file must go). 2 = usage or setup error (unknown option, missing local config, a kit source
-// missing in the repo, a mode that is not implemented yet).
+// Exit codes: 0 = plan printed (with --expect-clean: the plan is empty; or local config written / already
+// current; or stage written). 1 = the plan has conflicts (a folder where a file must go, a merged file that
+// cannot be read), or with --expect-clean the plan is not empty. 2 = usage or setup error (unknown option,
+// missing local config or portable_node, a kit source missing in the repo, a stage target outside _private/
+// or not replaceable, a mode that is not implemented yet).
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   KIT_REPO, DEFAULT_LOCAL_CONFIG, DEFAULT_OPTIONS, CLAUDE_CONTRACT_MODES, UsageError,
-  targetMap, neverTouch, readLocalConfig, resolveRoots, desiredFiles, kitSkillDirs, legacyRemovals, listFiles, slash, pathKey, within,
+  targetMap, neverTouch, readLocalConfig, resolveRoots, recordedOptions, desiredFiles, stageFiles, kitSkillDirs, legacyRemovals,
+  listFiles, slash, pathKey, within, realPathOf,
 } from './lib/kit-targets.mjs';
+import { planRepos, NO_PUSH } from './set-pushurl.mjs';
 
 const USAGE = 'usage: node scripts/deploy-kit.mjs [--dry-run] [--json] [--claude-contract import|inline] [--retire-legacy-agents]\n'
   + '                                   [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --dry-run --expect-clean [--json] [--home <dir>] [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]\n'
+  + '       node scripts/deploy-kit.mjs --stage <dir> --layout project [--force]\n'
   + '       node scripts/deploy-kit.mjs --init-local [--runtime <dir>] [--projects-root <dir>] [--local-config <file>]';
 
 const SELF = fileURLToPath(import.meta.url);
 const WIN = process.platform === 'win32';
 // Modes of later tasks: named here so the message says where they come from, not "unknown option".
-const LATER = { apply: 'AS3-113', rollback: 'AS3-113', drill: 'AS3-113', neutral: 'AS3-114', stage: 'AS3-112b', 'expect-clean': 'AS3-112b' };
+const LATER = { apply: 'AS3-113', rollback: 'AS3-113', drill: 'AS3-113', neutral: 'AS3-114' };
+const STAGE_LAYOUTS = ['project'];
+export const STAGE_MANIFEST = 'stage-manifest.json';
 const CANARIES = {
   readonly: { rel: ['eval', 'smoke', 'readonly-canary'], note: 'Canary for the read-only guard (registered in readonly_dirs by deploy-kit --init-local).\nThe deploy smoke test tries to write here; every write must be refused. Do not remove this folder.\n' },
   customer: { rel: ['eval', 'smoke', 'customer-canary'], note: 'Canary for the customer-data deny rule (registered in customer_data_dirs by deploy-kit --init-local).\nThe deploy smoke test tries to read this file; the read must be refused. It holds no real data.\n' },
@@ -71,20 +100,24 @@ function sameBytes(file, content) {
 }
 
 /**
- * The deploy plan for the AS3-112a targets. Reads only.
+ * The deploy plan for every kit target. Reads only (git runs read-only queries for the pushurl plan).
  * @param {{home: string, runtime: string, projectsRoot: string}} roots
- * @param {{claudeContract?: string, retireLegacyAgents?: boolean, repo?: string}} [opts]
- * @returns {{roots: object, options: object, create: object[], modify: object[], remove: object[], listed: object[],
- *   conflicts: object[], unchanged: number}} create/modify entries carry path, group, mode, reason, content
- *   (Buffer) and source (repo file) when the content is a plain copy
+ * @param {{claudeContract?: string, retireLegacyAgents?: boolean, repo?: string, local: object}} opts local: the
+ *   parsed local config (read-only and customer-data folders, portable_node)
+ * @returns {{roots: object, options: object, create: object[], modify: object[], remove: object[], pushurl: object[],
+ *   listed: object[], conflicts: object[], unchanged: number, pushurlPlan: object}} create/modify entries carry
+ *   path, group, mode, reason, content (Buffer) and source (repo file) when the content comes from one;
+ *   pushurl entries carry repo, config, remote and original; pushurlPlan is the set-pushurl plan behind them
  */
-export function buildPlan(roots, { claudeContract = DEFAULT_OPTIONS.claude_contract, retireLegacyAgents = DEFAULT_OPTIONS.retire_legacy_agents, repo = KIT_REPO } = {}) {
+export function buildPlan(roots, { claudeContract = DEFAULT_OPTIONS.claude_contract, retireLegacyAgents = DEFAULT_OPTIONS.retire_legacy_agents, repo = KIT_REPO, local } = {}) {
+  if (!local) throw new UsageError('buildPlan needs the local config');
   const plan = {
     roots, options: { claude_contract: claudeContract, retire_legacy_agents: retireLegacyAgents },
-    create: [], modify: [], remove: [], listed: [], conflicts: [], unchanged: 0,
+    create: [], modify: [], remove: [], pushurl: [], listed: [], conflicts: [], unchanged: 0, pushurlPlan: null,
   };
-  const desired = desiredFiles(roots, { claudeContract, repo });
+  const desired = desiredFiles(roots, { claudeContract, repo, local });
   for (const d of desired) {
+    if (d.conflict) { plan.conflicts.push({ path: d.path, reason: d.conflict }); continue; }
     let st = null;
     try { st = fs.lstatSync(d.path); } catch { /* missing: create */ }
     if (!st) plan.create.push(d);
@@ -114,7 +147,29 @@ export function buildPlan(roots, { claudeContract = DEFAULT_OPTIONS.claude_contr
       if (!own.has(rel)) plan.listed.push({ path: path.join(t.workflowTemplates, ...rel.split('/')), reason: 'not a kit template: kept (check-kit warns when it is outdated)' });
     }
   } catch { /* no deployed templates yet */ }
+
+  // pushurl = no_push for every repository with remotes under the projects root (set-pushurl's own scan
+  // and skip rules; --apply hands pushurlPlan to its applyPlan).
+  const pp = planRepos(roots.projectsRoot, { readonlyDirs: local.readonly_dirs ?? [] });
+  plan.pushurlPlan = pp;
+  for (const r of pp.repos) {
+    for (const m of r.remotes) {
+      if (m.action === 'set') {
+        plan.pushurl.push({
+          repo: r.path, config: r.config, remote: m.name, original: m.original,
+          reason: `remote ${m.name}: pushurl ${m.original === null ? 'unset' : m.original.join(', ')} -> ${NO_PUSH} (set-pushurl; agents cannot push by remote name)`,
+        });
+      }
+      if (m.outside.length) plan.listed.push({ path: r.path, reason: `remote ${m.name}: pushurl ${m.outside.join(', ')} comes from a config outside the repo and is not changed` });
+    }
+  }
+  for (const s of pp.skipped) if (/^read-only dir/.test(s.reason)) plan.listed.push({ path: s.path, reason: `pushurl not set: ${s.reason}` });
   return plan;
+}
+
+/** True when a deploy would change nothing: no creation, modification, removal, pushurl change or conflict. */
+export function planIsEmpty(plan) {
+  return !plan.create.length && !plan.modify.length && !plan.remove.length && !plan.pushurl.length && !plan.conflicts.length;
 }
 
 /**
@@ -124,7 +179,7 @@ export function buildPlan(roots, { claudeContract = DEFAULT_OPTIONS.claude_contr
 function assertInsideRoots(plan) {
   const roots = [plan.roots.home, plan.roots.runtime, plan.roots.projectsRoot];
   const banned = neverTouch(plan.roots);
-  for (const e of [...plan.create, ...plan.modify, ...plan.remove]) {
+  for (const e of [...plan.create, ...plan.modify, ...plan.remove, ...plan.pushurl.map((p) => ({ path: p.repo }))]) {
     if (!roots.some((r) => within(e.path, r))) throw new Error(`plan entry outside the roots: ${e.path}`);
     if (banned.some((b) => within(e.path, b))) throw new Error(`plan entry on a never-touch path: ${e.path}`);
   }
@@ -142,14 +197,24 @@ function shown(p, roots) {
   return slash(p);
 }
 
-/** JSON form of the plan: absolute paths with /, no file content. */
-export function planJson(plan) {
+/** The config file of a pushurl entry as shown: <repo>/.git/config when it is that repo's own (git reports
+ *  the common dir as a real path, which may differ in spelling from the scanned repo path). */
+function pushurlShown(e, s) {
+  const gitDir = path.dirname(e.config);
+  const own = path.basename(gitDir) === '.git' && pathKey(realPathOf(path.dirname(gitDir))) === pathKey(realPathOf(e.repo));
+  return own ? `${s(e.repo)}/.git/config` : s(e.config);
+}
+
+/** JSON form of the plan: absolute paths with /, no file content. expectClean adds expect_clean and clean. */
+export function planJson(plan, { expectClean = false } = {}) {
   const roots = { home: slash(plan.roots.home), runtime: slash(plan.roots.runtime), projects_root: slash(plan.roots.projectsRoot) };
   const file = (e) => ({ path: slash(e.path), group: e.group, mode: e.mode, reason: e.reason, ...(e.source ? { source: slash(e.source) } : {}) });
   return {
     tool: 'deploy-kit', mode: 'dry-run', roots, options: plan.options,
+    ...(expectClean ? { expect_clean: true, clean: planIsEmpty(plan) } : {}),
     create: plan.create.map(file), modify: plan.modify.map(file),
     remove: plan.remove.map((e) => ({ path: slash(e.path), kind: e.kind, files: e.files, group: e.group, reason: e.reason })),
+    pushurl: plan.pushurl.map((e) => ({ repo: slash(e.repo), config: slash(e.config), remote: e.remote, original: e.original, value: NO_PUSH, reason: e.reason })),
     listed: plan.listed.map((e) => ({ path: slash(e.path), reason: e.reason })),
     conflicts: plan.conflicts.map((e) => ({ path: slash(e.path), reason: e.reason })),
     unchanged: plan.unchanged,
@@ -157,24 +222,89 @@ export function planJson(plan) {
   };
 }
 
-function printPlan(plan, localConfig) {
+function printPlan(plan, localConfig, { expectClean = false } = {}) {
   const s = (p) => shown(p, plan.roots);
-  console.log('deploy-kit: dry-run, nothing is written');
+  console.log(`deploy-kit: dry-run${expectClean ? ' --expect-clean' : ''}, nothing is written`);
   console.log(`  home ${slash(plan.roots.home)}; runtime ${slash(plan.roots.runtime)}; projects root ${slash(plan.roots.projectsRoot)}`);
-  console.log(`  local config ${slash(localConfig)}; claude contract ${plan.options.claude_contract}; retire legacy agents ${plan.options.retire_legacy_agents ? 'yes' : 'no'}`);
+  console.log(`  local config ${slash(localConfig)}; claude contract ${plan.options.claude_contract}; retire legacy agents ${plan.options.retire_legacy_agents ? 'yes' : 'no'}`
+    + `${expectClean ? ' (options recorded by the last --apply, or the defaults)' : ''}`);
   const group = (title, list, sign, line) => {
     console.log(`${title} (${list.length}):`);
     for (const e of list) console.log(`  ${sign} ${line(e)}`);
   };
   group('create', plan.create, '+', (e) => `${s(e.path)}  [${e.group}] ${e.reason}`);
-  group('modify', plan.modify, '~', (e) => `${s(e.path)}  [${e.group}${e.mode === 'merge' ? ', merge' : ''}] ${e.reason}`);
+  const modify = [
+    ...plan.modify.map((e) => `${s(e.path)}  [${e.group}${e.mode === 'merge' ? ', merge' : ''}] ${e.reason}`),
+    ...plan.pushurl.map((e) => `${pushurlShown(e, s)}  [pushurl] ${e.reason}`),
+  ];
+  group('modify', modify, '~', (line) => line);
   group('remove', plan.remove, '-', (e) => `${s(e.path)}${e.kind === 'dir' ? `/ (${e.files.length} file(s))` : e.kind === 'link' ? ' (link only, the target stays)' : ''}  [${e.group}] ${e.reason}`);
   group('listed, not changed', plan.listed, '=', (e) => `${s(e.path)}  ${e.reason}`);
   if (plan.conflicts.length) group('conflicts', plan.conflicts, '!', (e) => `${s(e.path)}  ${e.reason}`);
   if (!plan.options.retire_legacy_agents) console.log('  (the 3 old agents in ~/.claude/agents stay; --retire-legacy-agents archives and removes them)');
-  console.log(`  never touched: ${neverTouch(plan.roots).map(s).join(', ')}; ~/.workflow-core scripts/, docs/, backups/`);
-  console.log(`deploy-kit: ${plan.create.length} to create, ${plan.modify.length} to modify, ${plan.remove.length} to remove, `
-    + `${plan.unchanged} unchanged, ${plan.listed.length} listed${plan.conflicts.length ? `, ${plan.conflicts.length} conflict(s)` : ''}`);
+  console.log(`  never touched: ${neverTouch(plan.roots).map(s).join(', ')}; ~/.workflow-core scripts/, docs/, backups/; the project-manager registration`);
+  console.log(`deploy-kit: ${plan.create.length} to create, ${plan.modify.length + plan.pushurl.length} to modify (${plan.pushurl.length} pushurl), `
+    + `${plan.remove.length} to remove, ${plan.unchanged} unchanged, ${plan.listed.length} listed${plan.conflicts.length ? `, ${plan.conflicts.length} conflict(s)` : ''}`);
+  if (expectClean) {
+    console.log(planIsEmpty(plan) ? 'deploy-kit: expect-clean: the plan is empty; the deploy is in place'
+      : 'deploy-kit: expect-clean: the plan is not empty; the deployed state differs from the kit');
+  }
+}
+
+// ---------- stage ----------
+
+/**
+ * Write the kit in the project layout into dest, a folder inside <repo>/_private/ (the measurement scripts
+ * copy it into a test repo). The files are written to a sibling temp folder first and moved in at the end.
+ * @param {string} dest
+ * @param {{layout?: string, force?: boolean, repo?: string}} [opts]
+ * @returns {{dest: string, files: {rel: string, sha256: string}[], replaced: boolean}}
+ * @throws {UsageError} dest is not inside _private/, is a file or a link, or is a non-empty folder without
+ *   --force or without the manifest of an earlier stage
+ */
+export function stageProject(dest, { layout = 'project', force = false, repo = KIT_REPO } = {}) {
+  if (!STAGE_LAYOUTS.includes(layout)) throw new UsageError(`--layout must be one of ${STAGE_LAYOUTS.join(', ')}: ${layout}`);
+  const priv = realPathOf(path.join(repo, '_private'));
+  const abs = path.resolve(dest);
+  const real = realPathOf(abs);
+  if (!within(real, priv) || pathKey(real) === pathKey(priv)) {
+    throw new UsageError(`--stage writes only to a folder inside ${slash(priv)}; refused: ${slash(abs)}`);
+  }
+  let st = null;
+  try { st = fs.lstatSync(abs); } catch { /* new folder */ }
+  let replaced = false;
+  if (st) {
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new UsageError(`--stage target is not a folder: ${slash(abs)}`);
+    if (fs.readdirSync(abs).length) {
+      if (!force) throw new UsageError(`--stage target is not empty: ${slash(abs)}; --force replaces an earlier stage`);
+      if (!fs.existsSync(path.join(abs, STAGE_MANIFEST))) {
+        throw new UsageError(`--stage target holds files that --stage did not write (no ${STAGE_MANIFEST}): ${slash(abs)}; --force replaces only an earlier stage`);
+      }
+      replaced = true;
+    }
+  }
+  const files = stageFiles(repo);
+  const tmp = `${abs}.${process.pid}.tmp`;
+  fs.rmSync(tmp, { recursive: true, force: true });
+  try {
+    for (const f of files) {
+      const p = path.join(tmp, ...f.rel.split('/'));
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, f.content);
+    }
+    const manifest = {
+      tool: 'deploy-kit', layout, created: new Date().toISOString(), kit_repo: slash(repo),
+      files: files.map((f) => ({ path: f.rel, sha256: crypto.createHash('sha256').update(f.content).digest('hex') })),
+    };
+    fs.writeFileSync(path.join(tmp, STAGE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+    if (st) fs.rmSync(abs, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.renameSync(tmp, abs);
+    return { dest: abs, files: manifest.files, replaced };
+  } catch (e) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
 }
 
 // ---------- init-local ----------
@@ -316,7 +446,7 @@ function parseCli(argv) {
         'claude-contract': { type: 'string' }, 'retire-legacy-agents': { type: 'boolean' },
         home: { type: 'string' }, runtime: { type: 'string' }, 'projects-root': { type: 'string' }, 'local-config': { type: 'string' },
         apply: { type: 'boolean' }, rollback: { type: 'string' }, drill: { type: 'string' }, neutral: { type: 'boolean' },
-        stage: { type: 'string' }, 'expect-clean': { type: 'boolean' },
+        stage: { type: 'string' }, layout: { type: 'string' }, force: { type: 'boolean' }, 'expect-clean': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
       allowPositionals: false,
@@ -328,8 +458,23 @@ function parseCli(argv) {
   for (const [flag, task] of Object.entries(LATER)) {
     if (a[flag] !== undefined) throw new UsageError(`--${flag} is not implemented yet (${task}); this version only plans`);
   }
+  const given = (...flags) => flags.filter((f) => a[f] !== undefined).map((f) => `--${f}`);
   if (a['init-local'] && (a['dry-run'] || a.json || a.home !== undefined || a['claude-contract'] !== undefined || a['retire-legacy-agents'])) {
     throw new UsageError('--init-local takes only --runtime, --projects-root and --local-config');
+  }
+  if (a.stage !== undefined) {
+    const extra = given('init-local', 'dry-run', 'json', 'expect-clean', 'claude-contract', 'retire-legacy-agents', 'home', 'runtime', 'projects-root', 'local-config');
+    if (extra.length) throw new UsageError(`--stage takes only --layout and --force (not ${extra.join(', ')})`);
+    if (!a.stage.trim()) throw new UsageError('--stage needs a folder');
+    if (a.layout === undefined) throw new UsageError('--stage needs --layout project');
+    if (!STAGE_LAYOUTS.includes(a.layout)) throw new UsageError(`--layout must be one of ${STAGE_LAYOUTS.join(', ')}: ${a.layout}`);
+    return { mode: 'stage', stage: a.stage, layout: a.layout, force: !!a.force };
+  }
+  if (a.layout !== undefined || a.force !== undefined) throw new UsageError('--layout and --force go with --stage');
+  if (a['expect-clean']) {
+    // The options come from deploy_options in the local config, so the deployed state is checked as deployed.
+    const extra = given('init-local', 'claude-contract', 'retire-legacy-agents');
+    if (extra.length) throw new UsageError(`--expect-clean plans with the options recorded in the local config; drop ${extra.join(', ')}`);
   }
   const contract = a['claude-contract'] ?? DEFAULT_OPTIONS.claude_contract;
   if (!CLAUDE_CONTRACT_MODES.includes(contract)) throw new UsageError(`--claude-contract must be import or inline: ${contract}`);
@@ -337,7 +482,7 @@ function parseCli(argv) {
     if (a[k] !== undefined && !a[k].trim()) throw new UsageError(`--${k} needs a path`);
   }
   return {
-    mode: a['init-local'] ? 'init-local' : 'dry-run', json: !!a.json, claudeContract: contract,
+    mode: a['init-local'] ? 'init-local' : 'dry-run', json: !!a.json, claudeContract: contract, expectClean: !!a['expect-clean'],
     retireLegacyAgents: !!a['retire-legacy-agents'], home: a.home, runtime: a.runtime, projectsRoot: a['projects-root'],
     localConfig: path.resolve(a['local-config'] ?? DEFAULT_LOCAL_CONFIG),
   };
@@ -358,13 +503,25 @@ function run(argv) {
     return 0;
   }
 
+  if (opts.mode === 'stage') {
+    const r = stageProject(opts.stage, { layout: opts.layout, force: opts.force });
+    console.log(`deploy-kit: staged ${r.files.length} file(s) in the ${opts.layout} layout to ${slash(r.dest)}${r.replaced ? ' (earlier stage replaced)' : ''}`);
+    console.log('  .claude/AGENTS.md, .claude/CLAUDE.md (@AGENTS.md), .claude/skills/, .agents/skills/, contract/AGENTS.md; '
+      + `file list and SHA-256 in ${STAGE_MANIFEST}`);
+    return 0;
+  }
+
   const local = readLocalConfig(opts.localConfig);
   const roots = resolveRoots({ home: opts.home, runtime: opts.runtime, projectsRoot: opts.projectsRoot }, local);
   if (!fs.existsSync(roots.home) || !fs.statSync(roots.home).isDirectory()) throw new UsageError(`home is not a folder: ${roots.home}`);
-  const plan = buildPlan(roots, { claudeContract: opts.claudeContract, retireLegacyAgents: opts.retireLegacyAgents });
+  const options = opts.expectClean
+    ? (({ claude_contract: c, retire_legacy_agents: r }) => ({ claudeContract: c, retireLegacyAgents: r }))(recordedOptions(local))
+    : { claudeContract: opts.claudeContract, retireLegacyAgents: opts.retireLegacyAgents };
+  const plan = buildPlan(roots, { ...options, local });
   assertInsideRoots(plan);
-  if (opts.json) console.log(JSON.stringify(planJson(plan), null, 2));
-  else printPlan(plan, opts.localConfig);
+  if (opts.json) console.log(JSON.stringify(planJson(plan, { expectClean: opts.expectClean }), null, 2));
+  else printPlan(plan, opts.localConfig, { expectClean: opts.expectClean });
+  if (opts.expectClean) return planIsEmpty(plan) ? 0 : 1;
   return plan.conflicts.length ? 1 : 0;
 }
 

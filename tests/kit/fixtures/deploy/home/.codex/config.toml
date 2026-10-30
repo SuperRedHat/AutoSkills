@@ -1,0 +1,49 @@
+# Synthetic Codex config for the deploy tests. Comments, order and sections must survive the merge.
+model = "synthetic-model"
+model_reasoning_effort = "xhigh" # this comment stays
+notify = [
+  "node",
+  "C:/example/notify.mjs", # a comment inside an array
+]
+
+[windows]
+sandbox = "elevated"
+
+# Trust entries as Codex writes them (both quoting styles, one with the \\?\ prefix).
+[projects."C:\\example\\kit\\_private\\eval\\runs\\codex-old\\repo"]
+trust_level = "trusted"
+
+[projects.'c:\example\kit\_private\eval\runs\codex-new\repo']
+trust_level = "trusted"
+
+[projects.'c:\example\kit\_private\eval\runs2\keep']
+trust_level = "trusted"
+
+[projects.'c:\example\work\app']
+trust_level = "trusted"
+
+[projects."\\\\?\\C:\\example\\kit\\_private\\eval\\runs\\verbatim"]
+trust_level = "trusted"
+
+# Plugins (this comment belongs to the next section)
+[plugins."github@synthetic-curated"]
+enabled = true
+
+[mcp_servers.project-manager]
+command = "node"
+args = ["C:/example/mcp/dist/index.js"]
+description = """
+A multi-line string with [brackets] and a fake
+[header] line that must not count as a table.
+"""
+
+[mcp_servers.project-manager.env]
+SYNTHETIC = "1"
+
+# Desktop settings
+[desktop]
+followUpQueueMode = "queue"
+conversationDetailMode = "compact"
+
+[desktop.open-in-target-preferences]
+global = "synthetic"

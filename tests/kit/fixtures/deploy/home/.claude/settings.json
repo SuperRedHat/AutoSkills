@@ -1,3 +1,74 @@
 {
-  "model": "synthetic"
+  "model": "synthetic",
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Read(//c/example/notes/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)"
+    ]
+  },
+  "env": {
+    "SYNTHETIC_FLAG": "1"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo synthetic stop hook"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/example/user-hooks/lint-bash.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/example/old-runtime/node.exe",
+            "args": [
+              "C:/example/old-runtime/hooks/guard.mjs",
+              "--platform",
+              "claude"
+            ],
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node C:/example/user-hooks/format-check.mjs"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/example/old-runtime/node.exe",
+            "args": [
+              "C:/example/old-runtime/hooks/session-start.mjs"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "synthetic-plugin@synthetic-market": true
+  }
 }
