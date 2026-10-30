@@ -1,73 +1,70 @@
 ---
 name: project-next
-description: 执行下一个任务，按结构化验收字段自动验证并决定状态流转。
+description: 按自主契约循环做任务：取就绪任务、实现、验证、提交、记录，再取下一个，直到五种停点之一。用户说"做下一个任务""做 T3.1–T3.5""把剩下的做完"或点名任务、范围时使用。
 ---
 
-# /project-next — 执行下一个任务
+# /project-next — 循环做到停点
 
-## 执行流程
+循环、停点、证据和提交规则以自主契约为准，这里只写在 project-manager 1.5.1 上的具体做法。不要做完一个任务就结束回合。
 
-1. 调用 `get_next_task` 取出可执行任务（已过滤终态、沿 replacement 链解析依赖、优先级感知；被 cancelled 依赖阻塞会显式上报）。
-2. 调用 `update_task_status(id, "in_progress")`。
-3. 如果检测到 `council` 可用，则把项目目录下的 `.council/config.yaml` 视为自动分发真源；文件缺失时 CouncilFlow 会在首次调用时自动生成模板。
-4. 如当前任务方案存在明显不确定，且用户显式要求 `discuss`，先走一轮多模型讨论：
-   - `council discuss "这个任务应该如何实现最稳妥？" --controller-position "<主控本地立场>"`（用户显式给模型时加 `--models ...`）
-   - 协议细节（default_models 读取 / min_rounds / `data.summary_path` 读取 / shell 超时两段式恢复 / 确认失败才停）**一律遵循 project-discuss 的规范段**（最易错且不可省的一点先记住：shell 超时/非零退出 ≠ 讨论失败——用 `council status` 取 `last_discussion_id` → `council discussion wait <id> --timeout 7200` 等到底再判）；这一步一旦进入即硬前置
-5. 把任务视为一个显式阶段机，而不是"实现完后主控自己顺手测一下"：
-   - `implementer -> tester -> reviewer -> [fixer -> tester -> reviewer]* -> synthesizer`
+## 开始
+1. 用主检出的绝对路径调 `set_project_dir`，再用 `get_server_info` 核对 state_files。没有账本时，1.5.1 会返回"run /project-init""Run /project-design first"这类提示：这些已过时，一律改用 project-plan。 <!-- lint-kit: allow-legacy 原样引用 1.5.1 返回的过时提示，紧接着说明改用 project-plan -->
+2. 读项目契约（仓库根目录的 AGENTS.md），记下范围、验证命令、本人验收点和"待验收不挡下游"一项。
+3. 用户点名了任务或范围，就只在范围内做；范围外的任务一个也不碰。给了截止时间，用命令看一次当前时间。
+4. 范围内已有 in_progress 的任务，先接着做它（1.5.1 不允许 in_progress→todo）；notes 里写着"受阻"的，阻塞没解除就跳过。
 
-### 委派契约（适用于下面所有 `council delegate` 阶段调用）
+## 循环（每个任务）
 
-- 不传 `--model`，目标模型由项目级 `roles.<role>` 决定（含动态路由 list 形式，0.1.3+：路由引擎按 `when` 匹配决定，skill 层不干预；`error.error_kind = routing_no_match` 按失败上报协议处理）
-- 返回 `status = local_execution` → 当前主控本地执行该阶段
-- 返回 `status = delegated` → 先读取 `.council/delegations/<id>/` 产物（result.md 等），再进入下一阶段
-- 返回错误、缺少 handoff/result artifact，或无法完成调用 → **停止当前 workflow 并如实报告失败**
-- 仅当 `council` 明确缺失或不可调用时，才允许降级为主控直接执行，且必须在输出中说明
+### 1. 取就绪任务
+- 不点名、项目契约也没写"待验收不挡下游"时：用 `get_next_task`。
+- 点名任务或范围时：用 `get_all_tasks`，按与 `get_next_task` 相同的规则自己筛选，只在范围内取：
+  - 状态是 todo；
+  - 每个依赖都满足：依赖是 done，或是 superseded 且沿 replacement_task_id 链最终落到 done；cancelled 的依赖不满足；
+  - 多个就绪时，priority 大的先做，相同时按创建顺序。
+- 项目契约明确写了"待验收不挡下游：是"（写了适用任务的，只对这些任务）时，依赖处于 awaiting_manual_acceptance 且 stage_gate=false 的也算满足。`get_next_task` 不认这条，这时一律用 `get_all_tasks` 按上面的规则自己判断。契约没写明，就按 `get_next_task` 的规则。
+- 取不到就绪任务时，用 `get_all_tasks` 看剩下的任务卡在哪，再按下面的停点判断；没有就绪任务本身不等于做完。
 
-### 超时判定协议（硬前置，适用于所有 `council delegate` 调用）
+### 2. 开始并实现
+- `update_task_status(id, "in_progress")`，然后按任务的描述、验收标准和 files 实现。
+- 常规选择用合理默认并在 notes 里记下假设；不为单个任务、提交或步骤交接请求确认。
 
-- `council delegate` 是同步子进程调用，真实 stage（如 Canvas/复杂实现）可能运行几十分钟到两小时
-- 本地 shell 的命令超时（通常 3–4 分钟）**不等于** delegation 失败；artifact 还在写
-- 当 shell 调用 timeout / 非零退出、且 `.council/delegations/<id>/handoff.yaml` 已落盘时，**必须**：
-  1. 从 handoff 路径或 stderr 提取 `<delegation_id>`
-  2. 调用 `council delegation wait <delegation_id> --project-root <repo-root> --timeout 7200`
-  3. 只有 wait 返回 `error_kind=wait_timeout` 或 `record.json` 内 `status=failed`，才允许按 `Workflow Failure Report Protocol` 输出 `workflow_failure`
-  4. wait 成功且 `record.json.status=completed` → 当正常委派产物继续（读 `result.md`）
-- 只有 `handoff.yaml` 也缺失（子进程根本没启动），才直接按委派失败处理（一般是 adapter 缺失或配置错误）
+### 3. 验证（证据）
+- 在仓库根目录逐条照原样执行 verification_commands，不改写、不拼接、不跳过。条目是 PowerShell 写法时，Claude 上用 PowerShell 工具执行。
+- 每条都打印：命令、退出码、日志位置。长输出写到 `<项目>/.autoskills/runs/`；第一次使用时把 `.autoskills/` 加进 `.git/info/exclude`。
+- 再逐条核对验收标准：命令覆盖不到的，自己读 diff 或运行交付物确认。
+- 失败就修，修完从第一条起重跑。同一根因连续两次没有实质进展，按"受阻"处理（见下）。
+- 重型套件只由主会话跑，一次一个；子代理只做只读工作，它的报告只算线索，记完成前主会话自己重跑验证命令。
 
-6. 先进入 `implementer` 阶段（按上方委派契约）：
-   - `council delegate --role implementer --objective "实现 XX 功能" --task-summary "编码实现"`
-   - 未读取委派结果前不要直接自己实现
-7. 再进入 `tester` 阶段（按上方委派契约）：
-   - 任务里的 `verification_commands` / `verification_profile` 是 tester 的输入，不是主控默认本地动作；`local_execution` 时才允许主控亲自运行验证
-   - `verification_commands` 必须以**可重复的** `--verification-command` 逐条传入，禁止用 `&&` 拼接塞进 `--input`（legacy 已 deprecated；PRD §27.5 / §29.7 硬约束）：
-     ```
-     council delegate --role tester \
-       --objective "验证当前任务实现" \
-       --task-summary "执行 verification_commands / verification_profile" \
-       --input verification_profile="<task.verification_profile>" \
-       --verification-command "<task.verification_commands[0]>" \
-       --verification-command "<task.verification_commands[N]>" \
-       --required-artifact implementer_result="<implementer 的 result artifact>" \
-       --next-on-success "若验证通过，进入 reviewer 阶段" \
-       --next-on-failure "若验证失败，进入 fixer 阶段"
-     ```
-   - tester 通过后不要直接收口，必须进入 `reviewer` 阶段
-8. tester 通过后，强制进入 `reviewer` 阶段（按上方委派契约）：
-   - `council delegate --role reviewer --objective "复审当前任务实现是否语义正确" --task-summary "基于 tester 通过结果做语义复审" --required-artifact implementer_result="<implementer 的 result artifact>" --required-artifact tester_result="<tester 的 result artifact>" --input review_checklist="<task.review_checklist>" --next-on-success "若 reviewer 通过，进入 synthesizer / 状态流转" --next-on-failure "若 reviewer 发现问题，进入 fixer 阶段"`
-   - `delegated` 时先读 reviewer 产物，再判断是否存在 findings
-9. 如果 tester 或 reviewer 明确判定失败，进入 `fixer` 阶段（按上方委派契约），再回到 `tester` 与 `reviewer`：
-   - `council delegate --role fixer --objective "根据 tester / reviewer 结果修复问题" --task-summary "修复验证或复审阶段发现的问题" --required-artifact tester_result="<tester 的 result artifact>" --required-artifact reviewer_findings="<reviewer 的 findings artifact>" --next-on-success "修复完成后重新进入 tester，再进入 reviewer" --next-on-failure "停止 workflow 并报告 fixer 阶段失败"`
-   - 如果 fixer 阶段发现任务本身**无法修复 / 超出范围 / 被前置条件长期阻塞**，role 阶段不要无限循环重试：fixer 只负责如实报告，由**控制器/管理决策**（不是 role 阶段）用 `close_task(id, "cancelled", reason=...)` 关闭，或升级到 `project-feedback` 处理（`close_task` / `reopen_task` 不归 role 阶段调用，`workflow_failure` 日志也不构成关闭授权）
-10. 只有当 tester 与 reviewer 都明确通过后，当前主控才负责收口、状态流转与最终汇报。
-11. 验证通过后调用 `update_task_status(id, "auto_verified")`。
-12. 按全局规范的任务状态机决定下一状态（`acceptance_mode` / `stage_gate` 映射与 `needs_manual_review` 兼容规则见全局 CLAUDE.md / AGENTS.md 的「任务状态机」「任务验收字段」段）。
-13. 生成独立 commit，并报告修改、验证结果和状态。
+### 4. 独立校验（只对有风险的任务）
+- 触发条件：review_checklist 第一条写"风险：高"，或 stage_gate=true。其余任务跳过这一步。
+- 在改成 auto_verified 之前交给只读校验者。只给原始标准和证据：任务描述、验收标准、review_checklist、diff、本会话的命令输出和日志位置；不给实现总结，也不说"已经通过"。
+- Claude：用 project-verifier 子代理。
+- Codex：主线程按同样的输入只读核对 diff 和命令输出，不靠自己的实现记忆；需要单独进程时，用桌面版安装目录里自带的 codex.exe 跑只读的 `codex exec`，结论文件由主线程导入账本。
+- 结论用 `add_log` 记下：违反哪条标准、怎么复现、实际影响，分 blocker、major、minor。
+- blocker 和 major 判失败：修复，重跑第 3 步，再校验；最多修 2 轮，仍不过就按"受阻"处理。minor 记下，便宜的顺手修，不自动建新任务。
 
-## 注意事项
+### 5. 提交
+- Conventional Commits，说明里带任务 id，例如 `feat(api): add export endpoint (T3.2)`。
+- 只 `git add` 本任务 files 里列出的、在仓库里的路径（括号里的说明不是路径；标了删除的路径照样 add，用来暂存删除）。不用 -A，不用 `.`，也不用 -f。
+- 提交号用 `git rev-parse HEAD` 读出，写进 notes 或 `add_log`。只改了 `_private/` 等不进 git 的路径时，在 notes 写"未提交：<原因>"。
 
-- 不要在实现前跳过设计确认
-- 自动验收不等于跳过验证
-- `discuss` 是显式可选步骤，不要把它变成每个任务默认都会触发的隐藏动作
-- 当任务等待人工确认时，输出 `review_checklist`
-- 任何阶段路由失败或缺少预期 artifact 时，按 `docs/integration.md::Workflow Failure Report Protocol` 输出结构化 JSON（`workflow=project-next`、对应 `failed_stage`）并调用 `project-manager` MCP `add_log(type="workflow_failure", task_id=<task id>, ...)`，再停止当前 workflow
+### 6. 推进状态，取下一个
+- `update_task_status(id, "auto_verified")`，然后按验收字段：
+  - acceptance_mode=auto，或 milestone_manual 且 stage_gate=false：改成 done；
+  - acceptance_mode=manual，或 milestone_manual 且 stage_gate=true：改成 awaiting_manual_acceptance，把 review_checklist 和证据位置列给用户。
+- 只用这些迁移：todo→in_progress→auto_verified→done 或 awaiting_manual_acceptance。awaiting_manual_acceptance 之后只交给 project-feedback 处理用户本人的验收，这里不改它。
+- 等用户验收的任务不挡别的任务：回到第 1 步取下一个。
+- 给了截止时间时，每做完一个任务用命令看一次当前时间；来不及做完的不开始。
+
+## 受阻
+- 1.5.1 没有 blocked 状态：任务保持 in_progress，用 `edit_task` 在 notes 写"受阻：<原因、已试过什么、需要什么>"，并 `add_log`。
+- 然后继续做不受它影响的任务，不在这里结束回合。
+
+## 停点（只有这五种）
+1. 本轮做完：范围内的任务都已 done。
+2. 只剩用户本人能定的事：没有就绪任务，剩下的任务要么在等用户验收，要么依赖还在等验收的任务，要么在等项目级决定。
+3. 真的卡住：没有就绪任务，剩下的都受阻并已记录，或依赖被 cancelled。
+4. 预算或截止时间到。
+5. 用户说暂停，或控制器、账本出错。
+
+停下时说明是哪一种，列出每个任务的状态、提交号（从 git 读出）、验证命令和退出码，以及需要用户做的决定。不是这五种之一，就回到第 1 步继续。
