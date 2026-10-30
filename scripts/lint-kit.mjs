@@ -8,7 +8,7 @@
 // Exit codes: 0 = no findings; 1 = findings; 2 = usage or setup error (unknown option or group,
 // missing --path target, no tool registry, bad word-list regex, git failure).
 //
-// Groups (--check all = every group below; the contract group is added by AS3-103):
+// Groups (--check all = every group below):
 //   privacy  Built-in rules: user directories with a concrete user name (C:\Users\<name>, /home/<name>,
 //            /Users/<name>, and the Git Bash/MSYS and WSL forms /c/Users/<name>, /mnt/c/Users/<name>),
 //            drive-letter local paths (D:\work\repo, D:/work, /d/work, /mnt/d/work; a one-letter first
@@ -37,13 +37,24 @@
 //            budget of 8000 characters or 2% of the context, shared with other skills). Without --path,
 //            skills/ must hold exactly the 7 skills of AutoSkills 3.0.
 //   legacy   CouncilFlow, council commands and folders, the 6 retired skill names, Gemini.
+//   contract The shared contract (batch-1 version). The contract source is the scanned file with the
+//            heading "## 自主契约"; there must be exactly one (none is a finding when the scan has no --path
+//            or a --path directory; a scan of single files only does not require one). It must hold the five
+//            stop points, the zero-exception rule, the evidence rules, the set_project_dir sentence, the
+//            subagent rules and the Git and reporting rules, in at most 60 lines. The global Claude file
+//            (global-claude-CLAUDE.md) must open with @AGENTS.md and add at most 10 lines; the retired
+//            global-codex-AGENTS.md is a second source. Every scanned file: no old rules (design before
+//            code, module-by-module confirmation, asking on vague requirements, the state-machine
+//            description, tech-stack defaults) and no P0 terms (run_id, runner, receipts, dispatch, leases,
+//            the verification executor). This group has no allow marker.
 //
 // Scan surface:
 //   Without --path: skills/, templates/, config/, hooks/, scripts/ and mcp-manifest.json; privacy adds
-//   tests/. tools defaults to skills/ and templates/, skills to skills/. With --path, exactly the named
-//   files and directories. README.md and docs/ are scanned only when named. legacy never scans files
-//   under tests/. Directory walks skip .git, node_modules and the historical records (ADR-001..005,
-//   audit and migration reports in docs/, mcp/*/tests/fixtures/); a file named directly is always scanned.
+//   tests/. tools defaults to skills/ and templates/, skills to skills/, contract to templates/. With
+//   --path, exactly the named files and directories. README.md and docs/ are scanned only when named.
+//   legacy never scans files under tests/. Directory walks skip .git, node_modules and the historical
+//   records (ADR-001..005, audit and migration reports in docs/, mcp/*/tests/fixtures/); a file named
+//   directly is always scanned.
 //   --git-log <range> runs only the privacy group, over commit messages; a range that starts with - is a
 //   usage error, so it never reaches git as an option. git is called directly with
 //   -c i18n.logOutputEncoding=UTF-8 and the output decoded as UTF-8: piping git through Windows
@@ -69,12 +80,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const USAGE = 'usage: node scripts/lint-kit.mjs --check <privacy,tools,skills,legacy|all> [--path <file|dir>]... [--root <dir>]\n'
+const USAGE = 'usage: node scripts/lint-kit.mjs --check <privacy,tools,skills,legacy,contract|all> [--path <file|dir>]... [--root <dir>]\n'
   + '       node scripts/lint-kit.mjs --git-log <range> [--check privacy] [--root <dir>]';
 
 const SELF = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = path.resolve(path.dirname(SELF), '..');
-const GROUPS = ['privacy', 'tools', 'skills', 'legacy'];
+const GROUPS = ['privacy', 'tools', 'skills', 'legacy', 'contract'];
 
 const KIT_SURFACE = ['skills', 'templates', 'config', 'hooks', 'scripts', 'mcp-manifest.json'];
 const DEFAULT_SURFACE = {
@@ -82,6 +93,7 @@ const DEFAULT_SURFACE = {
   tools: ['skills', 'templates'],
   skills: ['skills'],
   legacy: KIT_SURFACE,
+  contract: ['templates'],
 };
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 // Historical records: kept as written, not part of the kit (repo-relative, forward slashes).
@@ -123,6 +135,34 @@ const LEGACY_RULES = [
   { rule: 'retired-skill', re: new RegExp(`(?<![A-Za-z0-9_-])(?:${RETIRED_SKILLS.join('|')})(?![A-Za-z0-9_-])`, 'g'), what: 'retired skill name' },
   { rule: 'gemini', re: /(?<![A-Za-z])gemini/gi, what: 'Gemini' },
 ];
+
+// The shared contract (batch-1 version: v2 appendix A plus the set_project_dir sentence of v3 section 5).
+const CONTRACT_HEADING = /^#{1,6}\s*自主契约(?:（[^）]*）)?\s*$/;
+const CONTRACT_SOURCE = 'global-AGENTS.md';
+const CONTRACT_MAX_LINES = 60;
+const CLAUDE_GLOBAL = 'global-claude-CLAUDE.md';
+const CLAUDE_EXTRA_MAX = 10;
+// Former second sources of the global rules, replaced by templates/global-AGENTS.md.
+const RETIRED_SOURCES = ['global-codex-AGENTS.md'];
+// Clauses the contract must carry: every pattern of an entry must match somewhere in the file.
+const CONTRACT_REQUIRED = [
+  { rule: 'stop-points', what: 'the five stop points', res: [/停点只有五种/, /本轮做完/, /只剩用户本人能定的事/, /真的卡住/, /预算或截止时间到/, /用户说暂停或控制器出错/] },
+  { rule: 'zero-exception', what: 'the zero-exception rule', res: [/零例外规则/, /不 ?push/, /不发布/, /不对外发送/, /不改只读目录/, /不访问客户数据/] },
+  { rule: 'evidence', what: 'the evidence rules', res: [/测试证据必须是本会话里实际执行的命令/, /退出码/, /提交号从 git 读取/] },
+  { rule: 'set-project-dir', what: 'the set_project_dir sentence', res: [/根线程开始时用主检出的绝对路径调一次 ?`?set_project_dir`?，并用 ?`?get_server_info`? ?核对 ?`?state_files/] },
+  { rule: 'subagents', what: 'the subagent rules', res: [/^#{1,6}\s*子代理与并行/m, /只有主会话（Codex 里是根线程）写账本/, /子代理不调用 set_project_dir/, /同一个项目同一时间只允许一个进程写账本/] },
+  { rule: 'git-report', what: 'the Git and reporting rules', res: [/^#{1,6}\s*Git 与汇报/m, /Conventional Commits/, /汇报进度或完成前，逐条对照本会话的工具结果/] },
+];
+// Old rules that batch 1 removes from the templates (v2 section 3.1).
+const OLD_RULES = [
+  { what: 'design before code', re: /先[^。\n]{0,8}设计[^。\n]{0,16}再[^。\n]{0,4}[写改][^。\n]{0,2}代码|[写改](?:任何)?代码(?:之)?前[^。\n]{0,20}设计/g },
+  { what: 'module-by-module confirmation', re: /逐(?:个)?模块[^。\n]{0,6}确认|分模块逐步/g },
+  { what: 'asking on vague requirements', re: /(?:需求[^。\n]{0,4}模糊|模糊[^。\n]{0,2}需求)[^。\n]{0,10}(?:问|澄清)/g },
+  { what: 'state-machine description', re: /状态机|state machine|(?<![A-Za-z0-9_])(?:todo|in_progress|auto_verified)\s*-+>/gi },
+  { what: 'tech-stack default', re: /\bSOLID\b|表现层\s*-+>|统一响应格式|\{\s*data,\s*meta\?|pnpm exec|前端(?:验证基线|任务默认策略)|技术栈默认/g },
+];
+// Terms of the parallel P0 version that the batch-1 templates must not carry yet.
+const P0_TERMS = /(?<![A-Za-z0-9_])(?:run_id|runner|fence|op_key)(?![A-Za-z0-9_])|(?<![A-Za-z0-9_-])run=|回执|分派|租约|执行器/g;
 
 // User-name segments that are placeholders or shared system profiles, not a person.
 const USER_PLACEHOLDERS = new Set(['user', 'username', 'me', 'you', 'yourname', 'your-name', 'your_name', 'name', 'someone', 'xxx', 'public', 'default', 'all users']);
@@ -489,6 +529,45 @@ function legacyText(lines, markers) {
   return out;
 }
 
+// ---------- contract ----------
+
+/** Contract findings over the scanned files; needSource = the scan covers a whole set (no --path, or a directory). */
+function contractCheck(files, load, needSource) {
+  const out = [];
+  const docs = files.map((f) => ({ f, doc: load(f) })).filter((x) => x.doc);
+  // global-AGENTS.md counts as the source when it is among them; the others are reported as copies.
+  const rank = ({ f }) => (path.basename(f.abs) === CONTRACT_SOURCE ? 0 : 1);
+  const sources = docs.filter(({ doc }) => doc.lines.some((l) => CONTRACT_HEADING.test(l)))
+    .sort((a, b) => rank(a) - rank(b) || (a.f.rel < b.f.rel ? -1 : a.f.rel > b.f.rel ? 1 : 0));
+  if (!sources.length && needSource) out.push({ rel: '(scanned files)', line: null, col: null, rule: 'single-source', msg: 'no contract source: no scanned file has the heading "## 自主契约"' });
+  sources.slice(1).forEach(({ f }) => out.push({ rel: f.rel, line: null, col: null, rule: 'single-source', msg: `second contract source (the first is ${sources[0].f.rel}); keep one and import it` }));
+  for (const { f, doc } of sources) {
+    const add = (rule, msg) => out.push({ rel: f.rel, line: null, col: null, rule, msg });
+    const text = doc.lines.join('\n');
+    for (const req of CONTRACT_REQUIRED) {
+      const miss = req.res.filter((re) => !re.test(text));
+      if (miss.length) add(req.rule, `missing ${req.what}: no match for ${miss.map((re) => re.source).join(', ')}`);
+    }
+    const n = doc.lines.length - (doc.lines[doc.lines.length - 1] === '' ? 1 : 0);
+    if (n > CONTRACT_MAX_LINES) add('length', `contract has ${n} lines (max ${CONTRACT_MAX_LINES})`);
+  }
+  for (const { f, doc } of docs) {
+    const add = (line, col, rule, msg) => out.push({ rel: f.rel, line, col, rule, msg });
+    const base = path.basename(f.abs);
+    if (RETIRED_SOURCES.includes(base)) add(null, null, 'single-source', 'retired second source of the global rules; templates/global-AGENTS.md replaces it');
+    if (base === CLAUDE_GLOBAL) {
+      if (doc.lines[0].trim() !== '@AGENTS.md') add(0, 0, 'claude-import', 'the first line must be @AGENTS.md (import the contract, do not copy it)');
+      const extra = doc.lines.slice(1).filter((l) => l.trim()).length;
+      if (extra > CLAUDE_EXTRA_MAX) add(null, null, 'claude-import', `${extra} Claude-only lines after the import (max ${CLAUDE_EXTRA_MAX})`);
+    }
+    doc.lines.forEach((line, i) => {
+      for (const r of OLD_RULES) for (const m of line.matchAll(r.re)) add(i, m.index, 'old-rule', `old rule (${r.what}): ${m[0]}`);
+      for (const m of line.matchAll(P0_TERMS)) add(i, m.index, 'p0-term', `P0 term in a batch-1 template: ${m[0]}`);
+    });
+  }
+  return out;
+}
+
 // ---------- git log ----------
 
 function gitMessages(root, range) {
@@ -562,6 +641,11 @@ function run(argv) {
     if (g === 'legacy') files = files.filter((f) => !f.rel.startsWith('tests/'));
     files.forEach((f) => seen.add(f.abs));
     if (g === 'skills') { findings.push(...skillsCheck(root, files, !!paths)); continue; }
+    if (g === 'contract') {
+      const needSource = !paths || paths.some((p) => fs.statSync(path.resolve(root, p)).isDirectory());
+      findings.push(...contractCheck(files.filter((f) => !samePath(f.abs, SELF)), load, needSource).map((x) => ({ ...x, group: g })));
+      continue;
+    }
     for (const f of files) {
       const doc = load(f);
       if (!doc) continue;

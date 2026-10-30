@@ -351,6 +351,116 @@ describe('legacy', () => {
   });
 });
 
+describe('contract', () => {
+  // Built from the repo's own templates at run time, so the tests never hold a second copy of the contract.
+  const tpl = (name) => fs.readFileSync(path.join(REPO, 'templates', name), 'utf8');
+  const CONTRACT = tpl('global-AGENTS.md');
+  const without = (text, re) => text.split('\n').filter((l) => !re.test(l)).join('\n');
+  /** A temp root with a templates/ dir: the real contract and Claude file unless overridden (null drops one). */
+  const contractRoot = (files = {}) => tempRoot(Object.fromEntries(Object.entries({
+    'templates/global-AGENTS.md': CONTRACT,
+    'templates/global-claude-CLAUDE.md': tpl('global-claude-CLAUDE.md'),
+    ...files,
+  }).filter(([, text]) => text !== null)));
+  const check = (root, ...more) => lint('--root', root, '--check', 'contract', ...more);
+
+  test('pass: the repo templates', () => {
+    const r = lint('--check', 'contract');
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.match(r.out, /ok \[contract\]/);
+    const all = check(contractRoot({ 'templates/repo-AGENTS.md': tpl('repo-AGENTS.md'), 'templates/repo-CLAUDE.md': tpl('repo-CLAUDE.md'), 'templates/goal.txt': tpl('goal.txt') }));
+    assert.equal(all.code, 0, all.out);
+  });
+
+  test('fail: each required clause missing', () => {
+    const cases = [
+      ['stop-points', without(CONTRACT, /停点只有五种/)],
+      ['zero-exception', CONTRACT.replace('不访问客户数据', '')],
+      ['evidence', without(CONTRACT, /测试证据必须是本会话里实际执行的命令/)],
+      ['set-project-dir', without(CONTRACT, /get_server_info/)],
+      ['subagents', without(CONTRACT, /^#+\s*子代理与并行/)],
+      ['git-report', CONTRACT.replace('Conventional Commits', 'commits')],
+    ];
+    for (const [rule, text] of cases) {
+      assert.notEqual(text, CONTRACT, rule);
+      const r = check(contractRoot({ 'templates/global-AGENTS.md': text }));
+      assert.equal(r.code, 1, `${rule}\n${r.out}`);
+      assert.match(r.out, new RegExp(`templates/global-AGENTS\\.md: contract/${rule}: missing `), rule);
+      assert.equal(r.out.split('\n').filter((l) => / contract\//.test(l)).length, 1, r.out); // only that clause
+    }
+  });
+
+  test('length: 60 lines pass, 61 fail', () => {
+    const n = CONTRACT.replace(/\n$/, '').split('\n').length;
+    assert.ok(n <= 60, `contract has ${n} lines`);
+    const pad = (k) => CONTRACT + '- 补充条款。\n'.repeat(k);
+    assert.equal(check(contractRoot({ 'templates/global-AGENTS.md': pad(60 - n) })).code, 0);
+    const r = check(contractRoot({ 'templates/global-AGENTS.md': pad(61 - n) }));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /contract\/length: contract has 61 lines \(max 60\)/);
+  });
+
+  test('single source: a second copy, the retired Codex global and a missing contract are findings', () => {
+    const two = check(contractRoot({ 'templates/codex/AGENTS.md': CONTRACT }));
+    assert.equal(two.code, 1);
+    assert.match(two.out, /templates\/codex\/AGENTS\.md: contract\/single-source: second contract source \(the first is templates\/global-AGENTS\.md\)/);
+    const retired = check(contractRoot({ 'templates/global-codex-AGENTS.md': '# 全局规则\n' }));
+    assert.equal(retired.code, 1);
+    assert.match(retired.out, /templates\/global-codex-AGENTS\.md: contract\/single-source: retired second source/);
+    const none = contractRoot({ 'templates/global-AGENTS.md': null, 'templates/repo-AGENTS.md': tpl('repo-AGENTS.md') });
+    const r = check(none);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /contract\/single-source: no contract source/);
+    assert.equal(check(none, '--path', 'templates').code, 1); // a directory is a whole set
+    assert.equal(check(none, '--path', 'templates/repo-AGENTS.md').code, 0, 'a single file needs no contract');
+  });
+
+  test('Claude global file: @AGENTS.md first, at most 10 more lines', () => {
+    const lines = (k) => `@AGENTS.md\n\n${'- Claude 专属条款。\n'.repeat(k)}`;
+    assert.equal(check(contractRoot({ 'templates/global-claude-CLAUDE.md': lines(10) })).code, 0);
+    const long = check(contractRoot({ 'templates/global-claude-CLAUDE.md': lines(11) }));
+    assert.equal(long.code, 1);
+    assert.match(long.out, /global-claude-CLAUDE\.md: contract\/claude-import: 11 Claude-only lines after the import \(max 10\)/);
+    const copy = check(contractRoot({ 'templates/global-claude-CLAUDE.md': `# 全局规则\n\n@AGENTS.md\n` }));
+    assert.equal(copy.code, 1);
+    assert.match(copy.out, /global-claude-CLAUDE\.md:1:1: contract\/claude-import: the first line must be @AGENTS\.md/);
+  });
+
+  test('fail: old rules in any template', () => {
+    const cases = [
+      ['design before code', '- 在写任何代码之前，必须先完成设计文档并等待用户明确确认。'],
+      ['design before code', '- 涉及架构变更时必须先更新设计文档，等用户确认后再改代码。'],
+      ['module-by-module confirmation', '- 每个模块做完都要逐个模块等用户确认。'],
+      ['module-by-module confirmation', '- 不要一次性生成大量代码，分模块逐步实现并验证。'],
+      ['asking on vague requirements', '- 需求模糊必须问。'],
+      ['asking on vague requirements', '- 遇到模糊需求主动追问，不要假设。'],
+      ['state-machine description', '### 任务状态机'],
+      ['state-machine description', 'todo -> in_progress -> auto_verified -> done'],
+      ['tech-stack default', '- 遵循 SOLID / DRY / KISS / 关注点分离'],
+      ['tech-stack default', '- API 统一响应格式：`{ data, meta?, error? }`'],
+      ['tech-stack default', '  - `pnpm exec vitest run`'],
+    ];
+    for (const [what, line] of cases) {
+      const r = check(contractRoot({ 'templates/repo-AGENTS.md': `# 项目契约\n\n${line}\n` }));
+      assert.equal(r.code, 1, `${line}\n${r.out}`);
+      assert.match(r.out, new RegExp(`templates/repo-AGENTS\\.md:3:\\d+: contract/old-rule: old rule \\(${what}\\)`), line);
+    }
+  });
+
+  test('fail: P0 terms in batch-1 templates; the batch-1 /goal template has none', () => {
+    const goal = tpl('goal.txt');
+    assert.match(goal, /验证命令实际跑过并通过/);
+    const p0 = goal.replace('<项目> 的', '<项目> run=<run_id> 的').replace('验证命令实际跑过并通过', '验证执行器记录通过');
+    const r = check(contractRoot({ 'templates/goal.txt': p0 }));
+    assert.equal(r.code, 1);
+    for (const term of ['run=', 'run_id', '执行器']) assert.match(r.out, new RegExp(`templates/goal\\.txt:\\d+:\\d+: contract/p0-term: P0 term in a batch-1 template: ${term}`));
+    const c = check(contractRoot({ 'templates/global-AGENTS.md': `${CONTRACT}- 正式证据只认 runner 回执。\n` }));
+    assert.equal(c.code, 1);
+    assert.match(c.out, /contract\/p0-term: P0 term in a batch-1 template: runner/);
+    assert.match(c.out, /contract\/p0-term: P0 term in a batch-1 template: 回执/);
+  });
+});
+
 describe('cli', () => {
   test('usage errors exit 2', () => {
     assert.equal(lint().code, 2);
@@ -369,10 +479,16 @@ describe('cli', () => {
   });
 
   test('--check all runs every group', () => {
-    const root = tempRoot({ ...kitSkills(), 'mcp/project-manager/src/index.ts': 'server.tool("add_log", "", {}, async () => ({}));\n', 'templates/t.md': 'Call `add_log`.\n' });
+    const contract = fs.readFileSync(path.join(REPO, 'templates', 'global-AGENTS.md'), 'utf8');
+    const root = tempRoot({
+      ...kitSkills(),
+      'mcp/project-manager/src/index.ts': 'server.tool("add_log", "", {}, async () => ({}));\nserver.tool("set_project_dir", "", {}, async () => ({}));\nserver.tool("get_server_info", "", {}, async () => ({}));\n',
+      'templates/t.md': 'Call `add_log`.\n',
+      'templates/global-AGENTS.md': contract,
+    });
     const r = lint('--root', root, '--check', 'all');
     assert.equal(r.code, 0, r.out + r.err);
-    assert.match(r.out, /ok \[privacy,tools,skills,legacy\]/);
+    assert.match(r.out, /ok \[privacy,tools,skills,legacy,contract\]/);
   });
 
   test('read-only: a full run leaves the tree unchanged, and the source has no write calls', () => {
