@@ -9,8 +9,7 @@
       "env": {},
       "trust": {
         "codex": false,
-        "claude": false,
-        "gemini": true
+        "claude": false
       }
     }
   }
