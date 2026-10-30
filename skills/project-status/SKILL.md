@@ -1,55 +1,46 @@
 ---
 name: project-status
-description: 查看项目进度。当用户说"进度"、"看板"、"状态"、"status"、"完成了多少"、"还剩多少"时触发。
+description: 只读看进度：完成率、在做什么、卡在哪、等用户验收的任务（带 review_checklist）、预计还要多久（标明是估计）。只调读工具，不写账本，不改文件。用户说"进度""状态""看板""还剩多少""status"时使用。
 ---
 
-# /project-status — 项目进度看板
+# /project-status — 只读进度
 
-## 你的角色
-你是项目状态的报告者，清晰、简洁地展示当前项目进度。
+## 只读（写死）
+- 只调读工具：`get_server_info`、`get_project_context`、`get_all_tasks`、`get_task_by_id`、`get_logs`、`get_current_focus`；看多个项目时用 `get_portfolio`。
+- 不调任何写账本的工具，也不调 `set_project_dir`（它会切换服务端的当前项目）。本会话还没对准这个项目时，给每个读工具传 `project_dir`（主检出的绝对路径）。
+- 不改文件、不提交、不写 `.autoskills/`；git 只读（`git status --short`、`git log --oneline`）。
+- 在循环中被问到进度时，简短答完接着做，不取消正在执行的目标。
 
-## 执行流程
+## 1. 读
+- `get_project_context`：tasks_summary 里的 metrics（raw 和 active 完成率）、by_status、awaiting_acceptance（含 review_checklist）、next_task 和 next_task_blocked_reason；in_progress_tasks；current_focus；recent_logs。
+- 要看依赖或 notes 时用 `get_all_tasks`；估计时间用 `get_logs(kind="task_transition", n=50)`。
 
-### 第一步：读取状态
-调用 MCP `get_project_info`、`get_all_tasks`、`get_logs`（最近 10 条）。
+## 2. 判断
+- 在做什么：in_progress 的任务；current_focus 没过期时附上它的 summary。
+- 卡在哪：
+  - notes 里写着"受阻"的任务，附原因；
+  - next_task_blocked_reason 不是 none 或 all_done 时，说明是哪种；
+  - 依赖被 cancelled 的任务；
+  - 只因依赖还在等用户验收而不能开始的任务。
+- 等用户验收：awaiting_manual_acceptance 的任务，逐个列 review_checklist（第一条压成"风险 中，改用户级文件 否"这样一行）。
+- 预计还要多久（估计）：
+  - 从 task_transition 日志算最近完成的任务从 →in_progress 到 →auto_verified 的时长，取中位数，乘以还没完成的 todo 和 in_progress 任务数；
+  - 等用户验收的时间不算在内，单独写"另有 n 个等你验收"；
+  - 样本少于 3 个时写"样本不足，暂不估计"；
+  - 一律标"估计"，写明样本数和方法，不当承诺。
 
-也可改用一次 `get_project_context` 拿到 `tasks_summary.metrics`（`total_all` / `active_total` / `done` / `cancelled` / `superseded` / `closed_total` / `raw_completion_rate` / `active_completion_rate`），直接得到双完成率与各终态计数，省去本地统计。
-
-跨项目（1.3.0+）：只读工具均可传 `project_dir` 查看**另一个**项目而**不切走**当前项目；要并排看多个项目，用一次 `get_portfolio(project_dirs[])` 直接拿到逐项目的 进度双率/当前焦点/下一个任务 摘要（仅 per-call 列表，不读注册表）。
-
-### 第二步：计算并输出看板
-
+## 3. 输出（一屏能看完，不超过约 20 行）
 ```
-📊 项目进度 — [项目名称]
-
-整体进度（raw）：████████░░ 72% (18/25 tasks)        # raw_completion_rate，分母含全部任务
-有效进度（active）：█████████░ 86% (18/21 tasks)      # active_completion_rate，分母剔除 cancelled/superseded
-（两个比率相等时可只展示一行）
-
-📋 待开始 (4)
-   TASK-019  添加导出功能          [M]  依赖: TASK-018
-
-🔧 进行中 (1)
-   TASK-018  数据可视化图表        [L]  ⏳ 执行中
-
-⏳ 待验收 (2)
-   TASK-016  用户设置页面          [M]  🔍 等待手动测试
-
-✅ 最近完成 (最近 5 个)
-   TASK-015  报表导出 API         [M]  ✅ 2h ago
-
-🚫 已取消 / 🔁 已超代 (3)                              # 默认折叠/诊断用，计数为 0 时整段省略
-   TASK-011  旧版导出方案          🚫 cancelled  原因: 需求撤回
-   TASK-009  临时鉴权中间件        🔁 superseded → TASK-022
-
-📝 最近日志 (最近 5 条)
-
-💡 建议
-   → 有 2 个任务等待人工验收，建议先运行 /project-feedback
+<项目名> 进度：done 18/25（raw 72%，active 86%）
+在做：T3.2 导出接口（in_progress）
+卡住：T3.4 受阻：缺测试账号 | T3.6 依赖 T3.5 等验收
+等你验收（2）：
+  T3.1 设置页面  风险 中，改用户级文件 否
+    - 窄屏下表单不溢出
+    - 深色模式对比度
+预计还要：约 3 小时（估计：最近 6 个任务的中位数 × 4 个未完成任务）
+建议：先验收 T3.1、T3.5（回复如"T3.1、T3.5 通过"）
 ```
-
-## 注意事项
-- 只读操作，不修改任何状态
-- 信息要简洁
-- 同时给出 raw 与 active 两个完成率（active 已剔除 `cancelled` / `superseded`），不要只报一个让进度看起来虚高或虚低
-- "已取消 / 已超代"段是折叠/诊断性质：计数为 0 时整段省略，不要在正常活跃任务里混入终态任务
+- 两个完成率相等时只写一个；cancelled、superseded 不为 0 时，在第一行末尾加计数。
+- 每段最多列 5 个任务，多出的写"另有 n 个"；某段为空就整段省略。
+- 只报读到的数字和 id，读不到的写"未核实"。
