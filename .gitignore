@@ -30,3 +30,6 @@ __pycache__/
 
 # CouncilFlow (multi-model discussion runtime artifacts)
 .council/
+
+# project-manager MCP ledger state (local only: it records the owner's own words and must not reach the public remote)
+.claude/state/
