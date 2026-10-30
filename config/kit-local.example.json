@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "AutoSkills 本地配置的字段说明。真实值放在不进 git 的 _private/kit-local.json，由 deploy-kit --init-local 生成；本文件只有占位。",
+    "路径一律写绝对路径，用 / 分隔。",
+    "readonly_dirs：登记过的只读目录。部署时生成 Claude 的 Edit(//<路径>/**) deny（Edit 规则覆盖所有内置写文件工具，Write(路径) 规则不生效），并写进守卫的 hook-config.json。",
+    "customer_data_dirs：已知的客户数据目录。部署时生成 Claude 的 Read(//<路径>/**) deny（也挡住同一路径的 Edit 和 Write）。Codex 这边没有读拦截。",
+    "runtime：运行区，钩子部署到 <runtime>/hooks/，心跳写在 <runtime>/hooks/heartbeat/。",
+    "portable_node：运行区里便携 Node 的 node.exe，两个平台的钩子命令都用它的绝对路径（片段里的 <node>）。",
+    "projects_root：项目根目录，set-pushurl 和 check-kit 在它下面找有远端的仓库。",
+    "restore_tool：第 0 步恢复工具 restore.mjs 的路径，deploy-kit --rollback 用它恢复整份替换的文件。",
+    "deploy_options：最近一次 --apply 用的选项，由 deploy-kit 写入；--dry-run --expect-clean 按它比较。claude_contract 是 import 或 inline。",
+    "片段里的占位：<home> 是用户目录，<runtime> 和 <node> 取自本文件。"
+  ],
+  "readonly_dirs": ["<readonly-dir>"],
+  "customer_data_dirs": [],
+  "runtime": "<runtime>",
+  "portable_node": "<runtime>/node-v24.22.2-win-x64/node.exe",
+  "projects_root": "<projects-root>",
+  "restore_tool": "<autoskills-repo>/_private/redesign-2026-10/step0/restore.mjs",
+  "deploy_options": {
+    "claude_contract": "import",
+    "retire_legacy_agents": false
+  }
+}

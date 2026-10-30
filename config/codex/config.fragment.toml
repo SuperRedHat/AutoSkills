@@ -1,0 +1,13 @@
+# AutoSkills 3.0 第 1 批：Codex 的 config.toml 片段（ADR-006 §2.6）。
+# 部署脚本只替换下面这几个键，不重排、不丢注释，其余内容（信任段、插件、MCP）保持原样。
+#
+# 有意不写的键：
+# - agents.default_subagent_reasoning_effort：不设，子代理跟随主线程的档位；选 ultra 时保持 ultra 自己的档位。
+# - 线程上限（v3 第 10 节第 8 条）：按 ADR-006 §3 留到 P0 或试点，第 1 批的子代理只做只读的活。
+
+# 只管 CLI 和默认值；桌面版的档位按聊天设置，默认用 medium 还是 high 看第 1 批的测量结果。
+model_reasoning_effort = "medium"
+
+[desktop]
+# 运行中说“暂停”能及时送达，不用排到本轮结束。
+followUpQueueMode = "steer"

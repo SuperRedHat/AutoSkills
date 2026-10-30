@@ -1,0 +1,18 @@
+{
+  "description": "AutoSkills 3.0 第 1 批的守卫钩子（ADR-006 §2.5）。Codex 的钩子出错时会放行，所以只当提醒。命令写法和是否注册 SessionStart 按 C0 结论定（AS3-117）。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write|mcp__project[-_]manager__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<node>\" \"<runtime>/hooks/guard.mjs\" --platform codex",
+            "timeout": 30,
+            "statusMessage": "AutoSkills 守卫"
+          }
+        ]
+      }
+    ]
+  }
+}
