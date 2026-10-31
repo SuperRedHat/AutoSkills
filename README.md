@@ -1,233 +1,163 @@
 # AutoSkills
 
-> **CouncilFlow 的配套工作流仓库** —— 把 `project-*` 开发流 skills 和 `project-manager` MCP server 一键部署到 Codex / Claude Code / Gemini CLI 三端。
+> Claude Code 和 Codex 共用的一套项目工作流：一份短的自主契约、7 个 `project-*` 技能、护栏钩子、两个平台的设置片段，加上部署、检查和 lint 脚本。任务状态存在 `project-manager` MCP 账本里（第 1 批仍是 1.5.1）。
 
-本仓库与 [CouncilFlow](https://github.com/SuperRedHat/CouncilFlow) 是**配套关系**：
-
-- **CouncilFlow** 是 sidecar CLI 本体，提供 `council discuss` / `council delegate` / `council status` 等多模型协作能力
-- **AutoSkills**（本仓库）提供让"当前会话主控"能自动触发 CouncilFlow 的那层工作流 skills + 必需的 MCP server + 一键部署脚本
-
-只装 CouncilFlow 能用它的 CLI 命令；只装 AutoSkills 没有 CouncilFlow 可调。两者都装齐才是完整体验。
+当前是 **AutoSkills 3.0 第 1 批**：只改文字和配置，**只串行**——一个主循环按顺序做，子代理只做只读的活；并行写入、无人值守长跑、额度续跑和账本改造都在 P0 之后。设计决定和取舍见 [ADR-006](docs/adr-006-autoskills-3-batch1-serial-kit.md)，部署和回滚见 [docs/deploy.md](docs/deploy.md)。
 
 ---
 
-## 内容一览
+## 目录
 
-| 目录 / 文件 | 作用 |
-|---|---|
-| `skills/project-*/` | 11 个 `project-*` 工作流 skills 源——逐个作用与用法见下方 [Skills 一览](#skills-一览11-个-project--工作流) |
-| `mcp/project-manager/` | `project-manager` MCP server（Node/TypeScript 工程），bootstrap 时构建并向三端注册 |
-| `mcp-manifest.json` | MCP 注册 manifest（单一真源），bootstrap 时消费 |
-| `templates/` | 全局 `CLAUDE.md` / `AGENTS.md` 模板（Claude + Codex） |
-| `scripts/bootstrap.{ps1,sh}` | 一键安装编排器 |
-| `scripts/sync-skills.{ps1,sh}` | 同步 `skills/` 到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.gemini/skills/` |
-| `scripts/backup-global-workflow.{ps1,sh}` | 覆盖前做时间戳快照 |
-| `scripts/restore-global-workflow.{ps1,sh}` | 从快照反向恢复 |
-| `docs/bootstrap.md` | bootstrap 深度文档：每一步、幂等性、快照、回滚 |
-| `docs/skills-migration-report.md` | skills 搬迁审计（TASK-065 产出） |
-| `docs/mcp-migration-report.md` | MCP server 搬迁审计（TASK-066 产出） |
-| `docs/adr-001..005-*.md` | project-manager ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查 / 任务身份与 reconcile 安全包络（ADR） |
-| `mcp/project-manager/CHANGELOG.md` | project-manager 版本变更日志（当前 **v1.5.1**） |
+- [共用契约](#共用契约)
+- [7 个技能](#7-个技能)
+- [护栏](#护栏)
+- [两个平台的设置](#两个平台的设置)
+- [部署和检查](#部署和检查)
+- [你自己怎么推送](#你自己怎么推送)
+- [残余风险](#残余风险)
+- [目录说明](#目录说明)
 
 ---
 
-## Skills 一览（11 个 `project-*` 工作流）
+## 共用契约
 
-每个 skill 是一段驱动「当前主控 AI」的工作流提示词，部署后在任一主控里用 `/<skill 名>` 触发（或说出触发短语）。它们共享同一套约定：先 `set_project_dir` → 用 `project-manager` MCP 读写状态 → 需要别的模型时按项目级 `.council/config.yaml` 路由到 CouncilFlow。
+两个平台读同一份契约（`templates/global-AGENTS.md`，约 50 行），部署到 `~/.claude/AGENTS.md` 和 `~/.codex/AGENTS.md`；`~/.claude/CLAUDE.md` 只写 `@AGENTS.md` 加几行 Claude 专属内容（`templates/global-claude-CLAUDE.md`）。要点：
 
-把它们按一个项目的生命周期串起来最好理解：
+- **优先级**：平台约束和零例外规则（不 push、不发布、不对外发送、不改只读目录、不访问客户数据）最先，其余按本轮指令 > 项目契约 > 本契约 > 技能步骤。
+- **执行循环**：取就绪任务 → 实现 → 按风险验证 → 提交 → 记录 → 取下一个，直到停点。
+- **停点只有五种**：本轮做完；只剩用户本人能定的事；真的卡住；预算或截止时间到；用户说暂停或控制器出错。
+- **证据**：只认本会话里实际执行的命令，写明命令、退出码和日志位置；提交号从 git 读取，不得编造。
+- **验收**：待验收改成完成，只能在处理用户本人的验收消息时做（project-feedback），并逐字记下原话。
+- **子代理**：只有主会话（Codex 里是根线程）写账本、认领任务、提交和记录验收；子代理只读，不调 `set_project_dir`，不调 project-* 技能。
+- **账本**：根线程开始时用主检出的绝对路径调一次 `set_project_dir`，再用 `get_server_info` 核对。
 
-> **`init` →（可选 `discuss`）→ `design` → `plan` → `next` ×N →（`review` / `feedback`）**，过程中随时 `ask` / `status` / `resume`，需求变了走 `change`。
-
-| Skill | 触发（典型说法） | 作用 | 怎么用 / 产出 |
-|---|---|---|---|
-| **project-init** | "开始项目"、"需求分析"、"写 PRD" | 需求澄清并生成 PRD | 对话澄清边界 → 经 `planner`/`synthesizer` 路由 → 用户确认后 `save_prd` 落盘，并为新项目落 repo-local `AGENTS.md`/`CLAUDE.md` |
-| **project-design** | "开始设计"、"架构设计"、"系统设计" | 基于已确认 PRD 出架构文档 | 读 PRD → `architect`/`synthesizer` 路由 → 含技术选型/目录结构/接口/数据模型/Mermaid 图 → 确认后 `save_architecture` |
-| **project-plan** | "拆任务"、"任务规划"、"plan" | 把 PRD+架构拆成带验收字段的原子任务 | 拓扑拆解 → 每个任务写 `acceptance_mode`/`verification_*`/`stage_gate`/`priority` → 确认后 `create_tasks` |
-| **project-next** | "下一个任务"、"继续开发"、"next" | 执行下一个可执行任务（核心循环） | `get_next_task` → 阶段机 `implementer→tester→reviewer→[fixer↻]→synthesizer` → 按验收字段自动验证 → 状态流转 + 独立 commit |
-| **project-review** | "审查代码"、"review"、"code review" | 对最近完成任务做代码审查 | 收集 done 任务文件 → `reviewer` 路由 → 分级报告（🚨/⚠️/💡/✅）→ 严重问题自动 `add_subtask` 建修复任务 |
-| **project-change** | "需求变更"、"改需求"、"加功能" | 评估变更影响、更新文档、追加任务 | `architect→planner→synthesizer` 评估 → 更新 PRD/架构 → 追加新任务；作废的旧任务用 `close_task(superseded/cancelled)` |
-| **project-ask** | "这个怎么实现"、"XX和YY哪个好"、"ask" | 纯顾问模式答疑 | **只读**，绝不改文件/不跑写命令 → `advisor`/`synthesizer` 路由 → 结合项目上下文给方案对比与建议 |
-| **project-feedback** | （任务停在 `awaiting_manual_acceptance` 时）"验收"、"通过"、"返工" | 处理人工验收与阶段 gate 收口 | 验收通过 → `done`（含 `milestone_manual+stage_gate` 阶段收口）；返工 → 回 `in_progress` 走 route-first；不做 → `close_task`；误关 → `reopen_task` |
-| **project-status** | "进度"、"看板"、"还剩多少"、"status" | 展示项目进度看板 | 读 metrics → ASCII 看板：双完成率（raw/active）+ 各状态任务分组 |
-| **project-resume** | "继续项目"、"恢复上下文"、"resume"、"上次做到哪" | 新会话快速恢复上下文 | 先 `set_project_dir` → `get_project_context` → 输出"现在在哪/在等谁/为何卡住/下一个干什么"摘要 |
-| **project-discuss** | "讨论一下"、"多模型讨论"、"让其他模型看看" | 独立多模型讨论入口 | 整理 `initial_position` → `council discuss` 引入其他模型评论 → 当前主控综合收敛成可执行结论（**discuss 协议的权威定义在此 skill**，其余 skill 的 discuss 旁路引用它） |
-
-**说明**：上面除 `project-discuss` / `project-ask` 外，主体阶段（planner/architect/synthesizer/implementer/tester/reviewer/fixer）都走 CouncilFlow「route-first」——目标模型若等于当前主控就本地执行（`local_execution`），否则派给 sidecar（`delegated`）；没装 CouncilFlow 时退回主控直接执行。每个 skill 的完整阶段契约、失败上报与超时恢复协议见各自的 `skills/<name>/SKILL.md`。
+各项目自己的规则写在项目根目录的 `AGENTS.md` / `CLAUDE.md`，由 project-plan 按 `templates/repo-AGENTS.md` 生成。需要长跑时，project-plan 最后输出一段能直接粘贴的 `/goal`（模板 `templates/goal.txt`）。
 
 ---
 
-## project-manager 能力速览（v1.5.1）
+## 7 个技能
 
-`project-manager` 已从最初的"线性 build 任务 + 日志持久化"扩展为支持**运营 / 管理 / 跨项目**的状态引擎（全程**向后兼容、纯加法**）。完整工具清单见 [mcp/project-manager/README.md](mcp/project-manager/README.md)，设计依据见 `docs/adr-001..005`，版本变更见 [CHANGELOG](mcp/project-manager/CHANGELOG.md)。
+Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直接说触发说法。保留 `project-` 前缀，是为了不和两个平台内置的 `/plan`、`/status`、`/resume`、`/feedback` 撞名。
 
-- **任务生命周期**：除前向状态机（`todo → in_progress → auto_verified → done`）外，新增终态 `cancelled` / `superseded`，经**受审计的** `close_task` 进入（不污染完成率）；`reopen_task` 受审计地复活终态任务（撤销误关/误完成）。
-- **优先级**：任务可带 `priority`，`get_next_task` 优先派高优先级（同分按创建顺序，**永不越过依赖门控**）；`set_task_priority` 事后调整。
-- **批量**：`update_tasks` / `close_tasks` / `archive_module` 一次处理多个任务（逐条仍走完整校验）。
-- **当前焦点（ops）**：`set_current_focus` / `get_current_focus` 把"在做什么 / 在等什么"记成结构化快照（`focus.json`，带 `is_stale`）——运营 / 事件驱动型工作尤其受用。
-- **富日志 / journal**：`add_log` 支持 `kind` / `event_type` / `tags` / `entities`（`task_id` 可为 null = 项目级事件）；`get_logs` 可按 `kind` / `event_type` / `since` 先过滤后切片（journal 视图）。
-- **双完成率**：进度同时给 `raw`（含全部任务）与 `active`（剔除已取消 / 被取代）两个口径，避免取消任务后完成率虚高/虚低。
-- **跨项目 / portfolio**：所有**只读**工具支持可选 `project_dir`（**不切走**当前项目即可查另一个项目）；`get_portfolio(project_dirs[])` 一次聚合多项目的进度 / 焦点 / 下一个任务。
-- **更丰富的恢复上下文**：`get_project_context` 现额外返回 `in_progress` 全文、双完成率 `metrics`、`current_focus`、`next_task_blocked_reason` 诊断——`/project-resume` 因此能直接呈现"现在在哪、在等谁、为何卡住"。
-- **元数据补丁（1.4.0）**：`edit_task` 改任务的 `title`/`notes`/`dependencies`/验收字段等**而不触碰 status**（改 `acceptance_mode` 自动同步 `needs_manual_review`、改依赖校验存在/自环/环），终结"改个字段也得手搓 `tasks.json`"。
-- **一致性检查 / 修复（1.4.0，L8）**：`lint_state` 只读交叉核对 tasks/project/logs/focus 四处真相（25 检查，头牌 `progress_drift`＝进度与重算不符），可跨项目巡检；`reconcile` 仅对当前项目做安全确定性自动修复（progress 重算 + 去自环 + active 任务的 stale 字段清理），其余交 `edit_task` 手修；显式 `dry_run:true` 对活动项目也只返回 fix-plan 不落盘。
-- **批量元数据补丁 + 任务重命名（1.5.0，ADR-005）**：`edit_tasks` 一次补丁多个任务的元数据字段；`rename_task` 改任务 id 并级联改写 dependencies / replacement_task_id / focus 引用（logs 不可变留痕），落盘前全图后置校验，失败整体拒绝**不部分写**；`reconcile` 支持跨项目 dry-run/fix-plan（foreign 项目绝不落盘）。
-- **可靠性强化（1.5.1，审计修复批次）**：全部状态文件写入原子化（tmp+rename，崩溃不再产生截断 JSON）；状态文件损坏时返回带文件名的结构化 `state_file_corrupt` 错误、`lint_state` 容损可诊断；多文件变更前预检衍生文件防"半应用"；Windows 路径大小写归一（`d:/x` 与 `D:/X` 不再被误判为两个项目）；`create_tasks`/`add_subtask` 拒绝重复/空白 id；`close_task` supersede 不再把替代任务自身的依赖边改写成自依赖（与 `rename_task` 同款全图校验）。
-
-> **升级到 v1.3.0**：旧状态文件**无需改动**即可读（新字段读时计算）；可选地用 `bootstrap.ps1 -MigrateState dir1,dir2` / `bootstrap.sh --migrate-state=dir1,dir2` 把既有项目**幂等**迁移到 schema v1（绝不改任务 status、回填日志 `kind`、补双完成率）。
-
----
-
-## 前置要求
-
-装 AutoSkills 的新电脑上需要：
-
-| 组件 | 最低版本 | 备注 |
+| 技能 | 用途 | 触发说法 |
 |---|---|---|
-| Git | 2.30+ | clone 本私有仓库 |
-| Node.js | 20.x LTS+ | 构建 `project-manager` MCP server（TypeScript → JavaScript） |
-| PowerShell | 5.1+ (Windows) | 跑 `bootstrap.ps1`（PowerShell 5.x 或 7+ 都可） |
-| bash | 4+ (macOS/Linux) | 跑 `bootstrap.sh` |
-| Python | 3.8+ | `bootstrap.sh` 用 python3 解析 manifest（PS1 用内置 JSON） |
-| CouncilFlow | 0.2.0+ | 已通过 `pipx install git+https://github.com/SuperRedHat/CouncilFlow.git` 装好 |
-| Codex CLI / Claude Code CLI / Gemini CLI | 最新 | 至少装一个；bootstrap 会跳过未装的那端（不报错） |
-| GitHub 访问凭据 | PAT / SSH | 本仓库是 private |
+| **project-plan** | 项目级规划：目标、非目标、验收标准、本人验收点、风险等级和任务拆分；新项目顺带写 PRD、架构和项目契约，需求变了就评估影响、改任务；最后输出 `/goal` | “规划”“立项”“拆任务”“需求变了”“改计划” |
+| **project-next** | 按契约**循环做到停点**：取就绪任务、实现、验证、提交、记录，再取下一个；不再一次只做一个任务 | “做下一个任务”“做 T3.1–T3.5”“把剩下的做完” |
+| **project-resume** | 新会话或中断后：先对一遍 git 和账本，补记已提交但账本没记的，接着按循环做 | “继续”“继续项目”“接着上次的做”“resume” |
+| **project-feedback** | 处理你本人的验收和反馈，可以批量；逐字记下原话、会话 id 和时间，处理完接着做 | “T3.1–T3.5 通过”“T3.3 不行”“验收”“驳回” |
+| **project-status** | 只读看进度：完成率、在做什么、卡在哪、等你验收的任务、预计还要多久（标明是估计） | “进度”“状态”“看板”“还剩多少”“status” |
+| **project-consult** | 要外部第二意见时，在项目文件夹里写一份自包含的提示词，由你自己复制过去；你把回答贴回来后逐条核实再记进账本 | “问问 Pro”“要个第二意见”“写个咨询提示词” |
+| **project-quick** | 小事快修：不碰门禁和接口、一次提交就能回滚、不需要重型套件时用；超出就转成正式任务 | “顺手修一下”“小改一下”“快修” |
+
+有风险的任务和里程碑，由只读的独立校验者按原始验收标准审查：Claude 用 `project-verifier` 子代理（`config/claude/agents/project-verifier.md`，只给读工具）；Codex 先由主线程只读核对。旧版的其余技能已退役，退役说明见 ADR-006 §2.2；部署时会删掉用户级的旧副本。
 
 ---
 
-## 安装
+## 护栏
 
-### 一、克隆
+同一个 Windows 账户下，护栏只防误操作，不承诺隔离（见[残余风险](#残余风险)）。
 
-```bash
-# HTTPS + PAT
-git clone https://<PAT>@github.com/SuperRedHat/AutoSkills.git
+- **守卫钩子** `hooks/guard.mjs`（PreToolUse，两个平台共用）：
+  1. 拦 git push 的各种写法、gh 的写操作、带写方法的 gh api、npm publish；
+  2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较；
+  3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
+  4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
 
-# 或：SSH
-git clone git@github.com:SuperRedHat/AutoSkills.git
+  **出错即拦截，两个平台一样**：守卫出错时退出 2，原因写 stderr。Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
+- **SessionStart 钩子** `hooks/session-start.mjs`（只在 Claude 注册）：startup、resume、compact 时注入几行提示和会话 id。
+- **Claude 的 deny 规则**（`config/claude/settings.fragment.json`）：每类被禁命令同时写 `Bash(...)` 和 `PowerShell(...)`；对外发送类的 MCP 工具；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。
+- **Codex 的规则**（`config/codex/rules/autoskills.rules`）：`prefix_rule` 拦简单形式的 git push、gh 写操作、npm publish。规则只匹配简单命令，**只当提醒**，由钩子和 pushurl 兜底。
+- **pushurl**：部署时给项目根目录下所有有远端的仓库设 `pushurl = no_push`（`scripts/set-pushurl.mjs`，先记原值，可恢复），登记的只读目录跳过。
 
-cd AutoSkills
-```
+钩子由运行区 `_private/rt/` 里的便携 Node 24.22.2 启动；project-manager 仍用系统 Node。
 
-### 二、预演（推荐先 dry-run）
+---
+
+## 两个平台的设置
+
+片段里不含本机路径，用 `<home>`、`<runtime>`、`<node>` 占位，由部署脚本合并；合并只动套件的键，其余内容保留。
+
+- **Claude**（`config/claude/settings.fragment.json`）：`subagentPromptCacheTtl: "1h"`；`worktree.baseRef: "head"`；`CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=6`；上面的 deny 规则和两个钩子。**不设** `CLAUDE_CODE_EFFORT_LEVEL`：设了任何值都会盖过子代理定义里的 effort，检查脚本会查它。
+- **Codex**（`config/codex/config.fragment.toml`、`config/codex/hooks.json`）：`model_reasoning_effort = "medium"`（只管 CLI 和默认值）；`[desktop] followUpQueueMode = "steer"`（运行中说“暂停”能及时送达）；不设 `agents.default_subagent_reasoning_effort`；技能装到 `~/.agents/skills`；守卫注册在 `~/.codex/hooks.json`，要在 Codex 的 /hooks 里信任。线程上限留到 P0。
+- **桌面版的用法**：每个新聊天选“完全访问”；规划时可临时选 xhigh，开 `/goal` 前切回执行档位；ultra 只用于又大、又能拆成独立几块、并且有人看着的任务。
+
+---
+
+## 部署和检查
+
+完整步骤、冒烟矩阵和回滚见 **[docs/deploy.md](docs/deploy.md)**。简表：
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/bootstrap.ps1` / `bootstrap.sh` | 构建 `mcp/project-manager`，按 `mcp-manifest.json` 向 Claude Code 和 Codex 注册，再检查部署前提并跑一次 deploy-kit 的 dry-run |
+| `scripts/deploy-kit.mjs` | 部署套件到用户级。默认 dry-run（只列计划）；`--apply` 先备份、记日志、出错自动回滚；`--rollback <部署 id>`；`--neutral`（测量用的中性档）；`--drill <目录>`（恢复演练）；`--init-local`（本地配置）；`--stage`（测量用的项目级副本） |
+| `scripts/check-kit.mjs` | 只读健康检查，输出 PASS、WARN、FAIL 表；`--report-only` 总是退出 0，部署前用 |
+| `scripts/set-pushurl.mjs` | 给仓库设 `pushurl = no_push`，或按日志恢复；deploy-kit 部署时调用它 |
+| `scripts/lint-kit.mjs` | 套件文本的检查：隐私、工具名、技能格式、旧内容、契约、源码 |
+
+新机器的顺序：
 
 ```powershell
-# Windows
-powershell -NoProfile -File scripts/bootstrap.ps1 -DryRun
+powershell -NoProfile -File scripts/bootstrap.ps1   # 构建和注册 project-manager
+node scripts/deploy-kit.mjs --init-local             # 本地配置和两个金丝雀目录
+node scripts/deploy-kit.mjs                          # dry-run，看计划
+node scripts/deploy-kit.mjs --apply                  # 先关掉所有 Claude Code 和 Codex 会话
+node scripts/check-kit.mjs                           # 重开两个平台、在 Codex /hooks 信任钩子之后
 ```
 
-```bash
-# macOS / Linux
-bash scripts/bootstrap.sh --dry-run
-```
+套件自己的测试：`node --test tests/kit/*.test.mjs`，`node scripts/lint-kit.mjs --check all`。
 
-dry-run 下脚本只打印"**将要做什么**"，不写文件系统、不跑 `npm install`、不调三端 CLI。看一遍动作清单确认 OK 再进入正式安装。
+---
 
-### 三、正式安装
+## 你自己怎么推送
+
+部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。你自己推送时，在**普通终端**（不是代理的会话）里写完整地址：
 
 ```powershell
-# Windows
-powershell -NoProfile -File scripts/bootstrap.ps1
+git push https://github.com/<owner>/<repo>.git <分支>
+# 或者从 origin 取地址（不带 --push，取到的是拉取地址）
+git push (git remote get-url origin) <分支>
 ```
 
-```bash
-# macOS / Linux
-bash scripts/bootstrap.sh
-```
-
-bootstrap 会按顺序执行：
-
-1. **备份** — `~/.workflow-core-backups/<ISO8601>/` 下写快照（skills 三端目录 + `claude-commands/` + `gemini-settings.json` + `codex/claude mcp get` 输出）
-2. **同步 skills** — `skills/project-*` 覆盖到 `~/.codex/skills/`、`~/.claude/skills/`、`~/.gemini/skills/`，附 SHA-256 校验
-3. **构建 MCP server** — 在 `mcp/project-manager/` 下跑 `npm install && npm run build`，产物 `dist/index.js`
-4. **注册三端** — 按 `mcp-manifest.json` 执行：
-   - `codex mcp add project-manager -- node <AUTOSKILLS_HOME>/mcp/project-manager/dist/index.js`
-   - `claude mcp add project-manager -s user -- node <...同上...>`
-   - 合并写入 `~/.gemini/settings.json` 的 `mcpServers.project-manager`（含 `trust: true`）
-5. **校验** — `codex mcp get` / `claude mcp get -s user` / 打印 gemini 配置段
-
-任何一端 CLI 未装都会被**跳过**（只打印 info），不会让 bootstrap 失败。
-
-安装安全性（1.5.1 加固）：
-- `npm install / build` 退出码被严格检查——构建失败立即终止，**不会**把旧 dist 注册成 MCP server
-- 写 `~/.gemini/settings.json` 一律无 BOM；解析失败时**备份原文件并跳过合并**，绝不清空你的既有配置
-- skills 同步的"畸形目录清理"只针对名字含 `project-` 的目录，你自己装的其他 skill（即使名字带 `{},`）不会被碰
-
-### 四、验证
-
-```bash
-# CouncilFlow 能跑
-council status
-
-# MCP 三端可见
-codex mcp get project-manager
-claude mcp get project-manager -s user
-python -c "import json; d=json.load(open(f'{__import__(\"os\").path.expanduser(\"~\")}/.gemini/settings.json')); print(d.get('mcpServers',{}).get('project-manager'))"
-
-# 任一主控里新开会话，能调用 /project-status、/project-resume 等 skill
-```
+写完整地址时不经过远端的 pushurl。守卫和 deny 规则只管代理的工具调用，管不到你自己的终端。不要为了推送去改回 pushurl。
 
 ---
 
-## 回滚
+## 残余风险
 
-装错或想恢复到安装前：
+如实写明，不承诺隔离（详见 ADR-006 §4）：
 
-```powershell
-# Windows：用最近的快照（替换实际路径）
-powershell -NoProfile -File scripts/restore-global-workflow.ps1 -SnapshotPath "$env:USERPROFILE\.workflow-core-backups\20260419T201129373Z"
-```
-
-```bash
-# macOS / Linux
-bash scripts/restore-global-workflow.sh --snapshot "$HOME/.workflow-core-backups/20260419T201129373Z"
-```
-
-restore 在动手前会**自动对当前状态再做一次快照**（误恢复可再恢复回来），然后整目录还原 skills 三端目录、`claude-commands`、`gemini-settings.json`（快照之后新增的内容会被移除——这正是前置快照存在的原因）。**不会**反向执行 `codex/claude mcp remove` —— 如需清除 MCP 注册，再跑一次 bootstrap（会重新注册为当前 manifest 定义的状态）或手动 remove。
-
-详见 [docs/bootstrap.md](docs/bootstrap.md)。
-
----
-
-## 与 CouncilFlow 的关系
-
-```text
-┌─ 当前主控 AI (Codex / Claude Code / Gemini CLI) ─┐
-│                                                  │
-│  /project-init  /project-plan  /project-next ... │  ← AutoSkills skills/
-│                    │                             │
-│                    ▼                             │
-│           project-manager MCP                    │  ← AutoSkills mcp/
-│           (状态持久化: PRD / arch / tasks / logs) │
-│                    │                             │
-│                    ▼                             │
-│              CouncilFlow CLI                     │  ← pip / pipx 装
-│   council discuss / delegate / synthesize        │
-└──────────────────────────────────────────────────┘
-```
-
-- AutoSkills 提供**流程**（project-* 工作流 + 状态 MCP）
-- CouncilFlow 提供**能力**（多模型讨论 + 委派 + 综合）
-- 两者组合出"AI 可驱动的开发工作流"
+- **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
+- **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。代理如果在 Codex 上用包裹形式写完整地址推送，pushurl 挡不住，只剩钩子。
+- **守卫出错即拦截**：`hook-config.json` 坏了、运行时缺失或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
+- **Codex 钩子的命令写法和 matcher 没在 Codex 里跑过**：由部署冒烟（AS3-121）覆盖。Codex 钩子要单独信任，没信任的钩子不运行；检查脚本只看有没有 trusted_hash，不核对哈希。
+- **Codex 规则只挡简单命令**：`git -C`、`bash -lc` 或 `powershell -Command` 包裹的命令、用 `;` 串起来的复合命令都匹配不到，只剩钩子和 pushurl 兜底。
+- **间接执行能绕过守卫**：写进脚本文件再运行、Invoke-Expression、编码过的命令，守卫都看不到原命令。
+- **here-doc 和 here-string 的正文不检查**：未加引号的 bash here-doc 和 PowerShell 的 `@"..."@` 里，命令替换照样会执行，守卫看不到；真正挡推送的是 `pushurl = no_push`。
+- **Codex 这边没有读拦截**：客户数据目录的 Read 只靠 Claude 的 deny 规则。
+- **子代理写账本的拦截依赖 agent_id**：哪个平台版本不带了，规则 3 就分不出子代理和主会话。
+- **Codex 里有守卫看不到的写入工具**：`mcp__node_repl__js`、`mcp__artifact_session__js` 不在 Codex 钩子的 matcher 里；第 1 批子代理只读，所以只记为风险。
+- **Codex 上的独立校验较弱**：默认是主线程自己核对，独立性弱于 Claude 的子代理；单独开 `codex exec` 时，Windows 上只读沙箱的效果没验证过。
+- **验收原话的记录只能事后核对，不是身份证明**：同一账户下代理也能写这份记录。
+- **测量是冒烟级**：基线和第 1 批每组各跑 1 次。
 
 ---
 
-## 排错
+## 目录说明
 
-常见问题见 [CouncilFlow docs/distribution.md](https://github.com/SuperRedHat/CouncilFlow/blob/main/docs/distribution.md#故障排查)。AutoSkills 特有问题：
-
-- **`npm install` 失败 EACCES** → 不要用 sudo，改 `nvm` / `fnm` / `volta` 管 Node
-- **bootstrap 跑完 `codex mcp get` 看不到 project-manager** → 看 `~/.workflow-core-backups/<ts>/mcp-state.log` 里 bootstrap 前后的对比；`codex mcp remove` 清掉再重跑
-- **Claude 的 MCP 可见但主控不识别** → 重新打开 Claude 会话；或检查 `claude mcp get project-manager` 是否带 `-s user` 参数
-- **SHA-256 校验失败** → 通常是 Windows line-ending 问题（CRLF vs LF），清掉目标目录（`rm -rf ~/.claude/skills/project-*`）重跑 bootstrap
-
----
-
-## 相关链接
-
-- [CouncilFlow](https://github.com/SuperRedHat/CouncilFlow) — 配套 sidecar 本体
-- [docs/bootstrap.md](docs/bootstrap.md) — bootstrap 深度文档
-- [mcp-manifest.json](mcp-manifest.json) — MCP 注册真源
-- [mcp/project-manager/README.md](mcp/project-manager/README.md) — project-manager 完整工具清单（v1.5.1）
-- [mcp/project-manager/CHANGELOG.md](mcp/project-manager/CHANGELOG.md) — project-manager 版本变更
-- `docs/adr-001..005-*.md` — ops / 管理 / 跨项目 / 元数据补丁 + 一致性检查 / 任务身份与 reconcile 安全包络 能力设计决策
+| 路径 | 作用 |
+|---|---|
+| `skills/project-*/` | 7 个技能（`SKILL.md`） |
+| `templates/` | 共用契约 `global-AGENTS.md`、Claude 的 `global-claude-CLAUDE.md`、项目契约模板 `repo-AGENTS.md` / `repo-CLAUDE.md`、`/goal` 模板 `goal.txt` |
+| `config/claude/` | Claude 的设置片段和 `agents/project-verifier.md` |
+| `config/codex/` | Codex 的 `config.fragment.toml`、`hooks.json`、`rules/autoskills.rules` |
+| `config/kit-local.example.json` | 本地配置的字段说明（真实值在不进 git 的 `_private/kit-local.json`） |
+| `hooks/` | 守卫 `guard.mjs`、`session-start.mjs` 和 `hook-config.example.json` |
+| `scripts/` | 部署、检查、pushurl、lint、bootstrap 脚本；`scripts/lib/` 是共用的目标映射和 TOML 定向改写 |
+| `tests/kit/` | 套件测试（node:test，夹具全部合成） |
+| `mcp/project-manager/` | 账本 MCP 服务端，1.5.1，第 1 批不改；工具清单见 [它的 README](mcp/project-manager/README.md)，版本记录见 [CHANGELOG](mcp/project-manager/CHANGELOG.md) |
+| `mcp-manifest.json` | MCP 注册的单一真源，bootstrap 读它 |
+| `docs/deploy.md` | 部署、冒烟、回滚和恢复 |
+| `docs/adr-006-*.md` | 第 1 批的设计决定、不做的事和残余风险 |
+| `docs/adr-001..005-*.md` 和各份报告 | project-manager 1.1–1.5 和旧套件时期的历史记录，按当时的状态理解 |
+| `_private/`（不进 git） | 本机的运行区（便携 Node、已部署的钩子、心跳）、部署记录和备份、本地配置、测量数据 |
