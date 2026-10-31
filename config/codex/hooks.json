@@ -1,5 +1,5 @@
 {
-  "description": "AutoSkills 3.0 第 1 批的守卫钩子（ADR-006 §2.5、§7）。守卫出错时退出 2 并在 stderr 写原因，Codex 按拦截处理（出错即拦截，2026-10-31 负责人选定；退出 2 拦截是从程序字符串推断的，未实测）。命令首词是不加引号的 node 绝对路径：C0 只实测了这种写法，钩子用哪个 shell 没测出来。matcher 和这个写法在真实 Codex 里都未实测，由 AS3-121 的部署冒烟覆盖。SessionStart 不注册（ADR-006 §7）。",
+  "description": "AutoSkills 3.0 第 1 批的守卫钩子（ADR-006 §2.5、§7）。守卫出错时退出 2 并在 stderr 写原因，Codex 按拦截处理（出错即拦截，2026-10-31 负责人选定；退出 2 拦截是从程序字符串推断的，未实测）。命令首词是不加引号的便携 Node 绝对路径，脚本路径加引号。C0 跑通的是 PATH 上的裸 node 加两个加引号的路径（没有 matcher），不是这种写法；钩子用哪个 shell 也没测出来。这个写法和 matcher 在真实 Codex 里都未实测，由 AS3-121 的部署冒烟覆盖。守卫根本起不来（便携 Node 不见、guard.mjs 加载出错）时退出码不是 2，见 ADR-006 §4；check-kit 按登记的命令行实测。SessionStart 不注册（ADR-006 §7）。",
   "hooks": {
     "PreToolUse": [
       {

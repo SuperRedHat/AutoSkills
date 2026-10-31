@@ -1,0 +1,5 @@
+{
+  "runtime": "<runtime>",
+  "readonly_dirs": ["<projects>/demo/frozen"],
+  "kit_repo": "<projects>/autoskills"
+}

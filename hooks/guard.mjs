@@ -2,10 +2,12 @@
 // guard: the AutoSkills PreToolUse guard for Claude Code and Codex (ADR-006 §2.5). Zero dependencies
 // (Node >= 18).
 //
-// Usage (the hook registration is one fixed command line with both paths quoted; the logic lives in this
-// file, so changing it does not need the hook to be trusted again):
-//   "<node>" "<runtime>/hooks/guard.mjs" [--platform claude|codex] [--config <file>]
-//   "<node>" "<runtime>/hooks/guard.mjs" --selftest
+// Usage (the hook registration is one fixed command line; the logic lives in this file, so changing it does
+// not need the hook to be trusted again). Claude registers <node> as the command and the script and options
+// as args; Codex gets one string whose first word, the portable Node path, is not quoted and whose script
+// path is (config/codex/hooks.json):
+//   <node> "<runtime>/hooks/guard.mjs" [--platform claude|codex] [--config <file>]
+//   <node> "<runtime>/hooks/guard.mjs" --selftest
 //
 // Input: the PreToolUse JSON on stdin.
 //   Claude: tool_name Bash or PowerShell, tool_input.command a string, parsed in that tool's syntax;
@@ -42,7 +44,11 @@
 // Errors fail closed on both platforms (owner decision 2026-10-31, "出错即拦截"): Claude registers the guard
 // with onFailure: "block"; Codex treats PreToolUse exit 2 with a reason on stderr as a block. The Codex
 // side is read from strings in the codex binary, not seen live. So a broken hook-config.json blocks every
-// matched call until it is fixed; check-kit reports a failing selftest and a missing or old heartbeat.
+// matched call until it is fixed; check-kit validates that file and reports a failing selftest and a
+// missing or old heartbeat. A guard that never starts is not covered by this: a missing Node, a load or
+// syntax error in this file (Node exits 1) or a shell that cannot find the command gives another exit
+// code, which Claude blocks (onFailure: "block") and Codex lets through (ADR-006 §4). check-kit runs the
+// registered command lines with a synthetic allow and deny input to find that case.
 //
 // Local config: hook-config.json next to this script, written at deploy time from the git-excluded local
 // kit config; --config names another file (tests use temp dirs). The repo holds only the placeholder
@@ -54,7 +60,9 @@
 // exactly {ts, platform, event, decision} (decision: allow, deny or error), never the command text, so
 // the check script can tell the hook really ran. When the next line would take the file past 1 MiB, the
 // file is first cut to its newest 512 KiB of whole lines. A heartbeat that cannot be written is a stderr
-// note, never a block.
+// note, never a block. With AUTOSKILLS_GUARD_PROBE=1 in the environment no heartbeat is written: check-kit
+// sets it for its live run of the command line, which must not pass for a real tool call (it changes
+// nothing else; a hook process that had it set would only lose its heartbeat, which check-kit reports).
 // --selftest runs the built-in samples in memory: it reads no stdin and no config and writes no file
 // (the rule 2 and 4 samples name folders under the OS temp dir that are never created).
 // Exit 0 = every sample gave the expected decision.
@@ -129,6 +137,8 @@ const HEARTBEAT_MAX = 1024 * 1024;
 const HEARTBEAT_KEEP = 512 * 1024;
 const MAX_DEPTH = 8;
 const PLATFORMS = new Set(['claude', 'codex']);
+/** Set to 1 by check-kit's live run of the hook command line: no heartbeat line (see Heartbeat above). */
+export const PROBE_ENV = 'AUTOSKILLS_GUARD_PROBE';
 
 /** A command or input the guard cannot read; the run exits 2 so onFailure: "block" applies. */
 export class ParseError extends Error {}
@@ -1149,7 +1159,7 @@ function main(argv) {
     const why = e instanceof ParseError ? e.message : `内部错误（${e.message}）`;
     process.stderr.write(`AutoSkills 守卫无法判断这次调用，已按失败处理：${why}。请把命令改写成引号成对的简单命令，写入工具要带目标路径，然后再试。\n`);
   }
-  writeHeartbeat(config, { ts: new Date().toISOString(), platform, event, decision });
+  if (process.env[PROBE_ENV] !== '1') writeHeartbeat(config, { ts: new Date().toISOString(), platform, event, decision });
   if (out) process.stdout.write(Buffer.from(out, 'utf8'));
   return code;
 }

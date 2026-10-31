@@ -6,8 +6,11 @@
 // --runtime, --projects-root and --local-config. Each temp tree and each fixture folder is hashed before and
 // after the runs to show that check-kit writes nothing. The version rows of those runs come from this machine
 // (they are WARN at worst and do not change the exit code); the unit tests drive the registry facts, the
-// managed settings, PATH and the version runner with fakes. The last test checks that the real Codex temp
-// folder and the real settings files are unchanged after the whole file ran.
+// managed settings, PATH and the version runner with fakes. The live run of the guard command lines starts
+// the fixture's guard for real (synthetic stdin, no heartbeat); its failure cases (a Node that does not
+// exist, a guard.mjs that does not load, wrong decisions, a broken hook-config.json) are made by editing a
+// temp copy. The last test checks that the real Codex temp folder and the real settings files are
+// unchanged after the whole file ran.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -20,6 +23,7 @@ import {
   makeContext, runChecks, countRows, versionChecks, judgeCodexOnPath, findOnPath, npmPackageVersion, runVersion,
   windowsFacts, compareVersions, commandTokens, tomlStrings, hookParts, EFFORT_VAR, HEARTBEAT_STALE_DAYS,
   oldReferences, codexHookTrust, registeredHooks, lastHeartbeats, removeCommand, runSelftest,
+  hookConfigProblems, judgeProbe, shellForms, probeInput, runProbe, PROBE_COMMANDS,
 } from '../../scripts/check-kit.mjs';
 import { claudePathRule, desiredFiles, KIT_HOOK_SCRIPTS } from '../../scripts/lib/kit-targets.mjs';
 
@@ -31,7 +35,12 @@ const SENTINEL = 'max-fixture-sentinel-7f3a';
 const WIN = process.platform === 'win32';
 
 const temps = [];
-after(() => { for (const t of temps) fs.rmSync(t, { recursive: true, force: true }); });
+const links = [];
+// Links are unlinked first, so the cleanup never reaches what they point to (the Node install).
+after(() => {
+  for (const l of links) fs.unlinkSync(l);
+  for (const t of temps) fs.rmSync(t, { recursive: true, force: true });
+});
 const tempDir = (prefix) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); temps.push(d); return d; };
 const fwd = (p) => path.resolve(p).split(path.sep).join('/');
 
@@ -57,6 +66,21 @@ const realFingerprint = () => Object.fromEntries(REAL.map((p) => [p, treeHash(p)
 const REAL_BEFORE = realFingerprint();
 const FIXTURES_BEFORE = Object.fromEntries(HOMES.map((h) => [h, treeHash(path.join(FIXTURES, h))]));
 
+let nodeWordPath = null;
+/**
+ * The Node that runs the tests under a path that is one plain word, as deploy-kit requires for the first word
+ * of the Codex hook command: a junction (a dir symlink off Windows) to its folder in an OS temp dir. This Node
+ * may sit under a folder with a space (Program Files).
+ */
+function nodeWord() {
+  if (nodeWordPath) return nodeWordPath;
+  const link = path.join(tempDir('check-kit-nodebin-'), 'nodebin');
+  fs.symlinkSync(path.dirname(process.execPath), link, WIN ? 'junction' : 'dir');
+  links.push(link);
+  nodeWordPath = fwd(path.join(link, path.basename(process.execPath)));
+  return nodeWordPath;
+}
+
 /** The process environment without CLAUDE_CODE_EFFORT_LEVEL (any case), plus extra. */
 function cleanEnv(extra = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== EFFORT_VAR));
@@ -78,7 +102,8 @@ function filesUnder(dir) {
 /**
  * A temp copy of one fixture (laid on its fixture.json base, if any) with its placeholders filled: <home>,
  * <runtime>, <projects>, <projects-posix> (Claude's rule form of the projects folder), <node> (the Node that
- * runs this test) and <recent> (one hour ago). Then the kit groups of fixture.json are installed from the
+ * runs this test), <node-word> (the same Node under a path without spaces, see nodeWord) and <recent> (one
+ * hour ago). Then the kit groups of fixture.json are installed from the
  * repo where the tree has no file of its own, and every git-remotes.json becomes a repository with those
  * remotes (the marker is removed).
  */
@@ -92,12 +117,12 @@ function sandbox(name, { dist = true } = {}) {
   fs.mkdirSync(sb.projects, { recursive: true });
   const posix = claudePathRule('Edit', sb.projects).slice('Edit('.length, -'/**)'.length);
   const fill = {
-    '<home>': fwd(sb.home), '<runtime>': fwd(sb.runtime), '<projects-posix>': posix, '<projects>': fwd(sb.projects), '<node>': fwd(process.execPath),
+    '<home>': fwd(sb.home), '<runtime>': fwd(sb.runtime), '<projects-posix>': posix, '<projects>': fwd(sb.projects), '<node>': fwd(process.execPath), '<node-word>': nodeWord(),
     '<recent>': new Date(Date.now() - 3_600_000).toISOString(),
   };
   for (const p of filesUnder(root)) {
     const text = fs.readFileSync(p, 'utf8');
-    const out = text.replace(/<projects-posix>|<projects>|<home>|<runtime>|<node>|<recent>/g, (m) => fill[m]);
+    const out = text.replace(/<projects-posix>|<projects>|<home>|<runtime>|<node-word>|<node>|<recent>/g, (m) => fill[m]);
     if (out !== text) fs.writeFileSync(p, out);
   }
   const kit = spec.kit ?? [];
@@ -169,6 +194,10 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'hooks.selftest.guard').detail, /^guard selftest: ok \(\d+ samples\) \(portable Node\)/);
   for (const id of ['hooks.heartbeat.claude.guard', 'hooks.heartbeat.claude.session-start', 'hooks.heartbeat.codex.guard']) assert.match(row(json.rows, id).detail, /1 h ago/);
   assert.match(row(json.rows, 'hooks.codex-trust').detail, /^pre_tool_use:0:0 trusted \(已信任\): trusted_hash in .*\(the hash itself is not checked\)$/);
+  assert.match(row(json.rows, 'hooks.config').detail, /^<runtime>\/hooks\/hook-config\.json: loads, absolute paths, keys runtime, readonly_dirs \(1\), kit_repo$/);
+  // Claude's command + args once (its two guard groups share the line), Codex's string in every shell.
+  const live = row(json.rows, 'hooks.live.guard').detail;
+  assert.match(live, /run\(s\): git status allowed without output, git push origin main denied \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -190,7 +219,7 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
     'codex.project-manager', 'codex.rules', 'version.project-manager',
     'contract', 'skills.kit.claude', 'skills.kit.agents', 'agents.project-verifier',
     'hooks.heartbeat.claude.guard', 'hooks.heartbeat.claude.session-start', 'hooks.heartbeat.codex.guard', 'hooks.selftest.guard',
-    'pushurl.repos',
+    'hooks.config', 'hooks.live.guard', 'pushurl.repos',
   ].sort());
   for (const r of json.rows.filter((x) => x.status === 'FAIL')) assert.ok(r.fix && r.fix.length > 10, `${r.id} has no fix`);
   assert.match(row(json.rows, 'claude.worktree.baseRef').fix, /deploy-kit\.mjs --apply --home /);
@@ -207,6 +236,13 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.match(row(json.rows, 'hooks.heartbeat.codex.guard').detail, /does not exist: the hook never ran/);
   assert.match(row(json.rows, 'hooks.heartbeat.codex.guard').fix, /Codex \/hooks/);
   assert.match(row(json.rows, 'hooks.selftest.guard').detail, /no output/);
+  // The stub guard allows git status but denies nothing; the old/ path does not start, and that group blocks.
+  const live = row(json.rows, 'hooks.live.guard');
+  assert.match(live.detail, /Claude blocks every matched call \(onFailure: "block"\).*the guard ran but decided wrong/);
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, deny \(git push origin main\): exit 0 without output/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, allow \(git status\): exit 1/.test(l)), live.lines.join('\n'));
+  assert.match(live.fix, /missing: <runtime>\/old\/hooks\/guard\.mjs/);
+  assert.match(row(json.rows, 'hooks.config').detail, /hook-config\.json does not exist: the guard runs without the read-only folders/);
   // Only origin lacks no_push; the mirror remote already has it.
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 of 2 remote\(s\) in 1 repo\(s\) without no_push: <projects>\/app \(origin\)$/);
 
@@ -565,6 +601,219 @@ test('Codex hook trust row: PASS when every kit handler is trusted, WARN with th
   assert.equal(untrusted.status, 'WARN');
   assert.match(untrusted.detail, /^pre_tool_use:0:0 not trusted \(未信任\)/);
   assert.match(untrusted.fix, /\/hooks/);
+});
+
+// ---------- AS3-125: hook-config.json and the live run of the guard command lines ----------
+
+const hookConfigFile = (sb) => path.join(sb.runtime, 'hooks', 'hook-config.json');
+const hookRows = (sb) => {
+  const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
+  return runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions });
+};
+/** Points the guard entries of the sandbox's settings.json (command) and hooks.json (first word) at node. */
+function pointGuardAt(sb, node) {
+  const settingsFile = path.join(sb.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  for (const g of settings.hooks.PreToolUse) for (const h of g.hooks) h.command = node;
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+  const hooksFile = path.join(sb.home, '.codex', 'hooks.json');
+  const hooks = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+  const h = hooks.hooks.PreToolUse[0].hooks[0];
+  h.command = h.command.replace(/^\S+/, node);
+  fs.writeFileSync(hooksFile, JSON.stringify(hooks, null, 2));
+}
+
+test('the live run: a command line naming a Node that does not exist is a FAIL that says Codex lets the call through, with the fix', () => {
+  const sb = sandbox('home-ok');
+  const absent = fwd(path.join(sb.root, 'absent-node', 'node.exe'));
+  pointGuardAt(sb, absent);
+  const live = row(hookRows(sb), 'hooks.live.guard');
+  assert.equal(live.status, 'FAIL');
+  assert.match(live.detail, /Codex blocks only on exit 2: where this line ends with another code .*, Codex lets every matched call through unguarded \(守卫起不来时 Codex 会放行\)/);
+  assert.match(live.detail, /Claude blocks every matched call \(onFailure: "block"\)/);
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, allow \(git status\): cannot be started \(ENOENT\)$/.test(l)), live.lines.join('\n'));
+  for (const via of WIN ? ['cmd /d /s /c', 'cmd /c', 'powershell -Command'] : ['sh -c']) {
+    for (const expect of ['allow', 'deny']) {
+      assert.ok(live.lines.some((l) => l.startsWith(`codex, ${via}, ${expect} (`) && / exit \d+/.test(l)), `${via} ${expect}: ${live.lines.join('\n')}`);
+    }
+  }
+  assert.match(live.fix, /missing: .*absent-node\/node\.exe.*restore the portable Node .* re-run deploy-kit: node scripts\/deploy-kit\.mjs --apply --home /);
+});
+
+test('the live run: a guard.mjs that fails to load (Node exits 1) is a FAIL on both platforms', () => {
+  const sb = sandbox('home-ok');
+  fs.writeFileSync(path.join(sb.runtime, 'hooks', 'guard.mjs'), 'export const = 1; // synthetic syntax error\n');
+  const live = row(hookRows(sb), 'hooks.live.guard');
+  assert.equal(live.status, 'FAIL');
+  assert.match(live.detail, /Codex lets every matched call through unguarded/);
+  assert.match(live.detail, /Claude blocks every matched call/);
+  assert.ok(live.lines.length >= 4, live.lines.join('\n'));
+  assert.ok(live.lines.every((l) => /: exit 1(?::|$)/.test(l)), live.lines.join('\n'));
+  assert.match(live.lines.find((l) => l.startsWith('claude,')), /SyntaxError|guard\.mjs/);
+  assert.match(live.fix, /--selftest by hand/);
+});
+
+test('the live run: a guard that denies everything, or nothing, decided wrong; the right guard passes', () => {
+  const sb = sandbox('home-ok');
+  const guard = path.join(sb.runtime, 'hooks', 'guard.mjs');
+  const real = fs.readFileSync(guard);
+  const denyAll = 'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "synthetic" } }) + "\\n");\n';
+  fs.writeFileSync(guard, denyAll);
+  let live = row(hookRows(sb), 'hooks.live.guard');
+  assert.equal(live.status, 'FAIL');
+  assert.match(live.detail, /the guard ran but decided wrong/);
+  assert.ok(live.lines.length > 0 && live.lines.every((l) => /, allow \(git status\): exit 0 with output \(expected none\)/.test(l)), live.lines.join('\n'));
+  assert.match(live.fix, /does not decide like the repo's: re-run deploy-kit/);
+  fs.writeFileSync(guard, '// allows everything\n');
+  live = row(hookRows(sb), 'hooks.live.guard');
+  assert.equal(live.status, 'FAIL');
+  assert.ok(live.lines.length > 0 && live.lines.every((l) => /, deny \(git push origin main\): exit 0 without output \(the push was not denied\)$/.test(l)), live.lines.join('\n'));
+  fs.writeFileSync(guard, real);
+  assert.equal(row(hookRows(sb), 'hooks.live.guard').status, 'PASS');
+});
+
+test('hook-config.json: bad JSON and a relative path are a FAIL that says every matched call is blocked; the guard then exits 2', () => {
+  const sb = sandbox('home-ok');
+  const file = hookConfigFile(sb);
+  const cases = [
+    ['{ "runtime": ', /: not valid JSON: the guard cannot load it/],
+    ['[]', /: not a JSON object: /],
+    [JSON.stringify({ runtime: 'rt' }), /: runtime is not an absolute path \("rt"\): /],
+    [JSON.stringify({ runtime: fwd(sb.runtime), readonly_dirs: ['frozen', fwd(sb.projects)] }), /: readonly_dirs: 1 entry is not an absolute path \("frozen"\): /],
+  ];
+  for (const [text, re] of cases) {
+    fs.writeFileSync(file, text);
+    const rows = hookRows(sb);
+    const cfg = row(rows, 'hooks.config');
+    assert.equal(cfg.status, 'FAIL', text);
+    assert.match(cfg.detail, re);
+    assert.match(cfg.detail, /every matched call is blocked on both platforms until it is fixed \(这时每次匹配到的调用都会被拦\)$/);
+    assert.match(cfg.fix, /re-run deploy-kit: .*it writes the file from the local config/);
+    // The live run shows the same: the deployed guard fails closed on every run. Windows PowerShell
+    // -Command passes a native exit 2 on as 1, which Codex would not block (ADR-006 §4).
+    const live = row(rows, 'hooks.live.guard');
+    assert.equal(live.status, 'FAIL', text);
+    assert.match(live.detail, /the guard failed closed \(exit 2\): every matched call is blocked/);
+    const viaPs = (l) => l.startsWith('codex, powershell -Command,');
+    assert.ok(live.lines.filter((l) => !viaPs(l)).every((l) => /: exit 2: AutoSkills 守卫出错，已按失败处理/.test(l)), live.lines.join('\n'));
+    assert.ok(live.lines.some((l) => l.startsWith('claude,')) && live.lines.some((l) => l.startsWith('codex, ')), live.lines.join('\n'));
+    if (WIN) {
+      const ps = live.lines.filter(viaPs);
+      assert.ok(ps.length === 2 && ps.every((l) => /: exit 1 \(the guard failed closed, the shell passed on another code than 2\): AutoSkills 守卫出错/.test(l)), live.lines.join('\n'));
+      assert.match(live.detail, /Codex lets every matched call through unguarded/);
+    }
+  }
+});
+
+test('hook-config.json: an unknown key is a FAIL naming it; the guard ignores it, so the live run still passes', () => {
+  const sb = sandbox('home-ok');
+  const file = hookConfigFile(sb);
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete cfg.readonly_dirs;
+  cfg.readonly_dir = [fwd(sb.projects)];
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const rows = hookRows(sb);
+  const r = row(rows, 'hooks.config');
+  assert.equal(r.status, 'FAIL');
+  assert.match(r.detail, /: unknown key\(s\) "readonly_dir": deploy-kit writes only runtime, readonly_dirs, kit_repo; the guard ignores other keys, so a misspelled key leaves its setting off/);
+  assert.match(r.fix, /re-run deploy-kit/);
+  assert.equal(row(rows, 'hooks.live.guard').status, 'PASS');
+  // Gone while the guard is deployed: a FAIL (no read-only folders, no heartbeat).
+  fs.rmSync(file);
+  const gone = row(hookRows(sb), 'hooks.config');
+  assert.equal(gone.status, 'FAIL');
+  assert.match(gone.detail, /does not exist: the guard runs without the read-only folders and kit_repo and writes no heartbeat/);
+});
+
+test('hookConfigProblems follows the guard\'s own loadConfig: a load problem exactly when the guard throws', async () => {
+  const { loadConfig } = await import('../../hooks/guard.mjs');
+  const dir = tempDir('check-kit-hookcfg-');
+  const abs = fwd(dir);
+  const samples = [
+    '{}', JSON.stringify({ runtime: abs, readonly_dirs: [abs], kit_repo: abs }), '\uFEFF{"runtime": "' + abs + '"}', '{ not json', '[]', 'null', '"x"',
+    JSON.stringify({ runtime: 'rel' }), JSON.stringify({ kit_repo: 3 }), JSON.stringify({ readonly_dirs: abs }), JSON.stringify({ readonly_dirs: [abs, 'rel'] }),
+    JSON.stringify({ readonly_dirs: [7] }), JSON.stringify({ runtime: abs, extra: true }),
+  ];
+  for (const text of samples) {
+    const file = path.join(dir, 'hook-config.json');
+    fs.writeFileSync(file, text);
+    let throws = false;
+    try { loadConfig(file); } catch { throws = true; }
+    const problems = hookConfigProblems(text);
+    assert.equal(problems.some((p) => p.load), throws, text);
+  }
+  assert.deepEqual(hookConfigProblems(JSON.stringify({ runtime: abs, extra: true })), [{ load: false, text: 'unknown key(s) "extra"' }]);
+});
+
+test('before a deploy both rows read 未部署 (a WARN, not a FAIL)', () => {
+  const sb = sandbox('home-ok');
+  const settingsFile = path.join(sb.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  delete settings.hooks.PreToolUse;
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  fs.rmSync(path.join(sb.home, '.codex', 'hooks.json'));
+  for (const n of ['guard.mjs', 'hook-config.json']) fs.rmSync(path.join(sb.runtime, 'hooks', n));
+  const rows = hookRows(sb);
+  for (const id of ['hooks.config', 'hooks.live.guard']) {
+    assert.equal(row(rows, id).status, 'WARN', id);
+    assert.match(row(rows, id).detail, /^not deployed \(未部署\): /);
+  }
+  // Without a runtime root the config row cannot know the file.
+  const ctx = makeContext({ home: sb.home, projectsRoot: sb.projects, localConfig: path.join(sb.root, 'absent.json') });
+  assert.equal(row(runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions }), 'hooks.config').status, 'WARN');
+});
+
+test('the live run writes no heartbeat; the same run without AUTOSKILLS_GUARD_PROBE does', () => {
+  const runtime = tempDir('check-kit-probe-');
+  fs.mkdirSync(path.join(runtime, 'hooks'));
+  fs.copyFileSync(path.join(REPO, 'hooks', 'guard.mjs'), path.join(runtime, 'hooks', 'guard.mjs'));
+  fs.writeFileSync(path.join(runtime, 'hooks', 'hook-config.json'), JSON.stringify({ runtime: fwd(runtime) }));
+  const form = { via: 'command + args', file: process.execPath, args: [path.join(runtime, 'hooks', 'guard.mjs'), '--platform', 'claude'] };
+  const heartbeat = path.join(runtime, 'hooks', 'heartbeat', 'guard.jsonl');
+  const deny = runProbe(form, probeInput('claude', PROBE_COMMANDS.deny), 30_000);
+  assert.deepEqual(judgeProbe('deny', deny), { kind: 'ok', detail: 'denied' });
+  assert.deepEqual(judgeProbe('allow', runProbe(form, probeInput('claude', PROBE_COMMANDS.allow), 30_000)), { kind: 'ok', detail: 'allowed' });
+  assert.ok(!fs.existsSync(heartbeat), 'the live run wrote a heartbeat');
+  const plain = spawnSync(process.execPath, form.args, { input: probeInput('claude', PROBE_COMMANDS.allow), encoding: 'utf8', env: cleanEnv() });
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(fs.readFileSync(heartbeat, 'utf8'), /"platform":"claude","event":"PreToolUse","decision":"allow"/);
+});
+
+test('judgeProbe and shellForms: exit codes, output and the shells a Codex line runs in', () => {
+  const ok = { status: 0, stdout: '', stderr: '' };
+  assert.equal(judgeProbe('allow', ok).kind, 'ok');
+  assert.equal(judgeProbe('deny', ok).kind, 'wrong');
+  assert.equal(judgeProbe('allow', { ...ok, error: 'ENOENT', status: null }).kind, 'start');
+  assert.deepEqual(judgeProbe('allow', { ...ok, error: 'ETIMEDOUT', status: null }), { kind: 'start', detail: 'timed out' });
+  assert.deepEqual(judgeProbe('deny', { ...ok, status: 9009, stderr: '\uFFFD\uFFFD not readable\r\n' }), { kind: 'start', detail: 'exit 9009' });
+  assert.deepEqual(judgeProbe('deny', { ...ok, status: 2, stderr: 'reason one\nreason two\n' }), { kind: 'error', detail: 'exit 2: reason one' });
+  const denyJson = `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'x' } })}\n`;
+  assert.equal(judgeProbe('deny', { ...ok, stdout: denyJson }).kind, 'ok');
+  assert.equal(judgeProbe('allow', { ...ok, stdout: denyJson }).kind, 'wrong');
+  assert.equal(judgeProbe('deny', { ...ok, stdout: '{"hookSpecificOutput":{"permissionDecision":"allow"}}' }).kind, 'wrong');
+  assert.equal(JSON.parse(probeInput('codex', 'git status')).turn_id, 'check-kit-probe');
+  assert.equal(JSON.parse(probeInput('claude', 'git status')).tool_input.command, 'git status');
+  if (!WIN) { assert.deepEqual(shellForms('x').map((f) => f.via), ['sh -c']); return; }
+  // bash only from PATH and never the WSL launcher in the Windows folder.
+  const win = tempDir('check-kit-windir-');
+  const sys32 = path.join(win, 'System32');
+  const gitBin = tempDir('check-kit-gitbin-');
+  fs.mkdirSync(sys32);
+  for (const d of [sys32, gitBin]) fs.writeFileSync(path.join(d, 'bash.exe'), 'fake');
+  const vias = (PATH) => shellForms('x', { PATH, PATHEXT: '.EXE', SystemRoot: win, ComSpec: 'C:/example/cmd.exe' }).map((f) => f.via);
+  assert.deepEqual(vias(sys32), ['cmd /d /s /c', 'cmd /c', 'powershell -Command']);
+  assert.deepEqual(vias(`${gitBin}${path.delimiter}${sys32}`), ['cmd /d /s /c', 'cmd /c', 'powershell -Command', 'bash -c']);
+  const dsc = shellForms('a "b c" d', { PATH: '', ComSpec: 'C:/example/cmd.exe' })[0];
+  assert.deepEqual([dsc.file, dsc.args, dsc.verbatim], ['C:/example/cmd.exe', ['/d', '/s', '/c', '"a "b c" d"'], true]);
+});
+
+test('the live run passes no input to a shell that is missing: it is listed as skipped, not as a FAIL', () => {
+  const sb = sandbox('home-ok');
+  const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
+  const probe = (form, input, timeoutMs) => (form.via === 'powershell -Command' ? { status: null, stdout: '', stderr: '', error: 'ENOENT' } : runProbe(form, input, timeoutMs));
+  const live = row(runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions, probe }), 'hooks.live.guard');
+  assert.equal(live.status, 'PASS', live.detail);
+  if (WIN) assert.match(live.detail, /skipped \(not on this machine\): powershell -Command$/);
 });
 
 test('rule-file lines: retired skills and CouncilFlow with a replacement each; kit skills and set_project_dir are not reported', () => {

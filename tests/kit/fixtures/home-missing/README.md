@@ -12,7 +12,9 @@ A hand-written synthetic fake user directory with gaps, for tests/kit/check-kit.
 - No project-manager build (the test writes no dist/index.js here).
 - No contract files, no kit skills, no project-verifier.md.
 - No heartbeat files (the hooks never ran), and runtime/hooks/guard.mjs is a stub whose --selftest prints
-  nothing.
+  nothing. There is no runtime/hooks/hook-config.json next to it (guard config row). The live run of the
+  registered guard command lines fails: the stub allows but never denies, and the project-manager guard's
+  script does not exist, so Node exits 1.
 - projects/app becomes a repository (git-remotes.json) whose origin has no pushurl; its mirror remote is
   already no_push.
 

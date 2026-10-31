@@ -148,7 +148,7 @@
   - `--neutral` 在测量期间把用户级切到中性档，同样可回滚。
   - 不碰 `~/.claude.json`、project-manager 的 dist 和全局验证策略文件。
   - 各项目的 CLAUDE.md、AGENTS.md 里引用旧技能或 CouncilFlow 的行只列出来，给一行替换建议，不自动改；旧项目的规则不变（v2 第 5 条）。
-- **检查**（`scripts/check-kit.mjs`）：只读，输出 PASS、WARN、FAIL 表：实际生效的配置、`CLAUDE_CODE_EFFORT_LEVEL` 没有设、版本、重复或过时的技能副本、project-verifier 是否就位、钩子心跳和 `--selftest`、pushurl、项目说明文件里的旧引用。
+- **检查**（`scripts/check-kit.mjs`）：只读，输出 PASS、WARN、FAIL 表：实际生效的配置、`CLAUDE_CODE_EFFORT_LEVEL` 没有设、版本、重复或过时的技能副本、project-verifier 是否就位、钩子心跳和 `--selftest`、部署后的 `hook-config.json` 和守卫命令行实测（§4）、pushurl、项目说明文件里的旧引用。
 - **lint**（`scripts/lint-kit.mjs`）：套件文本的隐私（含本地私有词表）、工具名、技能格式和旧内容检查。
 
 ### 2.8 只串行（K8）
@@ -179,7 +179,10 @@
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。用户自己推送时用 `git push <完整地址> <分支>`，在普通终端里做：写完整地址时不经过远端的 pushurl，守卫和 deny 规则只管代理的工具调用，管不到用户的终端。反过来，代理如果在 Codex 上用包裹形式写完整地址，pushurl 也挡不住，只剩钩子。
-- **守卫出错即拦截，两个平台一样**（负责人 2026-10-31 选定）：守卫出错时退出 2，原因写 stderr，Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。代价是 `hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
+- **守卫出错即拦截，两个平台一样**（负责人 2026-10-31 选定）：守卫出错时退出 2，原因写 stderr，Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。代价是 `hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL，并校验部署后的 `hook-config.json`（能解析、只有认识的键、路径都是绝对路径）。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
+- **Codex 上守卫起不来时调用会被放行**（AS3-125）：出错即拦截只管守卫跑起来以后的错误。守卫根本起不来时——便携 Node 被移走或换掉、`guard.mjs` 加载出错（Node 退出 1）、shell 找不到命令——退出码不是 2：Claude 按 `onFailure: "block"` 照样拦，Codex 只在退出 2 时拦，这次调用就被放行。本机实测还有一种：同一条命令放进 Windows PowerShell 5.1 的 `-Command` 里跑，守卫的退出 2 会变成 powershell 的退出 1（cmd 和 bash 原样传出 2）；Codex 要是用 PowerShell 跑钩子，守卫出错时也会放行。Codex 用哪个 shell 跑钩子没测出来，留给 AS3-121 的部署冒烟确认。发现办法有两个：
+  - **检查脚本的命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里实际登记的守卫命令行原样运行。Claude 的 command 加 args 直接启动；Codex 的命令字符串在它可能用的每个 shell 里各跑一次（cmd /d /s /c、cmd /c、Windows PowerShell -Command，PATH 上有 bash 时再加 bash -c）。合成的放行输入（`git status`）要退出 0、没有输出；合成的拒绝输入（`git push origin main`）要输出拒绝 JSON。起不来或结果不对就 FAIL，并给修法。守卫只判断、不执行命令；实测时设 `AUTOSKILLS_GUARD_PROBE=1`，守卫不写心跳，免得实测冒充真实调用。没部署时这一行报“未部署”（WARN）。
+  - **心跳**：两次实测之间，守卫 7 天没有新心跳是 FAIL。
 - **Codex 钩子的命令写法和 matcher 没在 Codex 里跑过**：C0 只跑通了不带 matcher 的 `node "<路径>" "<路径>"`，钩子用哪个 shell 没测出来。套件改成同样的形状（首词是不加引号的 node 绝对路径，脚本路径加引号，可以含空格），本机在 cmd、PowerShell 5.1 和 bash 里都跑通；正则 matcher 和真实 Codex 里的运行留给 AS3-121 的部署冒烟。便携 Node 的路径含空格或 shell 字符时部署脚本报冲突，不写 hooks.json。
 - **Codex 钩子要单独信任**：信任存在 `~/.codex/config.toml`，每个处理器一张 `[hooks.state.'<hooks.json 绝对路径>:<事件>:<组>:<序号>']`（C0 在项目级 hooks.json 上看到的格式，用户级按同样格式读）；没信任的钩子不运行，守卫心跳的 FAIL 会显出来。哈希怎么算不知道，检查脚本只看有没有 trusted_hash，不核对哈希。
 - **Codex 规则只挡简单命令**：`git -C`、`bash -lc` 或 `powershell -Command` 包裹的命令、用 `;` 串起来的复合命令都匹配不到，只剩钩子和 pushurl 兜底。C0 实测：钩子收到的就是模型写的原始命令字符串（tool_name 是 Bash，tool_input.command，常是 PowerShell，例如 `git -C <目录> status --porcelain`、`Get-Content -LiteralPath '...'`），没有拆成 argv，也没有包成 `powershell -Command`；所以守卫自己按 Bash 和 PowerShell 两种语法解析，而 prefix_rule 碰到实际常见的 `git -C <目录> push` 写法匹配不到。execpolicy 怎么切分这些字符串没测；C0 没捕获到真实的 apply_patch 输入，它的形状也没测。

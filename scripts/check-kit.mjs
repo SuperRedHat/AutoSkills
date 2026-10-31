@@ -54,7 +54,19 @@
 //      ([hooks.state.'<hooks.json>:<event>:<group>:<handler>'] trusted_hash): trusted (已信任) or not trusted
 //      (未信任); any untrusted handler is a WARN, the hash is never checked. The deployed guard's
 //      --selftest runs its built-in samples (no stdin, no config, no heartbeat) with the portable Node;
-//      anything but "guard selftest: ok" is a FAIL.
+//      anything but "guard selftest: ok" is a FAIL. From AS3-125: the deployed <runtime>/hooks/
+//      hook-config.json must parse by the guard's own rules (a JSON object, runtime and kit_repo absolute,
+//      readonly_dirs a list of absolute paths) and hold only the keys deploy-kit writes; one the guard
+//      cannot load makes it exit 2 on every run, so every matched call is blocked. And the guard command
+//      lines registered in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run
+//      them, once with a synthetic allow input (git status: exit 0, no output) and once with a synthetic
+//      deny input (git push: the deny JSON). Claude's command and args start directly; Codex's string runs
+//      in each shell it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell
+//      -Command and bash -c when bash is on PATH (sh -c off Windows). A guard that does not start exits with
+//      another code than 2, and Codex lets the call through (ADR-006 §4), so any wrong run is a FAIL.
+//      Before a deploy both rows are a WARN that reads 未部署 (not deployed): the command-line row when no
+//      guard is registered on either platform, the config row when neither the file nor a deployed or
+//      registered guard is there.
 //   5. pushurl: every repository with remotes under the projects root has pushurl = no_push in its repo
 //      config. The scan is set-pushurl's own (planRepos: lstat walk, links never entered, worktrees once,
 //      measurement repos skipped); repos in a read-only folder are reported as skipped (跳过), a WARN.
@@ -70,7 +82,9 @@
 // registry and the Appx package are read through PowerShell's structured output (ConvertTo-Json; only value
 // names and error type names, no localized text). Environment values and secrets are never printed: the
 // environment rows name where a variable is set, not its value. The pushurl scan runs only reading git
-// commands (rev-parse, remote, config --get-all); the guard runs only with --selftest.
+// commands (rev-parse, remote, config --get-all); the guard runs with --selftest and, for the command-line
+// row, on synthetic stdin only, in an OS temp dir and with AUTOSKILLS_GUARD_PROBE=1 so it writes no
+// heartbeat (a live run must not pass for a real tool call); it only decides, it never runs the command.
 //
 // Exit codes: 0 = no FAIL, or --report-only (always 0; for the state before a deploy). 1 = at least one
 // FAIL. 2 = usage error (unknown option, empty path, a local config that exists but cannot be read).
@@ -82,11 +96,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  KIT_REPO, DEFAULT_LOCAL_CONFIG, KIT_HOOK_SCRIPTS, KIT_SKILLS, RETIRED_SKILLS, KIT_AGENTS, LEGACY_AGENTS, LEGACY_SKILL_DIRS,
+  KIT_REPO, DEFAULT_LOCAL_CONFIG, KIT_HOOK_SCRIPTS, HOOK_CONFIG_NAME, KIT_SKILLS, RETIRED_SKILLS, KIT_AGENTS, LEGACY_AGENTS, LEGACY_SKILL_DIRS,
   DEFAULT_OPTIONS, UsageError, targetMap, readLocalConfig, recordedOptions, desiredFiles, listFiles, claudePathRule, isKitHook,
   slash, pathKey, within,
 } from './lib/kit-targets.mjs';
 import { keyValues, getValue, TomlEditError } from './lib/toml-edit.mjs';
+import { PROBE_ENV } from '../hooks/guard.mjs';
 import { isNeutralText, neutralsInPlace, deployRootOf } from './deploy-kit.mjs';
 import { planRepos, scanRepos, DEFAULT_DEPTH, NO_PUSH } from './set-pushurl.mjs';
 
@@ -105,6 +120,13 @@ const PM_SERVER_NAMES = ['project-manager', 'project_manager'];
 const MAX_LISTED = 4;
 const VERSION_TIMEOUT_MS = 30_000;
 const SELFTEST_TIMEOUT_MS = 60_000;
+// The live run of a guard command line: the hook's own timeout (seconds) when set, at most this.
+const PROBE_TIMEOUT_MS = 60_000;
+// The synthetic inputs of the live run: a harmless shell command the guard allows and a push it denies.
+// The guard only reads them; neither command is ever run.
+export const PROBE_COMMANDS = { allow: 'git status', deny: 'git push origin main' };
+// The keys deploy-kit writes into <runtime>/hooks/hook-config.json (kit-targets desiredFiles).
+export const HOOK_CONFIG_KEYS = ['runtime', 'readonly_dirs', 'kit_repo'];
 // A heartbeat older than this is reported (WARN), never a FAIL: the hook did run once.
 export const HEARTBEAT_STALE_DAYS = 7;
 // The folders check 3 compares by name (v2 §3.6): the two the kit deploys to, then the old copy locations.
@@ -1003,6 +1025,219 @@ export function hookChecks(ctx, sec, { now = new Date(), selftest = runSelftest 
   else sec.fail('hooks.selftest.guard', item, `${s(guard)} --selftest: ${r.out} (${via})`, deployFix(ctx));
 }
 
+// ---------- check 4, AS3-125: hook-config.json and the live guard command line ----------
+
+/**
+ * What is wrong with a hook-config.json text. load: true are the guard's own load errors (loadConfig in
+ * hooks/guard.mjs, the same rules; a test holds the two together): the guard exits 2 on every run. load:
+ * false is a key the guard does not know; it ignores those.
+ * @param {string} text
+ * @returns {{load: boolean, text: string}[]} empty when the file is fine
+ */
+export function hookConfigProblems(text) {
+  let cfg;
+  try { cfg = JSON.parse(String(text).replace(/^\uFEFF/, '')); } catch { return [{ load: true, text: 'not valid JSON' }]; }
+  if (!isObject(cfg)) return [{ load: true, text: 'not a JSON object' }];
+  const absolute = (v) => typeof v === 'string' && path.isAbsolute(v);
+  const out = [];
+  for (const key of ['runtime', 'kit_repo']) {
+    if (cfg[key] !== undefined && !absolute(cfg[key])) out.push({ load: true, text: `${key} is not an absolute path (${JSON.stringify(cfg[key])})` });
+  }
+  if (cfg.readonly_dirs !== undefined) {
+    if (!Array.isArray(cfg.readonly_dirs)) out.push({ load: true, text: 'readonly_dirs is not a list' });
+    else {
+      const bad = cfg.readonly_dirs.filter((d) => !absolute(d));
+      if (bad.length) out.push({ load: true, text: `readonly_dirs: ${bad.length} entr${bad.length === 1 ? 'y is' : 'ies are'} not an absolute path (${listSome(bad.map((d) => JSON.stringify(d)))})` });
+    }
+  }
+  const unknown = Object.keys(cfg).filter((k) => !HOOK_CONFIG_KEYS.includes(k));
+  if (unknown.length) out.push({ load: false, text: `unknown key(s) ${listSome(unknown.map((k) => JSON.stringify(k)))}` });
+  return out;
+}
+
+/**
+ * The guard entries (PreToolUse, hooks/guard.mjs) registered in ~/.claude/settings.json and
+ * ~/.codex/hooks.json, each distinct command line once.
+ * @returns {{platform: string, command: string, args: string[]|null, timeout?: number, onFailure?: string, hook: object}[]}
+ */
+export function guardCommandLines(ctx) {
+  const out = [];
+  const key = (x) => JSON.stringify([x.platform, x.command, x.args, x.onFailure]);
+  const add = (platform, file) => {
+    const j = readJson(file);
+    for (const e of kitHookEntries(isObject(j.value) ? j.value.hooks : null)) {
+      if (e.event !== 'PreToolUse' || !hookParts(e.hook).scripts.some((x) => path.basename(x) === 'guard.mjs')) continue;
+      const h = e.hook;
+      const entry = { platform, command: h.command, args: Array.isArray(h.args) ? h.args : null, timeout: h.timeout, onFailure: h.onFailure, hook: h };
+      if (!out.some((o) => key(o) === key(entry))) out.push(entry);
+    }
+  };
+  add('claude', ctx.t.claudeSettings);
+  add('codex', ctx.t.codexHooks);
+  return out;
+}
+
+/**
+ * How a hook command string is started: in each shell the platform may use. Codex's hook shell is not known
+ * (C0 T-meta hook_shell null), so the line must work in all of them; bash only when PATH has one outside
+ * the Windows folder (System32\bash.exe is the WSL launcher).
+ * @param {string} line
+ * @param {object} [env]
+ * @returns {{via: string, file: string, args: string[], verbatim?: boolean}[]}
+ */
+export function shellForms(line, env = process.env) {
+  if (!WIN) return [{ via: 'sh -c', file: '/bin/sh', args: ['-c', line] }];
+  const comspec = envGet(env, 'ComSpec') || 'cmd.exe';
+  const forms = [
+    { via: 'cmd /d /s /c', file: comspec, args: ['/d', '/s', '/c', `"${line}"`], verbatim: true },
+    { via: 'cmd /c', file: comspec, args: ['/c', line], verbatim: true },
+    { via: 'powershell -Command', file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', line] },
+  ];
+  const bash = findOnPath('bash', env);
+  const windir = envGet(env, 'SystemRoot');
+  if (bash && !(windir && within(bash, windir))) forms.push({ via: 'bash -c', file: bash, args: ['-c', line] });
+  return forms;
+}
+
+/** The synthetic PreToolUse input of one live run, shaped like the platform's (C0). */
+export function probeInput(platform, command) {
+  const base = { session_id: 'check-kit-probe', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: os.tmpdir() };
+  return JSON.stringify(platform === 'codex' ? { ...base, turn_id: 'check-kit-probe', tool_use_id: 'check-kit-probe' } : { ...base, permission_mode: 'default' });
+}
+
+/**
+ * One live run: the form started with the input on stdin, in the OS temp dir, with PROBE_ENV=1 (the guard
+ * then writes no heartbeat).
+ * @returns {{status: number|null, stdout: string, stderr: string, error?: string}}
+ */
+export function runProbe(form, input, timeoutMs, env = process.env) {
+  const r = spawnSync(form.file, form.args, {
+    input, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: !!form.verbatim, timeout: timeoutMs,
+    cwd: os.tmpdir(), env: { ...env, [PROBE_ENV]: '1' }, maxBuffer: 1024 * 1024,
+  });
+  return { status: r.status, stdout: `${r.stdout ?? ''}`, stderr: `${r.stderr ?? ''}`, ...(r.error ? { error: r.error.code || r.error.message } : {}) };
+}
+
+/** The first stderr line, cut; '' when it is empty or not readable text (a shell's message in another code page). */
+function firstLine(text) {
+  const line = String(text).split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
+  return /[\uFFFD\u0000-\u0008]/.test(line) ? '' : line.slice(0, 160);
+}
+
+/**
+ * The verdict on one live run. kind: ok; start (the run did not end with 0 or 2: the guard did not start or
+ * did not finish, or a shell passed its exit 2 on as another code; Windows PowerShell -Command turns a
+ * native exit 2 into 1); error (the guard ran and failed closed, exit 2); wrong (it ran and decided wrong).
+ * @param {'allow'|'deny'} expect
+ * @param {{status: number|null, stdout: string, stderr: string, error?: string}} r
+ * @returns {{kind: 'ok'|'start'|'error'|'wrong', detail: string}}
+ */
+export function judgeProbe(expect, r) {
+  const why = (text) => (firstLine(text) ? `: ${firstLine(text)}` : '');
+  if (r.error === 'ETIMEDOUT') return { kind: 'start', detail: 'timed out' };
+  if (r.error) return { kind: 'start', detail: `cannot be started (${r.error})` };
+  if (r.status === null) return { kind: 'start', detail: 'ended by a signal' };
+  if (r.status === 2) return { kind: 'error', detail: `exit 2${why(r.stderr)}` };
+  if (r.status !== 0) {
+    const relayed = firstLine(r.stderr).startsWith('AutoSkills 守卫') ? ' (the guard failed closed, the shell passed on another code than 2)' : '';
+    return { kind: 'start', detail: `exit ${r.status}${relayed}${why(r.stderr)}` };
+  }
+  const out = r.stdout.trim();
+  if (expect === 'allow') return out ? { kind: 'wrong', detail: `exit 0 with output (expected none): ${out.slice(0, 120)}` } : { kind: 'ok', detail: 'allowed' };
+  let j = null;
+  try { j = JSON.parse(out.split(/\r?\n/).pop()); } catch { /* not JSON */ }
+  const o = j?.hookSpecificOutput;
+  if (o?.hookEventName === 'PreToolUse' && o?.permissionDecision === 'deny') return { kind: 'ok', detail: 'denied' };
+  return { kind: 'wrong', detail: out ? `exit 0 without the deny JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the push was not denied)' };
+}
+
+/** The hook-config.json row. */
+export function hookConfigChecks(ctx, sec) {
+  const s = (p) => shown(p, ctx.roots);
+  const item = 'guard config hook-config.json';
+  const runtime = ctx.roots.runtime;
+  if (!runtime) { sec.warn('hooks.config', item, 'no runtime root: the deployed file is not known'); return; }
+  const file = path.join(runtime, 'hooks', HOOK_CONFIG_NAME);
+  const blocked = 'the guard cannot load it and exits 2 on every run: every matched call is blocked on both platforms until it is fixed (这时每次匹配到的调用都会被拦)';
+  const fix = `${deployFix(ctx)}; it writes the file from the local config (or correct it by hand)`;
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') { sec.fail('hooks.config', item, `${s(file)} cannot be read (${e.code || e.message}): ${blocked}`, fix); return; }
+    const deployed = isFile(path.join(runtime, 'hooks', 'guard.mjs')) || guardCommandLines(ctx).length > 0;
+    if (!deployed) sec.warn('hooks.config', item, `not deployed (未部署): ${s(file)} does not exist and no guard is deployed or registered`);
+    else sec.fail('hooks.config', item, `${s(file)} does not exist: the guard runs without the read-only folders and kit_repo and writes no heartbeat`, deployFix(ctx));
+    return;
+  }
+  const problems = hookConfigProblems(text);
+  const load = problems.filter((p) => p.load);
+  if (load.length) { sec.fail('hooks.config', item, `${s(file)}: ${load.map((p) => p.text).join('; ')}: ${blocked}`, fix); return; }
+  if (problems.length) {
+    sec.fail('hooks.config', item, `${s(file)}: ${problems.map((p) => p.text).join('; ')}: deploy-kit writes only ${HOOK_CONFIG_KEYS.join(', ')}; the guard ignores other keys, so a misspelled key leaves its setting off (the file was edited by hand or comes from another kit version)`, fix);
+    return;
+  }
+  const cfg = JSON.parse(text.replace(/^\uFEFF/, ''));
+  const keys = HOOK_CONFIG_KEYS.filter((k) => cfg[k] !== undefined).map((k) => (k === 'readonly_dirs' ? `readonly_dirs (${cfg[k].length})` : k));
+  sec.pass('hooks.config', item, `${s(file)}: loads, absolute paths, keys ${keys.length ? keys.join(', ') : '(none)'}`);
+}
+
+/**
+ * The live row: every registered guard command line, run as its platform runs it, with the synthetic allow
+ * and deny input.
+ * @param {object} ctx makeContext
+ * @param {object} sec section collector
+ * @param {{probe?: Function, env?: object}} [deps] probe(form, input, timeoutMs) defaults to runProbe
+ */
+export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env } = {}) {
+  const s = (p) => shown(p, ctx.roots);
+  const item = 'guard command line, live run (synthetic allow and deny)';
+  const entries = guardCommandLines(ctx);
+  if (!entries.length) {
+    sec.warn('hooks.live.guard', item, `not deployed (未部署): no guard registered in ${s(ctx.t.claudeSettings)} or ${s(ctx.t.codexHooks)}; nothing run`);
+    return;
+  }
+  const runs = [];
+  const skipped = [];
+  for (const e of entries) {
+    const forms = e.args ? [{ via: 'command + args', file: e.command, args: e.args }] : shellForms(String(e.command ?? ''), env);
+    const timeout = Math.min(PROBE_TIMEOUT_MS, typeof e.timeout === 'number' && e.timeout > 0 ? e.timeout * 1000 : PROBE_TIMEOUT_MS);
+    for (const form of forms) {
+      for (const expect of ['allow', 'deny']) {
+        const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[expect]), timeout);
+        // A shell that is not on this machine says nothing about the hook.
+        if (!e.args && r.error === 'ENOENT') { if (!skipped.includes(form.via)) skipped.push(form.via); continue; }
+        runs.push({ e, via: form.via, expect, ...judgeProbe(expect, r) });
+      }
+    }
+  }
+  const per = ['claude', 'codex'].map((p) => {
+    const mine = runs.filter((r) => r.e.platform === p);
+    return mine.length ? `${p}: ${[...new Set(mine.map((r) => r.via))].join(', ')}` : `${p}: not registered`;
+  }).join('; ');
+  const bad = runs.filter((r) => r.kind !== 'ok');
+  const skip = skipped.length ? `; skipped (not on this machine): ${skipped.join(', ')}` : '';
+  if (!bad.length) {
+    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied (${per})${skip}`);
+    return;
+  }
+  // What each kind of wrong run means on its platform (ADR-006 §4).
+  const effects = [];
+  const any = (f) => bad.some(f);
+  if (any((r) => r.e.platform === 'codex' && r.kind === 'start')) effects.push('Codex blocks only on exit 2: where this line ends with another code (the guard does not start, or the shell does not pass its exit 2 on), Codex lets every matched call through unguarded (守卫起不来时 Codex 会放行)');
+  if (any((r) => r.e.platform === 'claude' && r.kind === 'start' && r.e.onFailure === 'block')) effects.push('Claude blocks every matched call (onFailure: "block")');
+  if (any((r) => r.e.platform === 'claude' && r.kind === 'start' && r.e.onFailure !== 'block')) effects.push('Claude lets the call through (registered without onFailure: "block")');
+  if (any((r) => r.kind === 'error')) effects.push('the guard failed closed (exit 2): every matched call is blocked');
+  if (any((r) => r.kind === 'wrong')) effects.push('the guard ran but decided wrong');
+  const fixes = [];
+  if (any((r) => r.kind === 'start')) {
+    const missing = [...new Set(bad.filter((r) => r.kind === 'start').flatMap((r) => missingHookPaths(r.e.hook).map(s)))];
+    fixes.push(`${missing.length ? `missing: ${listSome(missing)}; ` : ''}restore the portable Node and <runtime>/hooks/guard.mjs (rename back, reinstall) or ${deployFix(ctx)}; then run the deployed guard's --selftest by hand`);
+  }
+  if (any((r) => r.kind === 'error')) fixes.push('the guard\'s reason is in the lines below; a hook-config.json problem also shows in the row above');
+  if (any((r) => r.kind === 'wrong')) fixes.push(`the deployed guard.mjs does not decide like the repo's: ${deployFix(ctx)}`);
+  sec.fail('hooks.live.guard', item, `${bad.length} of ${runs.length} run(s) wrong: ${effects.join('; ')} (${per})${skip}`, fixes.join('; '),
+    bad.map((r) => `${r.e.platform}, ${r.via}, ${r.expect} (${PROBE_COMMANDS[r.expect]}): ${r.detail}`));
+}
+
 // ---------- check 5: pushurl ----------
 
 /**
@@ -1120,14 +1355,16 @@ const SECTIONS = [
 
 /**
  * Run checks 1 to 6. Reads only (CLIs are started for --version as runVersion describes, the deployed
- * guard only for --selftest, git only for reading commands).
+ * guard for --selftest and its registered command lines on synthetic stdin with no heartbeat, git only for
+ * reading commands).
  * @param {object} ctx makeContext
  * @param {{reportOnly?: boolean, env?: object, facts?: object, managed?: string[], run?: Function, now?: Date,
- *   selftest?: Function}} [deps] reportOnly turns the neutral FAIL into a WARN; tests replace the environment,
- *   the Windows facts, the managed settings files, the version runner, the clock and the selftest runner
+ *   selftest?: Function, probe?: Function}} [deps] reportOnly turns the neutral FAIL into a WARN; tests replace
+ *   the environment, the Windows facts, the managed settings files, the version runner, the clock, the
+ *   selftest runner and the live-run runner
  * @returns {{section: string, id: string, item: string, status: string, detail: string, fix?: string, lines?: string[]}[]}
  */
-export function runChecks(ctx, { reportOnly = false, env = process.env, facts, managed = managedSettingsFiles(), run = runVersion, now, selftest } = {}) {
+export function runChecks(ctx, { reportOnly = false, env = process.env, facts, managed = managedSettingsFiles(), run = runVersion, now, selftest, probe } = {}) {
   const f = facts ?? windowsFacts();
   const config = section('config');
   if (ctx.local) config.pass('local-config', 'local config', slash(ctx.localConfig));
@@ -1141,6 +1378,8 @@ export function runChecks(ctx, { reportOnly = false, env = process.env, facts, m
   copyChecks(ctx, copies, { reportOnly });
   const hooks = section('hooks');
   hookChecks(ctx, hooks, { now, selftest });
+  hookConfigChecks(ctx, hooks);
+  liveGuardChecks(ctx, hooks, { probe, env });
   const pushurl = section('pushurl');
   pushurlChecks(ctx, pushurl);
   const rules = section('rules');

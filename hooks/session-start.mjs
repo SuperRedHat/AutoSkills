@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// session-start: the AutoSkills SessionStart hook for Claude Code and Codex (ADR-006 §2.5). Zero
-// dependencies (Node >= 18); it shares the local config and the heartbeat code with guard.mjs, which is
-// deployed next to it.
+// session-start: the AutoSkills SessionStart hook (ADR-006 §2.5); batch 1 registers it for Claude Code only
+// (ADR-006 §7), --platform codex is kept for a later batch. Zero dependencies (Node >= 18); it shares the
+// local config and the heartbeat code with guard.mjs, which is deployed next to it.
 //
-// Usage (one fixed command line with both paths quoted, like the guard):
-//   "<node>" "<runtime>/hooks/session-start.mjs" [--platform claude|codex] [--config <file>]
-//   "<node>" "<runtime>/hooks/session-start.mjs" --selftest
+// Usage (one fixed command line; Claude registers <node> as the command and the rest as args, like the guard):
+//   <node> "<runtime>/hooks/session-start.mjs" [--platform claude|codex] [--config <file>]
+//   <node> "<runtime>/hooks/session-start.mjs" --selftest
 //
 // Input: the SessionStart JSON on stdin (session_id, source, cwd ...). Claude sends source startup,
 //   resume, clear or compact; an input without source is treated like startup. Batch 1 registers this

@@ -6,7 +6,9 @@ config (local.json). Nothing here is copied from a real user directory.
 
 The test copies the tree into an OS temp dir and fills the placeholders: `<home>`, `<runtime>` and
 `<projects>` with the temp folders, `<projects-posix>` with the projects folder in the form of Claude's path
-rules (//c/...), `<node>` with the Node that runs the test, `<recent>` with a time one hour ago. It also
+rules (//c/...), `<node>` with the Node that runs the test, `<node-word>` with the same Node under a path
+without spaces (a junction to its folder in an OS temp dir, as deploy-kit requires for the first word of
+the Codex hook command), `<recent>` with a time one hour ago. It also
 writes a synthetic home/.claude/mcp-project-manager/dist/index.js (dist/ is git-ignored), so that row is a
 WARN, not a FAIL.
 
@@ -22,4 +24,6 @@ projects/demo/frozen (pushurl skipped) and the synthetic project-manager build. 
 holds a synthetic hook trust table for the one kit handler of home/.codex/hooks.json (pre_tool_use:0:0, in
 the layout C0 found), so the Codex hook trust row passes.
 home/.codex/rules/autoskills.rules is a copy of config/codex/rules/autoskills.rules and must be updated
-with it.
+with it. runtime/hooks/hook-config.json has the three keys deploy-kit writes, and home/.codex/hooks.json
+the kit's command form (unquoted Node first, quoted script), so the guard config and the live run of the
+guard command lines pass; the live run needs an OS temp dir without spaces for `<node-word>`.

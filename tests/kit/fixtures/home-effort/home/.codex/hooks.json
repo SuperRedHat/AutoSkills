@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"<node>\" \"<runtime>/hooks/guard.mjs\" --platform codex",
+            "command": "<node-word> \"<runtime>/hooks/guard.mjs\" --platform codex",
             "timeout": 30
           }
         ]
