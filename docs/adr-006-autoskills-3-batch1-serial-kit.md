@@ -109,7 +109,7 @@
   - 登记过的只读目录的 Edit 和 Write；已知客户数据目录的 Read；
   - 对外发送类的 MCP 工具（邮件的发送、回复、转发，网盘共享，日历的建立、修改、回复）。
   - 只读目录和客户数据目录的清单放在不进 git 的本地配置里，部署时生成规则；仓库里只放占位。
-- **守卫钩子**（`hooks/guard.mjs`，Node，PreToolUse，Claude 里设 `onFailure: "block"`；两个平台都是出错即拦截：出错时退出 2，原因写 stderr，见 §7）：解析 Bash 和 PowerShell 两种命令形式，按 `;`、`&&`、`|` 和 `&` 调用分段判断。每次运行写一行心跳（只记时间、平台、事件和决定，不记命令原文），供检查脚本确认钩子真的跑过。
+- **守卫钩子**（`hooks/guard.mjs`，Node，PreToolUse，Claude 里设 `onFailure: "block"`；两个平台都是出错即拦截，原因都写 stderr：Claude 上退出 2，Codex 上（`--platform codex`）输出拒绝 JSON 并退出 0，见 §4、§7）：解析 Bash 和 PowerShell 两种命令形式，按 `;`、`&&`、`|` 和 `&` 调用分段判断。每次运行写一行心跳（只记时间、平台、事件和决定，不记命令原文），供检查脚本确认钩子真的跑过。
   1. 拦 git push 的各种写法、gh 写操作、带写方法的 gh api、npm publish；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较，解析 junction 和 symlink；
   3. 拦子代理（带 agent_id 的调用）调用账本写工具和 `set_project_dir`（v2 §3.7 第 2 条）；
@@ -179,9 +179,9 @@
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。用户自己推送时用 `git push <完整地址> <分支>`，在普通终端里做：写完整地址时不经过远端的 pushurl，守卫和 deny 规则只管代理的工具调用，管不到用户的终端。反过来，代理如果在 Codex 上用包裹形式写完整地址，pushurl 也挡不住，只剩钩子。
-- **守卫出错即拦截，两个平台一样**（负责人 2026-10-31 选定）：守卫出错时退出 2，原因写 stderr，Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。代价是 `hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL，并校验部署后的 `hook-config.json`（能解析、只有认识的键、路径都是绝对路径）。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
-- **Codex 上守卫起不来时调用会被放行**（AS3-125）：出错即拦截只管守卫跑起来以后的错误。守卫根本起不来时——便携 Node 被移走或换掉、`guard.mjs` 加载出错（Node 退出 1）、shell 找不到命令——退出码不是 2：Claude 按 `onFailure: "block"` 照样拦，Codex 只在退出 2 时拦，这次调用就被放行。本机实测还有一种：同一条命令放进 Windows PowerShell 5.1 的 `-Command` 里跑，守卫的退出 2 会变成 powershell 的退出 1（cmd 和 bash 原样传出 2）；Codex 要是用 PowerShell 跑钩子，守卫出错时也会放行。Codex 用哪个 shell 跑钩子没测出来，留给 AS3-121 的部署冒烟确认。发现办法有两个：
-  - **检查脚本的命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里实际登记的守卫命令行原样运行。Claude 的 command 加 args 直接启动；Codex 的命令字符串在它可能用的每个 shell 里各跑一次（cmd /d /s /c、cmd /c、Windows PowerShell -Command，PATH 上有 bash 时再加 bash -c）。合成的放行输入（`git status`）要退出 0、没有输出；合成的拒绝输入（`git push origin main`）要输出拒绝 JSON。起不来或结果不对就 FAIL，并给修法。守卫只判断、不执行命令；实测时设 `AUTOSKILLS_GUARD_PROBE=1`，守卫不写心跳，免得实测冒充真实调用。没部署时这一行报“未部署”（WARN）。
+- **守卫出错即拦截，两个平台一样**（负责人 2026-10-31 选定）：守卫出错时（用法错误、输入不是 JSON、命令解析不了、配置读不了、没接住的异常）原因都写 stderr。Claude 上退出 2，按 `onFailure: "block"` 拦下这次调用。Codex 上（钩子命令带 `--platform codex`）输出拒绝 JSON 并退出 0（AS3-126），理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头，后面写明错误原因，Codex 照这个 JSON 拦下调用。不靠退出 2 的原因：Codex 只在退出 2 时拦，而 Windows PowerShell 5.1 用 `-Command` 运行外部程序时会把退出 2 改成 1（本机实测，AS3-125），Codex 用哪个 shell 跑钩子又没测出来；退出 0 不会被任何 shell 改写，拒绝 JSON 在 C0 实测有效（只测了 root 线程调 MCP 工具、钩子退出 0 这一种情况）。测试在 cmd /d /s /c、cmd /c、PowerShell 5.1 -Command 和 bash（PATH 上有、且不是 WSL 时）下制造配置坏掉、命令解析不了、输入不是 JSON 三种错误，都得到拒绝 JSON 和退出 0。代价是 `hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL，并校验部署后的 `hook-config.json`（能解析、只有认识的键、路径都是绝对路径）。Codex 钩子超时时怎么处理没测。
+- **Codex 上守卫起不来时调用会被放行**（AS3-125、AS3-126）：出错即拦截只管守卫跑起来以后的错误。剩下的残余风险只有“守卫根本起不来”：便携 Node 被移走或换掉、`guard.mjs` 加载出错（Node 退出 1）、shell 找不到命令。这时不会有任何输出，退出码也不是 2：Claude 按 `onFailure: "block"` 照样拦；Codex 既没收到拒绝 JSON、又不是退出 2，这次调用就被放行。AS3-125 本机实测过的另一种放行——PowerShell 5.1 `-Command` 把守卫的退出 2 改成 1——从 AS3-126 起不再发生，因为 Codex 上守卫出错已不靠退出码。Codex 用哪个 shell 跑钩子没测出来，留给 AS3-121 的部署冒烟确认。发现办法有两个：
+  - **检查脚本的命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里实际登记的守卫命令行原样运行。Claude 的 command 加 args 直接启动；Codex 的命令字符串在它可能用的每个 shell 里各跑一次（cmd /d /s /c、cmd /c、Windows PowerShell -Command，PATH 上有 bash 时再加 bash -c）。合成的放行输入（`git status`）要退出 0、没有输出；合成的拒绝输入（`git push origin main`）要输出规则 1 的拒绝 JSON。守卫出错（Claude 上退出 2，Codex 上理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON，说明匹配到的调用全被拦）、起不来或结果不对都是 FAIL，并给修法。守卫只判断、不执行命令；实测时设 `AUTOSKILLS_GUARD_PROBE=1`，守卫不写心跳，免得实测冒充真实调用。没部署时这一行报“未部署”（WARN）。
   - **心跳**：两次实测之间，守卫 7 天没有新心跳是 FAIL。
 - **Codex 钩子的命令写法和 matcher 没在 Codex 里跑过**：C0 只跑通了不带 matcher 的 `node "<路径>" "<路径>"`，钩子用哪个 shell 没测出来。套件改成同样的形状（首词是不加引号的 node 绝对路径，脚本路径加引号，可以含空格），本机在 cmd、PowerShell 5.1 和 bash 里都跑通；正则 matcher 和真实 Codex 里的运行留给 AS3-121 的部署冒烟。便携 Node 的路径含空格或 shell 字符时部署脚本报冲突，不写 hooks.json。
 - **Codex 钩子要单独信任**：信任存在 `~/.codex/config.toml`，每个处理器一张 `[hooks.state.'<hooks.json 绝对路径>:<事件>:<组>:<序号>']`（C0 在项目级 hooks.json 上看到的格式，用户级按同样格式读）；没信任的钩子不运行，守卫心跳的 FAIL 会显出来。哈希怎么算不知道，检查脚本只看有没有 trusted_hash，不核对哈希。
@@ -234,7 +234,7 @@
 
 | 项 | 结论 | 改了什么 / 不改的理由 |
 |---|---|---|
-| 守卫出错的处理 | 负责人 2026-10-31 选“出错即拦截（推荐）”。Codex 把 PreToolUse 退出 2 加 stderr 原因当拦截：从程序里的字符串推断，没有实测 | `hooks/guard.mjs` 头注释、`config/codex/hooks.json` 的说明、规则文件注释、§2.5、§4 改成出错即拦截；守卫入口把没接住的异常也转成退出 2（否则是退出 1，不是 Codex 拦截的退出码）；检查脚本把守卫心跳过期从 WARN 改成 FAIL（缺失和自检失败本来就是 FAIL），都给修法。SessionStart 钩子的心跳过期仍是 WARN |
+| 守卫出错的处理 | 负责人 2026-10-31 选“出错即拦截（推荐）”。Codex 把 PreToolUse 退出 2 加 stderr 原因当拦截：从程序里的字符串推断，没有实测 | `hooks/guard.mjs` 头注释、`config/codex/hooks.json` 的说明、规则文件注释、§2.5、§4 改成出错即拦截；守卫入口把没接住的异常也转成退出 2（否则是退出 1，不是 Codex 拦截的退出码）；检查脚本把守卫心跳过期从 WARN 改成 FAIL（缺失和自检失败本来就是 FAIL），都给修法。SessionStart 钩子的心跳过期仍是 WARN。AS3-126 起 Codex 上出错改为输出拒绝 JSON 并退出 0，不再依赖退出 2（见 §4） |
 | E2 agent_id | 49 条 workflow 代理的 PreToolUse 全部带 agent_id 和 agent_type（实测）；内部辅助代理只触发 SubagentStop，agent_type 为空串 | 不改代码：规则 3 本来就按 agent_id 判断，不需要 F.4 的 E2 退路；头注释和测试注释写明。第 1 批没有依赖 SubagentStop 的逻辑，“按已知 agent_type 过滤”留给用到它的 P0 钩子 |
 | Codex 的输入字段 | PreToolUse 有 session_id、turn_id、transcript_path、cwd、hook_event_name、model、permission_mode、tool_name、tool_input、tool_use_id，子线程另有 agent_id、agent_type（实测）。shell 调用是 tool_name Bash、tool_input.command 为原样字符串；MCP 工具是 `mcp__<server>__<tool>`，服务名的连字符变下划线；派生和等待是 collaborationspawn_agent、collaborationwait_agent | 解析逻辑不用改：Codex 上的 Bash 本来就按 Bash 和 PowerShell 两种语法解析，下划线的服务名本来就认。头注释按实测重写；自检和测试加上 C0 形状的输入（值是合成的）；C0 没见过的 shell 工具名留作兜底 |
 | 拒绝 JSON | `hookSpecificOutput.permissionDecision: "deny"` 加退出 0 实测生效，但只测了根线程调 MCP 工具这一种情况 | 格式不变；头注释写明实测范围 |

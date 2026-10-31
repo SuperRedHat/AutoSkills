@@ -28,7 +28,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, SELFTEST, patchPaths } from '../../hooks/guard.mjs';
+import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK } from '../../hooks/guard.mjs';
+import { shellForms } from '../../scripts/check-kit.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'hooks', 'guard.mjs');
@@ -52,6 +53,22 @@ function dirLink(target, at) {
   fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
   links.push(at);
   return at;
+}
+
+const fwd = (p) => p.replace(/\\/g, '/');
+
+let nodeWordPath = null;
+/**
+ * The Node that runs the tests under a path that is one plain word, as the first word of the Codex hook
+ * command must be: a junction (a dir symlink off Windows) to its folder in an OS temp dir, since this Node
+ * may sit under a folder with a space (Program Files).
+ */
+function nodeWord() {
+  if (!nodeWordPath) {
+    const link = dirLink(path.dirname(process.execPath), path.join(tempDir('guard-hook-nodebin-'), 'nodebin'));
+    nodeWordPath = fwd(path.join(link, path.basename(process.execPath)));
+  }
+  return nodeWordPath;
 }
 
 /** All files under dir, relative, sorted. */
@@ -932,25 +949,86 @@ describe('hook contract (spawned guard)', () => {
     assert.equal(unknown.code, 2);
   });
 
-  test('fail closed on Codex too: every error exits exactly 2 with the reason on stderr (owner decision 2026-10-31)', () => {
+  /** Assert a failed Codex run: one deny JSON line whose reason starts with ERROR_DENY_MARK, exit 0, the reason on stderr. */
+  function expectErrorDeny(r, label) {
+    assert.equal(r.code, 0, `${label}: exit code (stderr: ${r.err})`);
+    const lines = r.out.trim().split(/\r?\n/);
+    assert.equal(lines.length, 1, `${label}: one line on stdout: ${r.out}`);
+    const o = JSON.parse(lines[0]).hookSpecificOutput;
+    assert.equal(o.hookEventName, 'PreToolUse', label);
+    assert.equal(o.permissionDecision, 'deny', label);
+    assert.ok(o.permissionDecisionReason.startsWith(ERROR_DENY_MARK), `${label}: ${o.permissionDecisionReason}`);
+    assert.match(r.err, /AutoSkills 守卫.*已按失败处理|^guard: /, `${label}: stderr`);
+    return o.permissionDecisionReason;
+  }
+
+  /** The three errors of AS3-126 (broken config, a command that does not parse, input that is not JSON), each with its config file. */
+  function codexErrorCases() {
     const dir = tempDir();
-    const missing = ['--platform', 'codex', '--config', path.join(dir, 'missing.json')];
+    const missing = path.join(dir, 'missing.json');
     const bad = path.join(dir, 'hook-config.json');
     fs.writeFileSync(bad, '{ runtime: ');
-    fs.writeFileSync(path.join(dir, 'ro.json'), JSON.stringify({ readonly_dirs: [path.join(dir, 'vault')] }));
+    const bash = (command) => ({ ...C0_ROOT, tool_name: 'Bash', tool_input: { command } });
+    return {
+      missing,
+      bash,
+      errors: [
+        ['broken config', bash('git status'), bad, /本地配置 ".*" 不是合法的 JSON/],
+        ['command does not parse', bash("echo it's done"), missing, /单引号没有结束/],
+        ['input is not JSON', 'not json', missing, /钩子输入不是合法的 JSON/],
+      ],
+    };
+  }
+
+  test('fail closed on Codex: every error prints the deny JSON naming the error and exits 0, the reason also on stderr (AS3-126)', () => {
+    const { errors, missing, bash } = codexErrorCases();
+    const dir = tempDir();
+    const ro = path.join(dir, 'ro.json');
+    fs.writeFileSync(ro, JSON.stringify({ readonly_dirs: [path.join(dir, 'vault')] }));
     const cases = [
-      ['broken config', { ...C0_ROOT, tool_name: 'Bash', tool_input: { command: 'git status' } }, ['--platform', 'codex', '--config', bad]],
-      ['unterminated quote', { ...C0_ROOT, tool_name: 'Bash', tool_input: { command: "echo it's done" } }, missing],
-      ['no command text', { ...C0_ROOT, tool_name: 'Bash', tool_input: {} }, missing],
-      ['Edit with neither a path nor a patch', { ...C0_CHILD, tool_name: 'Edit', tool_input: { command: 'x' } },
-        ['--platform', 'codex', '--config', path.join(dir, 'ro.json')]],
-      ['not JSON', 'not json', missing],
+      ...errors.map(([label, input, config, why]) => [label, input, ['--platform', 'codex', '--config', config], why]),
+      ['no command text', { ...C0_ROOT, tool_name: 'Bash', tool_input: {} }, ['--platform', 'codex', '--config', missing], /没有可读的命令文本/],
+      ['Edit with neither a path nor a patch', { ...C0_CHILD, tool_name: 'Edit', tool_input: { command: 'x' } }, ['--platform', 'codex', '--config', ro], /没有可读的目标路径/],
+      ['unknown option', bash('git status'), ['--platform', 'codex', '--bogus'], /用法错误（.*--bogus/],
+      ['unknown option, --platform=codex', bash('git status'), ['--platform=codex', '--bogus'], /用法错误/],
     ];
+    for (const [label, input, args, why] of cases) assert.match(expectErrorDeny(runGuard(input, args), label), why, label);
+    // The Claude side is unchanged: the same errors exit 2 with nothing on stdout.
     for (const [label, input, args] of cases) {
-      const r = runGuard(input, args);
-      assert.equal(r.code, 2, `${label}: exit code`);
-      assert.equal(r.out, '', `${label}: stdout`);
-      assert.match(r.err, /AutoSkills 守卫.*已按失败处理/, `${label}: stderr`);
+      const r = runGuard(input, args.map((a) => a.replace(/^(--platform=)?codex$/, '$1claude')));
+      assert.equal(r.code, 2, `claude, ${label}: exit code`);
+      assert.equal(r.out, '', `claude, ${label}: stdout`);
+      assert.match(r.err, /AutoSkills 守卫.*已按失败处理|^guard: /, `claude, ${label}: stderr`);
+    }
+  });
+
+  test('fail closed on Codex in each shell its hook may run in (check-kit\'s shellForms): the three errors give the deny JSON and exit 0, allow and deny are unchanged', (t) => {
+    const { errors, missing, bash } = codexErrorCases();
+    // The Codex line as config/codex/hooks.json writes it: the Node path one plain word, the script path quoted.
+    const line = (config) => `${nodeWord()} "${fwd(GUARD)}" --platform codex --config "${fwd(config)}"`;
+    const run = (form, input) => {
+      const r = spawnSync(form.file, form.args, {
+        input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', windowsHide: true,
+        windowsVerbatimArguments: !!form.verbatim, timeout: 60_000,
+      });
+      return { code: r.status, out: r.stdout ?? '', err: `${r.stderr ?? ''}${r.error ? ` (${r.error.code})` : ''}` };
+    };
+    const vias = shellForms(line(missing)).map((f) => f.via);
+    if (WIN) for (const v of ['cmd /d /s /c', 'cmd /c', 'powershell -Command']) assert.ok(vias.includes(v), `${v} in ${vias.join(', ')}`);
+    t.diagnostic(`shells run: ${vias.join(', ')}`);
+    for (const [label, input, config, why] of errors) {
+      for (const form of shellForms(line(config))) assert.match(expectErrorDeny(run(form, input), `${form.via}, ${label}`), why, `${form.via}, ${label}`);
+    }
+    for (const form of shellForms(line(missing))) {
+      const allow = run(form, bash('git status'));
+      assert.equal(allow.code, 0, `${form.via}, allow: ${allow.err}`);
+      assert.equal(allow.out, '', `${form.via}, allow: stdout`);
+      const deny = run(form, bash('git push origin main'));
+      assert.equal(deny.code, 0, `${form.via}, deny: ${deny.err}`);
+      const o = JSON.parse(deny.out.trim()).hookSpecificOutput;
+      assert.equal(o.permissionDecision, 'deny', form.via);
+      assert.match(o.permissionDecisionReason, new RegExp(REASON_HINT), form.via);
+      assert.ok(!o.permissionDecisionReason.startsWith(ERROR_DENY_MARK), `${form.via}: a rule deny is not an error deny`);
     }
   });
 

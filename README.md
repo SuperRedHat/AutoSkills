@@ -63,7 +63,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
   3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
   4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
 
-  **出错即拦截，两个平台一样**：守卫出错时退出 2，原因写 stderr。Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
+  **出错即拦截，两个平台一样**：守卫出错时原因都写 stderr。Claude 上退出 2，按 `onFailure: "block"` 拦下这次调用；Codex 上输出拒绝 JSON（理由写明守卫出错和原因）并退出 0，Codex 照 JSON 拦下。Codex 上不靠退出 2，是因为 Windows PowerShell 5.1 的 `-Command` 会把退出 2 改成 1，而 Codex 只在退出 2 时拦。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
 - **SessionStart 钩子** `hooks/session-start.mjs`（只在 Claude 注册）：startup、resume、compact 时注入几行提示和会话 id。
 - **Claude 的 deny 规则**（`config/claude/settings.fragment.json`）：每类被禁命令同时写 `Bash(...)` 和 `PowerShell(...)`；对外发送类的 MCP 工具；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。
 - **Codex 的规则**（`config/codex/rules/autoskills.rules`）：`prefix_rule` 拦简单形式的 git push、gh 写操作、npm publish。规则只匹配简单命令，**只当提醒**，由钩子和 pushurl 兜底。
@@ -129,7 +129,8 @@ git push (git remote get-url origin) <分支>
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。代理如果在 Codex 上用包裹形式写完整地址推送，pushurl 挡不住，只剩钩子。
-- **守卫出错即拦截**：`hook-config.json` 坏了、运行时缺失或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
+- **守卫出错即拦截**：`hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL。Codex 上靠拒绝 JSON 拦截，C0 只实测了 root 线程调 MCP 工具这一种情况；Codex 钩子超时时怎么处理没测。
+- **Codex 上守卫起不来时会放行**：便携 Node 不见、`guard.mjs` 加载出错或 shell 找不到命令时，守卫没有任何输出、退出码也不是 2，Codex 就放行（Claude 照样拦）。这是 Codex 上出错即拦截剩下的缺口，由检查脚本的命令行实测和守卫心跳发现。
 - **Codex 钩子的命令写法和 matcher 没在 Codex 里跑过**：由部署冒烟（AS3-121）覆盖。Codex 钩子要单独信任，没信任的钩子不运行；检查脚本只看有没有 trusted_hash，不核对哈希。
 - **Codex 规则只挡简单命令**：`git -C`、`bash -lc` 或 `powershell -Command` 包裹的命令、用 `;` 串起来的复合命令都匹配不到，只剩钩子和 pushurl 兜底。
 - **间接执行能绕过守卫**：写进脚本文件再运行、Invoke-Expression、编码过的命令，守卫都看不到原命令。

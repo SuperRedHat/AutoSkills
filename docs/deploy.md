@@ -181,8 +181,8 @@ check-kit 只读，按六节输出，每行是 `PASS`、`WARN` 或 `FAIL`、检�
 - **WARN** 下面可能有一行 `optional:`，是你可以跑也可以不跑的命令（例如删除花括号目录）。
 - 末尾一行是 PASS、WARN、FAIL 的计数。部署成功的标准：`check-kit` 和 `--dry-run --expect-clean` 都退出 0。
 - 中性档在位时，第 3 节报 FAIL 并给出回滚中性档的命令（`--report-only` 下是 WARN）。
-- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `git push origin main` 要输出拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。要特别注意：**Codex 只在退出 2 时拦截，守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令；PowerShell `-Command` 还会把守卫的退出 2 变成 1），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
-- **guard config hook-config.json**：运行区的 `hook-config.json` 要能解析、只有部署脚本写的三个键（`runtime`、`readonly_dirs`、`kit_repo`）、路径都是绝对路径。读不出来、不是 JSON 或有相对路径时，守卫每次都退出 2，**这时每次匹配到的调用都会被拦**；多出来的键守卫不认、会忽略，所以拼错的键等于没设（例如只读目录不生效）。修法都是重跑部署（它按本地配置重写这个文件），或手工改对。
+- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `git push origin main` 要输出拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。守卫出错时 Claude 一侧是退出 2，Codex 一侧是理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON 加退出 0（`exit 0, deny JSON for a guard error`），两边都说明匹配到的调用全被拦。要特别注意：**守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令：没有任何输出，退出码也不是 2，而 Codex 只认拒绝 JSON 或退出 2），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
+- **guard config hook-config.json**：运行区的 `hook-config.json` 要能解析、只有部署脚本写的三个键（`runtime`、`readonly_dirs`、`kit_repo`）、路径都是绝对路径。读不出来、不是 JSON 或有相对路径时，守卫每次都按出错处理（Claude 上退出 2，Codex 上输出拒绝 JSON），**这时每次匹配到的调用都会被拦**；多出来的键守卫不认、会忽略，所以拼错的键等于没设（例如只读目录不生效）。修法都是重跑部署（它按本地配置重写这个文件），或手工改对。
 - **部署前**，上面两行报 `not deployed (未部署)`，是 WARN，不算失败。
 - 退出 2 是用法错误，或本地配置存在但读不出来。
 
@@ -238,7 +238,7 @@ node scripts/deploy-kit.mjs --drill _private/eval/restore-drill [--claude-contra
 
 ## 钩子运行时缺失时怎么恢复
 
-**为什么会全被拦**：守卫在 Claude 里注册为 `onFailure: "block"`，在 Codex 里出错时退出 2，两边都是出错即拦截。钩子命令指向运行区里的便携 Node 和脚本（`_private/rt/node-v24.22.2-win-x64/node.exe` 和 `_private/rt/hooks/guard.mjs`）。这个目录被改名、删除，便携 Node 被换掉，`hook-config.json` 坏了，或者演练出了错，守卫就跑不起来，**Claude 里所有匹配的调用都会被拦**：Bash、PowerShell、Edit、Write、MultiEdit、NotebookEdit 和全部账本调用。代理在会话里自己修不了（它的 shell 和写文件都被拦），要你在**普通 PowerShell 窗口**里处理。Codex 不一样：`hook-config.json` 坏了时守卫退出 2，Bash、apply_patch、Edit、Write 和账本调用都被拦；可守卫根本起不来时（Node 或脚本不见了）退出码不是 2，**Codex 会放行，调用不经守卫照常执行**（ADR-006 §4），只有 check-kit 能发现。
+**为什么会全被拦**：守卫在 Claude 里注册为 `onFailure: "block"`，出错时退出 2；在 Codex 里出错时输出拒绝 JSON 并退出 0；两边都是出错即拦截。钩子命令指向运行区里的便携 Node 和脚本（`_private/rt/node-v24.22.2-win-x64/node.exe` 和 `_private/rt/hooks/guard.mjs`）。这个目录被改名、删除，便携 Node 被换掉，`hook-config.json` 坏了，或者演练出了错，守卫就跑不起来，**Claude 里所有匹配的调用都会被拦**：Bash、PowerShell、Edit、Write、MultiEdit、NotebookEdit 和全部账本调用。代理在会话里自己修不了（它的 shell 和写文件都被拦），要你在**普通 PowerShell 窗口**里处理。Codex 不一样：`hook-config.json` 坏了时守卫输出拒绝 JSON，Bash、apply_patch、Edit、Write 和账本调用都被拦；可守卫根本起不来时（Node 或脚本不见了）没有任何输出、退出码也不是 2，**Codex 会放行，调用不经守卫照常执行**（ADR-006 §4），只有 check-kit 能发现。
 
 **怎么认出守卫坏了**：
 

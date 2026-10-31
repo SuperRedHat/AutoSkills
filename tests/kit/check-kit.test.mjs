@@ -26,6 +26,7 @@ import {
   hookConfigProblems, judgeProbe, shellForms, probeInput, runProbe, PROBE_COMMANDS,
 } from '../../scripts/check-kit.mjs';
 import { claudePathRule, desiredFiles, KIT_HOOK_SCRIPTS } from '../../scripts/lib/kit-targets.mjs';
+import { errorDenyReason } from '../../hooks/guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(REPO, 'scripts', 'check-kit.mjs');
@@ -629,7 +630,7 @@ test('the live run: a command line naming a Node that does not exist is a FAIL t
   pointGuardAt(sb, absent);
   const live = row(hookRows(sb), 'hooks.live.guard');
   assert.equal(live.status, 'FAIL');
-  assert.match(live.detail, /Codex blocks only on exit 2: where this line ends with another code .*, Codex lets every matched call through unguarded \(守卫起不来时 Codex 会放行\)/);
+  assert.match(live.detail, /Codex blocks only on the deny JSON or exit 2: where this line prints no JSON and ends with another code .*, Codex lets every matched call through unguarded \(守卫起不来时 Codex 会放行\)/);
   assert.match(live.detail, /Claude blocks every matched call \(onFailure: "block"\)/);
   assert.ok(live.lines.some((l) => /^claude, command \+ args, allow \(git status\): cannot be started \(ENOENT\)$/.test(l)), live.lines.join('\n'));
   for (const via of WIN ? ['cmd /d /s /c', 'cmd /c', 'powershell -Command'] : ['sh -c']) {
@@ -672,7 +673,7 @@ test('the live run: a guard that denies everything, or nothing, decided wrong; t
   assert.equal(row(hookRows(sb), 'hooks.live.guard').status, 'PASS');
 });
 
-test('hook-config.json: bad JSON and a relative path are a FAIL that says every matched call is blocked; the guard then exits 2', () => {
+test('hook-config.json: bad JSON and a relative path are a FAIL that says every matched call is blocked; the guard then fails closed on both platforms', () => {
   const sb = sandbox('home-ok');
   const file = hookConfigFile(sb);
   const cases = [
@@ -689,19 +690,19 @@ test('hook-config.json: bad JSON and a relative path are a FAIL that says every 
     assert.match(cfg.detail, re);
     assert.match(cfg.detail, /every matched call is blocked on both platforms until it is fixed \(这时每次匹配到的调用都会被拦\)$/);
     assert.match(cfg.fix, /re-run deploy-kit: .*it writes the file from the local config/);
-    // The live run shows the same: the deployed guard fails closed on every run. Windows PowerShell
-    // -Command passes a native exit 2 on as 1, which Codex would not block (ADR-006 §4).
+    // The live run shows the same: the deployed guard fails closed on every run, on Claude with exit 2 and
+    // on Codex with the deny JSON for a guard error and exit 0 in every shell, Windows PowerShell -Command
+    // included (it would pass a native exit 2 on as 1, which Codex would not block; AS3-126).
     const live = row(rows, 'hooks.live.guard');
     assert.equal(live.status, 'FAIL', text);
-    assert.match(live.detail, /the guard failed closed \(exit 2\): every matched call is blocked/);
-    const viaPs = (l) => l.startsWith('codex, powershell -Command,');
-    assert.ok(live.lines.filter((l) => !viaPs(l)).every((l) => /: exit 2: AutoSkills 守卫出错，已按失败处理/.test(l)), live.lines.join('\n'));
-    assert.ok(live.lines.some((l) => l.startsWith('claude,')) && live.lines.some((l) => l.startsWith('codex, ')), live.lines.join('\n'));
-    if (WIN) {
-      const ps = live.lines.filter(viaPs);
-      assert.ok(ps.length === 2 && ps.every((l) => /: exit 1 \(the guard failed closed, the shell passed on another code than 2\): AutoSkills 守卫出错/.test(l)), live.lines.join('\n'));
-      assert.match(live.detail, /Codex lets every matched call through unguarded/);
-    }
+    assert.match(live.detail, /the guard ran and failed closed \(exit 2, or on Codex the deny JSON for a guard error\): every matched call is blocked/);
+    assert.doesNotMatch(live.detail, /lets every matched call through/);
+    const claude = live.lines.filter((l) => l.startsWith('claude,'));
+    const codex = live.lines.filter((l) => l.startsWith('codex, '));
+    assert.equal(claude.length + codex.length, live.lines.length, live.lines.join('\n'));
+    assert.ok(claude.length > 0 && claude.every((l) => /: exit 2: AutoSkills 守卫出错，已按失败处理/.test(l)), live.lines.join('\n'));
+    assert.ok(codex.length > 0 && codex.every((l) => /: exit 0, deny JSON for a guard error: AutoSkills 守卫出错，按负责人定的出错即拦截处理/.test(l)), live.lines.join('\n'));
+    if (WIN) assert.equal(codex.filter((l) => l.startsWith('codex, powershell -Command,')).length, 2, live.lines.join('\n'));
   }
 });
 
@@ -791,6 +792,11 @@ test('judgeProbe and shellForms: exit codes, output and the shells a Codex line 
   assert.equal(judgeProbe('deny', { ...ok, stdout: denyJson }).kind, 'ok');
   assert.equal(judgeProbe('allow', { ...ok, stdout: denyJson }).kind, 'wrong');
   assert.equal(judgeProbe('deny', { ...ok, stdout: '{"hookSpecificOutput":{"permissionDecision":"allow"}}' }).kind, 'wrong');
+  // A guard error on Codex (AS3-126): the deny JSON with ERROR_DENY_MARK is an error on both inputs, not a pass.
+  const errorJson = `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: errorDenyReason('synthetic') } })}\n`;
+  for (const expect of ['allow', 'deny']) {
+    assert.deepEqual(judgeProbe(expect, { ...ok, stdout: errorJson }), { kind: 'error', detail: `exit 0, deny JSON for a guard error: ${errorDenyReason('synthetic').slice(0, 160)}` }, expect);
+  }
   assert.equal(JSON.parse(probeInput('codex', 'git status')).turn_id, 'check-kit-probe');
   assert.equal(JSON.parse(probeInput('claude', 'git status')).tool_input.command, 'git status');
   if (!WIN) { assert.deepEqual(shellForms('x').map((f) => f.via), ['sh -c']); return; }

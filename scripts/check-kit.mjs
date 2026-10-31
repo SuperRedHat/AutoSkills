@@ -57,12 +57,14 @@
 //      anything but "guard selftest: ok" is a FAIL. From AS3-125: the deployed <runtime>/hooks/
 //      hook-config.json must parse by the guard's own rules (a JSON object, runtime and kit_repo absolute,
 //      readonly_dirs a list of absolute paths) and hold only the keys deploy-kit writes; one the guard
-//      cannot load makes it exit 2 on every run, so every matched call is blocked. And the guard command
-//      lines registered in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run
-//      them, once with a synthetic allow input (git status: exit 0, no output) and once with a synthetic
-//      deny input (git push: the deny JSON). Claude's command and args start directly; Codex's string runs
-//      in each shell it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell
-//      -Command and bash -c when bash is on PATH (sh -c off Windows). A guard that does not start exits with
+//      cannot load makes it fail closed on every run (exit 2 on Claude, the deny JSON with exit 0 under
+//      --platform codex, AS3-126), so every matched call is blocked. And the guard command lines registered
+//      in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run them, once with a
+//      synthetic allow input (git status: exit 0, no output) and once with a synthetic deny input (git push:
+//      the deny JSON of rule 1). Claude's command and args start directly; Codex's string runs in each shell
+//      it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell -Command and bash -c
+//      when bash is on PATH (sh -c off Windows). A guard error shows as exit 2 or as a deny JSON whose reason
+//      starts with the guard's ERROR_DENY_MARK. A guard that does not start prints no JSON and exits with
 //      another code than 2, and Codex lets the call through (ADR-006 §4), so any wrong run is a FAIL.
 //      Before a deploy both rows are a WARN that reads 未部署 (not deployed): the command-line row when no
 //      guard is registered on either platform, the config row when neither the file nor a deployed or
@@ -101,7 +103,7 @@ import {
   slash, pathKey, within,
 } from './lib/kit-targets.mjs';
 import { keyValues, getValue, TomlEditError } from './lib/toml-edit.mjs';
-import { PROBE_ENV } from '../hooks/guard.mjs';
+import { PROBE_ENV, ERROR_DENY_MARK } from '../hooks/guard.mjs';
 import { isNeutralText, neutralsInPlace, deployRootOf } from './deploy-kit.mjs';
 import { planRepos, scanRepos, DEFAULT_DEPTH, NO_PUSH } from './set-pushurl.mjs';
 
@@ -519,7 +521,8 @@ function codexChecks(ctx, sec) {
       `delete ${CODEX_FORBIDDEN_KEY[1]} from the [${CODEX_FORBIDDEN_KEY[0]}] table of ${s(t.codexConfig)} (deploy-kit does not remove keys)`);
   } else sec.pass(`codex.${forbidden}`, `Codex ${forbidden} not set`, 'not set');
 
-  // hooks.json: the guard, failing closed like on Claude (exit 2 with a reason blocks the call, ADR-006 §7).
+  // hooks.json: the guard, failing closed like on Claude (under --platform codex an error prints the deny JSON
+  // and exits 0, AS3-126; ADR-006 §4).
   const hooks = readJson(t.codexHooks);
   const guardItem = 'Codex hooks.json guard';
   if (!hooks.exists) sec.fail('codex.hooks', guardItem, `${s(t.codexHooks)} does not exist`, deployFix(ctx));
@@ -1029,7 +1032,7 @@ export function hookChecks(ctx, sec, { now = new Date(), selftest = runSelftest 
 
 /**
  * What is wrong with a hook-config.json text. load: true are the guard's own load errors (loadConfig in
- * hooks/guard.mjs, the same rules; a test holds the two together): the guard exits 2 on every run. load:
+ * hooks/guard.mjs, the same rules; a test holds the two together): the guard fails closed on every run. load:
  * false is a key the guard does not know; it ignores those.
  * @param {string} text
  * @returns {{load: boolean, text: string}[]} empty when the file is fine
@@ -1127,7 +1130,8 @@ function firstLine(text) {
 /**
  * The verdict on one live run. kind: ok; start (the run did not end with 0 or 2: the guard did not start or
  * did not finish, or a shell passed its exit 2 on as another code; Windows PowerShell -Command turns a
- * native exit 2 into 1); error (the guard ran and failed closed, exit 2); wrong (it ran and decided wrong).
+ * native exit 2 into 1); error (the guard ran and failed closed: exit 2, or under --platform codex exit 0
+ * with a deny JSON whose reason starts with ERROR_DENY_MARK, AS3-126); wrong (it ran and decided wrong).
  * @param {'allow'|'deny'} expect
  * @param {{status: number|null, stdout: string, stderr: string, error?: string}} r
  * @returns {{kind: 'ok'|'start'|'error'|'wrong', detail: string}}
@@ -1143,11 +1147,15 @@ export function judgeProbe(expect, r) {
     return { kind: 'start', detail: `exit ${r.status}${relayed}${why(r.stderr)}` };
   }
   const out = r.stdout.trim();
-  if (expect === 'allow') return out ? { kind: 'wrong', detail: `exit 0 with output (expected none): ${out.slice(0, 120)}` } : { kind: 'ok', detail: 'allowed' };
   let j = null;
   try { j = JSON.parse(out.split(/\r?\n/).pop()); } catch { /* not JSON */ }
   const o = j?.hookSpecificOutput;
-  if (o?.hookEventName === 'PreToolUse' && o?.permissionDecision === 'deny') return { kind: 'ok', detail: 'denied' };
+  const denied = o?.hookEventName === 'PreToolUse' && o?.permissionDecision === 'deny';
+  const reason = typeof o?.permissionDecisionReason === 'string' ? o.permissionDecisionReason : '';
+  // A guard error on Codex: blocked like a rule deny, but the guard could not decide.
+  if (denied && reason.startsWith(ERROR_DENY_MARK)) return { kind: 'error', detail: `exit 0, deny JSON for a guard error: ${firstLine(reason)}` };
+  if (expect === 'allow') return out ? { kind: 'wrong', detail: `exit 0 with output (expected none): ${out.slice(0, 120)}` } : { kind: 'ok', detail: 'allowed' };
+  if (denied) return { kind: 'ok', detail: 'denied' };
   return { kind: 'wrong', detail: out ? `exit 0 without the deny JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the push was not denied)' };
 }
 
@@ -1158,7 +1166,7 @@ export function hookConfigChecks(ctx, sec) {
   const runtime = ctx.roots.runtime;
   if (!runtime) { sec.warn('hooks.config', item, 'no runtime root: the deployed file is not known'); return; }
   const file = path.join(runtime, 'hooks', HOOK_CONFIG_NAME);
-  const blocked = 'the guard cannot load it and exits 2 on every run: every matched call is blocked on both platforms until it is fixed (这时每次匹配到的调用都会被拦)';
+  const blocked = 'the guard cannot load it and fails closed on every run: every matched call is blocked on both platforms until it is fixed (这时每次匹配到的调用都会被拦)';
   const fix = `${deployFix(ctx)}; it writes the file from the local config (or correct it by hand)`;
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
@@ -1222,10 +1230,10 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   // What each kind of wrong run means on its platform (ADR-006 §4).
   const effects = [];
   const any = (f) => bad.some(f);
-  if (any((r) => r.e.platform === 'codex' && r.kind === 'start')) effects.push('Codex blocks only on exit 2: where this line ends with another code (the guard does not start, or the shell does not pass its exit 2 on), Codex lets every matched call through unguarded (守卫起不来时 Codex 会放行)');
+  if (any((r) => r.e.platform === 'codex' && r.kind === 'start')) effects.push('Codex blocks only on the deny JSON or exit 2: where this line prints no JSON and ends with another code (the guard does not start or does not finish, or an older guard\'s exit 2 is passed on as another code), Codex lets every matched call through unguarded (守卫起不来时 Codex 会放行)');
   if (any((r) => r.e.platform === 'claude' && r.kind === 'start' && r.e.onFailure === 'block')) effects.push('Claude blocks every matched call (onFailure: "block")');
   if (any((r) => r.e.platform === 'claude' && r.kind === 'start' && r.e.onFailure !== 'block')) effects.push('Claude lets the call through (registered without onFailure: "block")');
-  if (any((r) => r.kind === 'error')) effects.push('the guard failed closed (exit 2): every matched call is blocked');
+  if (any((r) => r.kind === 'error')) effects.push('the guard ran and failed closed (exit 2, or on Codex the deny JSON for a guard error): every matched call is blocked');
   if (any((r) => r.kind === 'wrong')) effects.push('the guard ran but decided wrong');
   const fixes = [];
   if (any((r) => r.kind === 'start')) {

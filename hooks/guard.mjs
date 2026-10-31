@@ -37,18 +37,24 @@
 //   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
 //   Codex honoured this deny live in C0 in one case only (root thread, an MCP tool, the hook exit 0);
 //   child threads, Bash and apply_patch were not covered.
-// Exit codes: 0 = decided (allow or deny). 2 = error: unknown option, stdin is not a JSON object, a shell
-// call has no command text or does not parse (unterminated quote, $( ... ), block comment, here-string),
-// a write tool has neither a target path nor a readable patch while read-only folders are registered, the
-// local config exists but cannot be read, or anything else throws. The reason always goes to stderr.
-// Errors fail closed on both platforms (owner decision 2026-10-31, "出错即拦截"): Claude registers the guard
-// with onFailure: "block"; Codex treats PreToolUse exit 2 with a reason on stderr as a block. The Codex
-// side is read from strings in the codex binary, not seen live. So a broken hook-config.json blocks every
-// matched call until it is fixed; check-kit validates that file and reports a failing selftest and a
-// missing or old heartbeat. A guard that never starts is not covered by this: a missing Node, a load or
-// syntax error in this file (Node exits 1) or a shell that cannot find the command gives another exit
-// code, which Claude blocks (onFailure: "block") and Codex lets through (ADR-006 §4). check-kit runs the
-// registered command lines with a synthetic allow and deny input to find that case.
+// Errors: unknown option, stdin is not a JSON object, a shell call has no command text or does not parse
+// (unterminated quote, $( ... ), block comment, here-string), a write tool has neither a target path nor a
+// readable patch while read-only folders are registered, the local config exists but cannot be read, or
+// anything else throws. The reason always goes to stderr. Errors fail closed on both platforms (owner
+// decision 2026-10-31, "出错即拦截"), each in the way its platform blocks:
+//   - Claude (and any run without --platform codex): exit 2, nothing on stdout; Claude registers the guard
+//     with onFailure: "block".
+//   - --platform codex (the Codex registration): the deny JSON above, exit 0. Its reason starts with
+//     ERROR_DENY_MARK, then names the error. Codex blocks on exit 2 only, and Windows PowerShell 5.1 -Command
+//     turns a native exit 2 into 1 (AS3-125), while exit 0 with the JSON passes through every shell
+//     unchanged and Codex honoured that JSON in C0. Which shell Codex runs hooks in is not known.
+// Exit codes: 0 = decided (allow or deny), or an error under --platform codex. 2 = an error otherwise.
+// So a broken hook-config.json blocks every matched call until it is fixed; check-kit validates that file
+// and reports a failing selftest and a missing or old heartbeat. A guard that never starts is not covered
+// by this: a missing Node, a load or syntax error in this file (Node exits 1) or a shell that cannot find
+// the command gives no JSON and another exit code than 2, which Claude blocks (onFailure: "block") and
+// Codex lets through (ADR-006 §4). check-kit runs the registered command lines with a synthetic allow and
+// deny input to find that case.
 //
 // Local config: hook-config.json next to this script, written at deploy time from the git-excluded local
 // kit config; --config names another file (tests use temp dirs). The repo holds only the placeholder
@@ -140,7 +146,10 @@ const PLATFORMS = new Set(['claude', 'codex']);
 /** Set to 1 by check-kit's live run of the hook command line: no heartbeat line (see Heartbeat above). */
 export const PROBE_ENV = 'AUTOSKILLS_GUARD_PROBE';
 
-/** A command or input the guard cannot read; the run exits 2 so onFailure: "block" applies. */
+/** Start of the deny reason of a failed run under --platform codex; check-kit tells it from a rule deny by it. */
+export const ERROR_DENY_MARK = 'AutoSkills 守卫出错，按负责人定的出错即拦截处理';
+
+/** A command or input the guard cannot read; the run fails closed (exit 2, or the deny JSON on Codex). */
 export class ParseError extends Error {}
 
 // ---------------------------------------------------------------------------------------------------
@@ -915,6 +924,15 @@ export function detectPlatform(input) {
   return 'unknown';
 }
 
+const PARSE_HINT = '请把命令改写成引号成对的简单命令，写入工具要带目标路径，然后再试。';
+const KIT_FAULT_HINT = '这是守卫本身或它的配置出了问题，不是这条命令的问题：不要换写法重试，把这句原因写进汇报，由用户本人修'
+  + '（check-kit 会指出哪里坏了），接着做不受影响的工作。';
+
+/** The deny reason of a failed run under --platform codex: ERROR_DENY_MARK, the error and what to do next. */
+export function errorDenyReason(why, hint = KIT_FAULT_HINT) {
+  return `${ERROR_DENY_MARK}，拦下了这次调用：${why}。${hint}`;
+}
+
 const ALLOW = Object.freeze({ decision: 'allow' });
 const deny = (reason) => ({ decision: 'deny', reason });
 
@@ -1112,7 +1130,30 @@ function selftest() {
   return failed ? 1 : 0;
 }
 
+/** The deny JSON line (one line of text, newline included) for a reason. */
+const denyLine = (reason) => `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })}\n`;
+
+/** True when argv asks for --platform codex (the last one wins, as in parseArgs); read even when parseArgs fails. */
+function codexArgv(argv) {
+  let platform;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--platform') platform = argv[i + 1];
+    else if (argv[i].startsWith('--platform=')) platform = argv[i].slice('--platform='.length);
+  }
+  return platform === 'codex';
+}
+
+// A run that fails before it can decide: the reason to stderr, then exit 2, or under --platform codex the
+// deny JSON and exit 0 (see Errors above).
+function failClosed(codex, stderrText, why) {
+  process.stderr.write(stderrText);
+  if (!codex) return 2;
+  process.stdout.write(Buffer.from(denyLine(errorDenyReason(why)), 'utf8'));
+  return 0;
+}
+
 function main(argv) {
+  const codex = codexArgv(argv);
   let opts;
   try {
     opts = parseArgs({
@@ -1123,8 +1164,7 @@ function main(argv) {
     }).values;
     if (opts.platform !== undefined && !PLATFORMS.has(opts.platform)) throw new Error(`unknown platform ${JSON.stringify(opts.platform)}`);
   } catch (e) {
-    process.stderr.write(`guard: ${e.message}\n${USAGE}\n`);
-    return 2;
+    return failClosed(codex, `guard: ${e.message}\n${USAGE}\n`, `钩子命令行的用法错误（${e.message}）`);
   }
   if (opts.help) { console.log(USAGE); return 0; }
   if (opts.selftest) return selftest();
@@ -1133,8 +1173,7 @@ function main(argv) {
   try {
     config = loadConfig(path.resolve(opts.config ?? path.join(path.dirname(SELF), CONFIG_NAME)));
   } catch (e) {
-    process.stderr.write(`AutoSkills 守卫出错，已按失败处理：${e.message}\n`);
-    return 2;
+    return failClosed(codex, `AutoSkills 守卫出错，已按失败处理：${e.message}\n`, e.message);
   }
 
   let platform = opts.platform ?? 'unknown';
@@ -1152,12 +1191,15 @@ function main(argv) {
     const r = decide(input, platform, policyFrom(config));
     decision = r.decision;
     code = 0;
-    if (r.decision === 'deny') {
-      out = `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: r.reason } })}\n`;
-    }
+    if (r.decision === 'deny') out = denyLine(r.reason);
   } catch (e) {
-    const why = e instanceof ParseError ? e.message : `内部错误（${e.message}）`;
-    process.stderr.write(`AutoSkills 守卫无法判断这次调用，已按失败处理：${why}。请把命令改写成引号成对的简单命令，写入工具要带目标路径，然后再试。\n`);
+    const parse = e instanceof ParseError;
+    const why = parse ? e.message : `内部错误（${e.message}）`;
+    process.stderr.write(`AutoSkills 守卫无法判断这次调用，已按失败处理：${why}。${PARSE_HINT}\n`);
+    if (codex) {
+      out = denyLine(errorDenyReason(`无法判断这次调用（${why}）`, parse ? PARSE_HINT : KIT_FAULT_HINT));
+      code = 0;
+    }
   }
   if (process.env[PROBE_ENV] !== '1') writeHeartbeat(config, { ts: new Date().toISOString(), platform, event, decision });
   if (out) process.stdout.write(Buffer.from(out, 'utf8'));
@@ -1172,13 +1214,14 @@ const invokedDirectly = (() => {
   try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
-// Fail closed: anything main() did not catch still exits 2 with a reason on stderr. An uncaught throw
-// would exit 1, and only exit 2 is the code Codex blocks on.
+// Fail closed: anything main() did not catch still exits 2 with a reason on stderr, or under --platform
+// codex prints the deny JSON and exits 0. An uncaught throw would exit 1, which Codex lets through.
 if (invokedDirectly) {
+  const argv = process.argv.slice(2);
   try {
-    process.exitCode = main(process.argv.slice(2));
+    process.exitCode = main(argv);
   } catch (e) {
-    process.stderr.write(`AutoSkills 守卫出错，已按失败处理：内部错误（${e?.message ?? e}）\n`);
-    process.exitCode = 2;
+    const why = `内部错误（${e?.message ?? e}）`;
+    process.exitCode = failClosed(codexArgv(argv), `AutoSkills 守卫出错，已按失败处理：${why}\n`, why);
   }
 }
