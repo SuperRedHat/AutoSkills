@@ -313,6 +313,20 @@ describe('usage', () => {
     assert.deepEqual(treeDiff(before, treeHash(f.root)), []);
   });
 
+  test('started through a junction (symlink elsewhere) to scripts/: set-pushurl still runs', () => {
+    const link = dirLink(path.join(REPO, 'scripts'), path.join(tempDir(), 'scripts-link'));
+    const viaLink = path.join(link, 'set-pushurl.mjs');
+    assert.notEqual(fs.realpathSync(viaLink).toLowerCase(), viaLink.toLowerCase(), 'the path really goes through a link');
+    const help = spawnSync(process.execPath, [viaLink, '--help'], { env: ENV, encoding: 'utf8' });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /^usage: node scripts\/set-pushurl\.mjs/, 'the usage is printed, so run() ran');
+    const f = fixture();
+    const dry = spawnSync(process.execPath, [viaLink, ...scanArgs(f, '--dry-run')], { env: ENV, encoding: 'utf8' });
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.notEqual(dry.stdout.trim(), '', 'the dry-run printed its plan');
+    assert.equal(spawnSync(process.execPath, [viaLink, '--dry-run'], { env: ENV, encoding: 'utf8' }).status, 2, 'usage errors still exit 2');
+  });
+
   test('a bad local config is an error, not a silent "no read-only dirs"', () => {
     const f = fixture();
     const bad = path.join(f.base, 'bad.json');

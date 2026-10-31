@@ -70,7 +70,8 @@
 //      the pushurl originals (pushurl.json, the set-pushurl log) and the deploy options, which also go to
 //      deploy_options in the local config. A failure on the way rolls everything back at once, merged files
 //      included (from the backup), so the targets end as they were before the apply.
-//   4. It prints the deploy id and the rollback command.
+//   4. It prints the deploy id and the rollback command, and when ~/.codex/hooks.json was created or changed,
+//      the next step: trust the hook again in Codex /hooks (codexTrustNote; the dry-run says it too).
 // --rollback <deploy id> undoes one deploy in two classes:
 //   - whole targets (skills, contract, agent definitions, hooks.json, rules, runtime files): the step-0
 //     restore tool (restore_tool in the local config) runs as restore.mjs --backup <dir> --only kit-whole
@@ -305,6 +306,20 @@ export function planJson(plan, { expectClean = false, neutralInPlace } = {}) {
   };
 }
 
+/**
+ * The re-trust note when a plan creates or changes ~/.codex/hooks.json, else null. Codex keeps the trust of
+ * each hook handler in config.toml ([hooks.state.'<hooks.json>:<event>:<group>:<handler>'], C0 T-meta);
+ * whether a changed hooks.json needs trusting again is inferred, not tested, so the owner checks /hooks.
+ * @param {{create: object[], modify: object[], roots: object}} plan
+ * @returns {string|null}
+ */
+export function codexTrustNote(plan) {
+  const hooks = pathKey(targetMap(plan.roots).codexHooks);
+  if (![...plan.create, ...plan.modify].some((e) => pathKey(e.path) === hooks)) return null;
+  return `${slash(targetMap(plan.roots).codexHooks)} is created or changed: open Codex, then trust the AutoSkills hook again in /hooks `
+    + '(check-kit lists the trust per handler; the guard does not run on Codex until it is trusted)';
+}
+
 function printPlan(plan, localConfig, { expectClean = false, neutralInPlace = [] } = {}) {
   const s = (p) => shown(p, plan.roots);
   console.log(`deploy-kit: dry-run${expectClean ? ' --expect-clean' : ''}, nothing is written`);
@@ -324,6 +339,8 @@ function printPlan(plan, localConfig, { expectClean = false, neutralInPlace = []
   group('remove', plan.remove, '-', (e) => `${s(e.path)}${e.kind === 'dir' ? `/ (${e.files.length} file(s))` : e.kind === 'link' ? ' (link only, the target stays)' : ''}  [${e.group}] ${e.reason}`);
   group('listed, not changed', plan.listed, '=', (e) => `${s(e.path)}  ${e.reason}`);
   if (plan.conflicts.length) group('conflicts', plan.conflicts, '!', (e) => `${s(e.path)}  ${e.reason}`);
+  const trust = codexTrustNote(plan);
+  if (trust) console.log(`  after --apply: ${trust}`);
   if (!plan.options.retire_legacy_agents) console.log('  (the 3 old agents in ~/.claude/agents stay; --retire-legacy-agents archives and removes them)');
   console.log(`  never touched: ${neverTouch(plan.roots).map(s).join(', ')}; ~/.workflow-core scripts/, docs/, backups/; the project-manager registration`);
   console.log(`deploy-kit: ${plan.create.length} to create, ${plan.modify.length + plan.pushurl.length} to modify (${plan.pushurl.length} pushurl), `
@@ -1758,6 +1775,8 @@ function run(argv) {
     console.log(`  written: ${c.created} created, ${c.modified} modified (${c.merged} merged), ${c.removed} removed, ${c.pushurl} pushurl; journal ${slash(path.join(r.dir, JOURNAL))}`);
     console.log(`deploy-kit: deploy id ${r.id}`);
     console.log(`deploy-kit: roll back with: ${rollbackCommand(r.id, opts.localConfig)}`);
+    const trust = codexTrustNote(plan);
+    if (trust) console.log(`deploy-kit: next: ${trust}`);
     return 0;
   }
 
@@ -1768,10 +1787,13 @@ function run(argv) {
   return plan.conflicts.length ? 1 : 0;
 }
 
+// Both sides by real path, as in the hooks: Node gives the main module its real path, so a start through a
+// junction or symlink would otherwise skip run() and exit 0 without a word.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
-  const a = path.resolve(process.argv[1]);
-  return WIN ? a.toLowerCase() === SELF.toLowerCase() : a === SELF;
+  let a, b;
+  try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
+  return WIN ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
 if (invokedDirectly) {
   try {

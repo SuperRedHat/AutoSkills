@@ -10,27 +10,39 @@
 // Input: the PreToolUse JSON on stdin.
 //   Claude: tool_name Bash or PowerShell, tool_input.command a string, parsed in that tool's syntax;
 //   Edit, Write, MultiEdit (tool_input.file_path) and NotebookEdit (tool_input.notebook_path) for rule 2;
-//   mcp__project-manager__<tool> for rule 3, with agent_id set only inside a subagent.
-//   Codex: the input fields and the deny format are settled by the C0 probe (T-meta) and backfilled
-//   after it. Until then a shell-like tool (Bash, PowerShell, shell, local_shell, shell_command,
-//   exec_command, unified_exec, container.exec) is read from tool_input.command or tool_input.cmd, as a
-//   string or an argv array; a string is parsed as both Bash and PowerShell and a deny in either wins.
+//   mcp__project-manager__<tool> for rule 3, with agent_id set only inside a subagent. C0 E2 (2026-10-31):
+//   all 49 workflow-agent PreToolUse inputs carried agent_id and agent_type, so rule 3 holds for workflow
+//   agents too; the main session's inputs have neither key.
+//   Codex (C0 T-meta, codex-cli 0.166): PreToolUse brings session_id, turn_id, transcript_path, cwd,
+//   hook_event_name, model, permission_mode, tool_name, tool_input and tool_use_id, and in a child thread
+//   also agent_id and agent_type (the root thread has neither). A shell call is tool_name Bash with
+//   tool_input.command the raw string the model wrote, often PowerShell (no argv, no powershell -Command
+//   wrapper), so under codex a string is parsed as both Bash and PowerShell and a deny in either wins. MCP
+//   tools are mcp__<server>__<tool> with the server's - turned into _ (mcp__project_manager__...); spawn
+//   and wait (collaborationspawn_agent, collaborationwait_agent) are allowed. The other shell-like names
+//   (PowerShell, shell, local_shell, shell_command, exec_command, unified_exec, container.exec, and
+//   tool_input.cmd or an argv array) were not seen in C0 and stay as a fallback for other Codex builds.
 //   apply_patch is read from tool_input (a string), tool_input.command, .input or .patch (the patch text,
-//   or an argv array ["apply_patch", "<patch>"]); a project-manager tool is any tool_name that ends in
-//   project-manager (or project_manager) plus __ . / or : and the tool, or a tool_input.server naming
-//   project-manager. Whether workflow agents carry agent_id is C0 E2, backfilled by AS3-117.
+//   or an argv array ["apply_patch", "<patch>"]); C0 captured no real apply_patch input, so these shapes
+//   are untested. A project-manager tool is any tool_name that ends in project-manager (or
+//   project_manager) plus __ . / or : and the tool, or a tool_input.server naming project-manager. The
+//   hook process has no CODEX_THREAD_ID: identity comes only from the input (session_id, agent_id).
 //   The platform comes from --platform, else from the input (turn_id or a .codex transcript: codex;
-//   permission_mode or a .claude transcript: claude).
+//   permission_mode or a .claude transcript: claude; Codex sends permission_mode too, turn_id wins).
 //   Other tools and other events are allowed. Reads of customer data folders are not checked here: Read
 //   is called often and each hook run starts Node (about 90 ms), so that stays with the settings deny rules.
-// Output: nothing on allow, so the normal permission flow goes on. On deny, one UTF-8 JSON line:
+// Output: nothing on allow, so the normal permission flow goes on. On deny, one UTF-8 JSON line, exit 0:
 //   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
+//   Codex honoured this deny live in C0 in one case only (root thread, an MCP tool, the hook exit 0);
+//   child threads, Bash and apply_patch were not covered.
 // Exit codes: 0 = decided (allow or deny). 2 = error: unknown option, stdin is not a JSON object, a shell
 // call has no command text or does not parse (unterminated quote, $( ... ), block comment, here-string),
-// a write tool has no readable target while read-only folders are registered, or the local config exists
-// but cannot be read. The reason goes to stderr. Claude registers the guard
-// with onFailure: "block", so an error blocks the call; Codex lets a call through when its hook fails,
-// so there the guard is only a reminder.
+// a write tool has neither a target path nor a readable patch while read-only folders are registered, the
+// local config exists but cannot be read, or anything else throws. The reason always goes to stderr.
+// Errors fail closed on both platforms (owner decision 2026-10-31, "出错即拦截"): Claude registers the guard
+// with onFailure: "block"; Codex treats PreToolUse exit 2 with a reason on stderr as a block. The Codex
+// side is read from strings in the codex binary, not seen live. So a broken hook-config.json blocks every
+// matched call until it is fixed; check-kit reports a failing selftest and a missing or old heartbeat.
 //
 // Local config: hook-config.json next to this script, written at deploy time from the git-excluded local
 // kit config; --config names another file (tests use temp dirs). The repo holds only the placeholder
@@ -51,10 +63,11 @@
 // ( ) groups, { } blocks and $( ) @( ) `...` substitutions (also inside double quotes). Quotes and escapes
 // are removed (bash $'...' with its backslash escapes, \' included), comments skipped, redirections
 // dropped. Here-doc and here-string bodies are skipped too, read as data: that is exact only for a quoted
-// bash here-doc (<<'EOF') and a PowerShell @'...'@ here-string. In an unquoted here-doc (<<EOF) and an
-// @"..."@ here-string the shell still expands $( ) and backticks, so a push written there runs unseen
-// (ADR-006 §4; reading the bodies would block everyday doc and commit-message commands). The repo's
-// pushurl = no_push is what stops that push. Each command is
+// bash here-doc (<<'EOF') and a PowerShell @'...'@ here-string. In an unquoted here-doc (<<EOF) bash still
+// runs $( ) and backtick substitutions, and in an @"..."@ here-string PowerShell still runs $( ) (a
+// backtick there is only PowerShell's escape character), so a push written there runs unseen (ADR-006 §4;
+// reading the bodies would block everyday doc and commit-message commands). The repo's pushurl = no_push
+// is what stops that push. Each command is
 // checked after stripping VAR=value prefixes, reserved words (then, do ...) and wrappers (env, command,
 // builtin, exec, nohup, time, sudo, nice, timeout, xargs) and after unwrapping bash/sh -c, powershell/pwsh -Command, cmd /c and
 // Start-Process. The PowerShell & call operator separates like any & does, so "& git push" is git push.
@@ -70,8 +83,8 @@
 //   - npm publish.
 //
 // Rule 2, read-only folders: Edit, Write, MultiEdit, NotebookEdit and apply_patch (every Add, Update,
-//   Delete and Move to path of the patch) are denied when the target lies in a registered read-only
-//   folder (readonly_dirs). Both sides are compared by real path: relative targets are resolved against
+//   Delete and Move to path of the patch; an Edit-like call without its path field is read as a patch)
+//   are denied when the target lies in a registered read-only folder (readonly_dirs). Both sides are compared by real path: relative targets are resolved against
 //   the input cwd, junctions and symlinks are resolved on the longest existing part of the path (a new
 //   file under a linked folder counts), and on Windows case and / versus \ do not matter.
 // Rule 3, the ledger belongs to the main session (v2 §3.7 item 2): a call that carries agent_id (a
@@ -91,11 +104,14 @@
 //     pwsh -File), Invoke-Expression, encoded commands (-EncodedCommand);
 //   - commands built at run time: variables ($g push, & $git push), substitutions that produce the
 //     subcommand (git $(echo push)), git and gh aliases defined outside the command.
-//   - substitutions inside an unquoted bash here-doc or a PowerShell @"..."@ here-string body (see
-//     Parsing above); pushurl = no_push is the backstop.
+//   - $( ) and backtick substitutions inside an unquoted bash here-doc, and $( ) inside a PowerShell
+//     @"..."@ here-string body (see Parsing above); pushurl = no_push is the backstop.
 //   - writes into a read-only folder through a shell command (Bash, PowerShell, a patch fed to apply_patch
 //     through a shell here-doc): rule 2 sees only the write tools.
-//   - subagent calls without agent_id (C0 E2): then rule 3 cannot tell them from the main session.
+//   - Codex tools the hooks.json matcher does not send here, such as mcp__node_repl__js and
+//     mcp__artifact_session__js, which can run code that writes files (C0 T-role; whether the guard should
+//     cover them is the owner's call, ADR-006 §7).
+//   - a subagent call without agent_id would look like the main session to rule 3; C0 E2 found none.
 //   On one Windows account the guard only prevents mistakes; it cannot stop a deliberate bypass.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -737,14 +753,15 @@ export function patchPaths(text) {
   return out;
 }
 
-// Paths a write tool call would write, as written in the call.
+// Paths a write tool call would write, as written in the call. An Edit-like call without its path field
+// is read like apply_patch (Codex may send a patch under Edit or Write; C0 captured no such input), so
+// only a call with neither a path nor a patch header is an error.
 function writeTargets(tool, raw) {
   const t = tool.toLowerCase();
   const ti = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   if (EDIT_TOOLS[t]) {
     const p = EDIT_TOOLS[t].map((k) => ti[k]).find((v) => typeof v === 'string' && v !== '');
-    if (!p) throw new ParseError(`${tool} 调用没有可读的目标路径`);
-    return [p];
+    if (p) return [p];
   }
   for (const v of typeof raw === 'string' ? [raw] : [ti.command, ti.input, ti.patch]) {
     const text = Array.isArray(v) && v.length > 1 && programName(String(v[0])) === 'apply_patch' ? v[1] : v;
@@ -752,6 +769,7 @@ function writeTargets(tool, raw) {
     const paths = patchPaths(text);
     if (paths.length) return paths;
   }
+  if (EDIT_TOOLS[t]) throw new ParseError(`${tool} 调用没有可读的目标路径，也没有可读的补丁`);
   throw new ParseError(`${tool} 调用里读不出要改的文件路径`);
 }
 
@@ -1047,6 +1065,13 @@ export const SELFTEST = [
   ['Write', { file_path: path.join(ST_READONLY, 'notes.md'), content: 'x' }, 'deny', 'claude'],
   ['Edit', { file_path: path.join(ST_ROOT, 'readonly-copy', 'notes.md'), old_string: 'a', new_string: 'b' }, 'allow', 'claude'],
   ['apply_patch', { command: `*** Begin Patch\n*** Update File: ${path.join(ST_READONLY, 'a.txt')}\n@@\n-a\n+b\n*** End Patch` }, 'deny', 'codex'],
+  ['Edit', { command: `*** Begin Patch\n*** Add File: ${path.join(ST_READONLY, 'b.txt')}\n+b\n*** End Patch` }, 'deny', 'codex'],
+  ['Write', { command: `*** Begin Patch\n*** Add File: ${path.join(ST_ROOT, 'writable', 'b.txt')}\n+b\n*** End Patch` }, 'allow', 'codex'],
+  // Codex as C0 saw it: shell calls are tool_name Bash with the raw string, often PowerShell.
+  ['Bash', "Get-Content -LiteralPath 'notes.md'; git -C ../demo push", 'deny', 'codex'],
+  ['Bash', 'git -C ../demo status --porcelain', 'allow', 'codex'],
+  ['mcp__project_manager__update_task_status', { id: 'T1', status: 'done' }, 'deny', 'codex', { agent_id: 'selftest-thread', agent_type: 'default' }],
+  ['mcp__project_manager__update_task_status', { id: 'T1', status: 'done' }, 'allow', 'codex'],
   ['mcp__project-manager__update_task_status', { id: 'T1', status: 'done' }, 'deny', 'claude', ST_AGENT],
   ['mcp__project-manager__set_project_dir', { project_dir: ST_ROOT }, 'deny', 'claude', ST_AGENT],
   ['mcp__project-manager__get_task_by_id', { id: 'T1' }, 'allow', 'claude', ST_AGENT],
@@ -1137,4 +1162,13 @@ const invokedDirectly = (() => {
   try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
-if (invokedDirectly) process.exitCode = main(process.argv.slice(2));
+// Fail closed: anything main() did not catch still exits 2 with a reason on stderr. An uncaught throw
+// would exit 1, and only exit 2 is the code Codex blocks on.
+if (invokedDirectly) {
+  try {
+    process.exitCode = main(process.argv.slice(2));
+  } catch (e) {
+    process.stderr.write(`AutoSkills 守卫出错，已按失败处理：内部错误（${e?.message ?? e}）\n`);
+    process.exitCode = 2;
+  }
+}

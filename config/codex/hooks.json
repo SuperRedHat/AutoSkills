@@ -1,5 +1,5 @@
 {
-  "description": "AutoSkills 3.0 第 1 批的守卫钩子（ADR-006 §2.5）。Codex 的钩子出错时会放行，所以只当提醒。命令写法和是否注册 SessionStart 按 C0 结论定（AS3-117）。",
+  "description": "AutoSkills 3.0 第 1 批的守卫钩子（ADR-006 §2.5、§7）。守卫出错时退出 2 并在 stderr 写原因，Codex 按拦截处理（出错即拦截，2026-10-31 负责人选定；退出 2 拦截是从程序字符串推断的，未实测）。命令首词是不加引号的 node 绝对路径：C0 只实测了这种写法，钩子用哪个 shell 没测出来。matcher 和这个写法在真实 Codex 里都未实测，由 AS3-121 的部署冒烟覆盖。SessionStart 不注册（ADR-006 §7）。",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"<node>\" \"<runtime>/hooks/guard.mjs\" --platform codex",
+            "command": "<node> \"<runtime>/hooks/guard.mjs\" --platform codex",
             "timeout": 30,
             "statusMessage": "AutoSkills 守卫"
           }

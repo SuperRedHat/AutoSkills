@@ -455,10 +455,13 @@ function run(argv) {
   return failed ? 1 : 0;
 }
 
+// Both sides by real path, as in the hooks: Node gives the main module its real path, so a start through a
+// junction or symlink would otherwise skip run() and exit 0 without a word.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
-  const a = path.resolve(process.argv[1]);
-  return WIN ? a.toLowerCase() === SELF.toLowerCase() : a === SELF;
+  let a, b;
+  try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
+  return WIN ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
 if (invokedDirectly) {
   try {

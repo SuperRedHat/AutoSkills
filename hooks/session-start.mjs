@@ -8,8 +8,12 @@
 //   "<node>" "<runtime>/hooks/session-start.mjs" --selftest
 //
 // Input: the SessionStart JSON on stdin (session_id, source, cwd ...). Claude sends source startup,
-//   resume, clear or compact. Whether Codex runs this hook and with which fields is settled by the C0
-//   probe (T-meta) and backfilled by AS3-117; an input without source is treated like startup.
+//   resume, clear or compact; an input without source is treated like startup. Batch 1 registers this
+//   hook for Claude only (ADR-006 §7). C0 T-meta saw Codex fire SessionStart for the root thread only,
+//   with session_id, transcript_path, cwd, hook_event_name, model, permission_mode and source: startup
+//   for each new chat and fork shortly after it (fork carries a session_id seen nowhere else and would
+//   be skipped here); ~/.codex/AGENTS.md already carries the same rules, and project-feedback reads the
+//   thread id from CODEX_THREAD_ID in the shell.
 // Output: for source startup, resume or compact, one UTF-8 JSON line that adds a few lines to the
 //   context: the session id, set_project_dir first, the five stop points and the evidence rule.
 //   {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}

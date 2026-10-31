@@ -14,10 +14,12 @@
 //   - powershell -EncodedCommand <base64>;
 //   - commands built at run time: $g = 'git'; & $g push, git $(echo push), aliases defined outside the
 //     command (git config alias.p push, then git p);
-//   - $( ) and backticks inside an unquoted bash here-doc (<<EOF) or a PowerShell @"..."@ here-string:
-//     the shell expands them, the guard reads the body as data (pushurl = no_push is the backstop);
+//   - $( ) and backtick substitutions inside an unquoted bash here-doc (<<EOF), and $( ) inside a
+//     PowerShell @"..."@ here-string (a backtick there is only PowerShell's escape character): the shell
+//     runs them, the guard reads the body as data (pushurl = no_push is the backstop);
 //   - writes into a read-only folder through a shell command (rule 2 sees only the write tools);
-//   - a subagent call without agent_id looks like the main session to rule 3 (C0 E2, AS3-117).
+//   - a subagent call without agent_id would look like the main session to rule 3; C0 E2 found every
+//     workflow-agent input carrying agent_id, so this stays a pinned gap, not an observed one.
 // On one Windows account the guard only prevents mistakes; a deliberate bypass is out of its reach.
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -412,6 +414,45 @@ describe('rule 1, Codex input', () => {
   });
 });
 
+// Field sets as C0 T-meta recorded them for codex-cli 0.166 (2026-10-31); every value here is synthetic.
+const C0_ROOT = {
+  session_id: '00000000-0000-7000-8000-000000000001', turn_id: '00000000-0000-7000-8000-0000000000a1',
+  transcript_path: '~/.codex/sessions/2026/10/31/rollout-synthetic.jsonl', cwd: '~/demo', hook_event_name: 'PreToolUse',
+  model: 'synthetic-model', permission_mode: 'bypassPermissions', tool_use_id: 'call_synthetic',
+};
+const C0_CHILD = { ...C0_ROOT, agent_id: '00000000-0000-7000-8000-000000000002', agent_type: 'default' };
+const c0 = (base, tool, toolInput) => decide({ ...base, tool_name: tool, tool_input: toolInput }, 'codex').decision;
+
+describe('Codex input in the shape C0 recorded (T-meta)', () => {
+  test('shell calls are Bash with the raw string, PowerShell included; git -C reads stay allowed', () => {
+    assert.equal(c0(C0_ROOT, 'Bash', { command: 'node tools/print-env.mjs CODEX_THREAD_ID --label root' }), 'allow');
+    assert.equal(c0(C0_CHILD, 'Bash', { command: 'git -C ~/demo rev-parse --show-toplevel --abbrev-ref HEAD' }), 'allow');
+    assert.equal(c0(C0_CHILD, 'Bash', { command: "Get-Content -LiteralPath '~/demo/AGENTS.md'" }), 'allow');
+    assert.equal(c0(C0_CHILD, 'Bash', { command: 'git -C ~/demo push' }), 'deny');
+    assert.equal(c0(C0_ROOT, 'Bash', { command: "Set-Location '~/demo'; & git.exe push origin HEAD" }), 'deny');
+  });
+
+  test('the platform is detected as codex from these inputs, though they carry permission_mode', () => {
+    const r = spawnSync(process.execPath, [GUARD, '--config', path.join(tempDir(), 'missing.json')],
+      { input: JSON.stringify({ ...C0_CHILD, tool_name: 'Bash', tool_input: { command: 'git push' } }), encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  test('rule 3 on Codex names: a child thread writing the ledger is denied, the root and reads are allowed', () => {
+    assert.equal(c0(C0_CHILD, 'mcp__project_manager__update_task_status', { id: 'T1', status: 'done' }), 'deny');
+    assert.equal(c0(C0_CHILD, 'mcp__project_manager__set_project_dir', { project_dir: '~/demo' }), 'deny');
+    assert.equal(c0(C0_CHILD, 'mcp__project_manager__get_server_info', {}), 'allow');
+    assert.equal(c0(C0_ROOT, 'mcp__project_manager__update_task_status', { id: 'T1', status: 'done' }), 'allow');
+  });
+
+  test('spawn, wait and other MCP tools are allowed', () => {
+    assert.equal(c0(C0_ROOT, 'collaborationspawn_agent', { agent_type: 'default', fork_turns: 'none', task_name: 'demo' }), 'allow');
+    assert.equal(c0(C0_ROOT, 'collaborationwait_agent', { timeout_ms: 60000 }), 'allow');
+    assert.equal(c0(C0_CHILD, 'mcp__meta_logger__log_meta', { label: 'child' }), 'allow');
+  });
+});
+
 describe('scope', () => {
   test('other tools and other events are allowed', () => {
     assert.equal(decide({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: 'notes.md' } }, 'claude').decision, 'allow');
@@ -518,6 +559,21 @@ describe('rule 2, read-only folders', () => {
     assert.throws(() => writeDecision('Write', { content: 'x' }, f.root, ro), /没有可读的目标路径/);
   });
 
+  test('Edit or Write without file_path is read as a patch (command, input or patch); neither is still an error', () => {
+    const f = readonlyFixture();
+    const ro = [f.vault];
+    const patch = (target) => ['*** Begin Patch', `*** Add File: ${target}`, '+x', '*** End Patch'].join('\n');
+    for (const tool of ['Edit', 'Write']) {
+      for (const field of ['command', 'input', 'patch']) {
+        assert.equal(writeDecision(tool, { [field]: patch(path.join(f.vault, 'n.md')) }, f.root, ro, 'codex'), 'deny', `${tool} ${field}`);
+        assert.equal(writeDecision(tool, { [field]: patch(path.join(f.work, 'n.md')) }, f.root, ro, 'codex'), 'allow', `${tool} ${field}`);
+      }
+      assert.throws(() => writeDecision(tool, { command: 'not a patch' }, f.root, ro, 'codex'), /没有可读的目标路径，也没有可读的补丁/, tool);
+    }
+    // file_path still wins when it is there.
+    assert.equal(writeDecision('Write', { file_path: path.join(f.work, 'n.md'), command: patch(path.join(f.vault, 'n.md')) }, f.root, ro), 'allow');
+  });
+
   test('the guard never touches the fixture', () => {
     const f = readonlyFixture();
     const before = listFiles(f.vault);
@@ -560,7 +616,7 @@ describe('rule 3, subagents do not write the ledger', () => {
     assert.equal(ledgerDecision('mcp__project-manager__update_task_status', { agent_id: null }).decision, 'allow', 'null agent_id');
   });
 
-  test('other spellings of the server and tool name (Codex forms are settled by C0)', () => {
+  test('other spellings of the server and tool name (C0 saw mcp__project_manager__<tool> on Codex)', () => {
     for (const tool of ['mcp__project_manager__add_log', 'project-manager.add_log', 'project-manager/add_log', 'project_manager:add_log',
       'mcp__plugin_kit_project-manager__add_log', 'MCP__Project-Manager__Add_Log']) {
       assert.equal(ledgerDecision(tool, SUBAGENT).decision, 'deny', tool);
@@ -874,6 +930,28 @@ describe('hook contract (spawned guard)', () => {
     }
     const unknown = runGuard(claudeInput('Bash', 'git status'), ['--platform', 'other']);
     assert.equal(unknown.code, 2);
+  });
+
+  test('fail closed on Codex too: every error exits exactly 2 with the reason on stderr (owner decision 2026-10-31)', () => {
+    const dir = tempDir();
+    const missing = ['--platform', 'codex', '--config', path.join(dir, 'missing.json')];
+    const bad = path.join(dir, 'hook-config.json');
+    fs.writeFileSync(bad, '{ runtime: ');
+    fs.writeFileSync(path.join(dir, 'ro.json'), JSON.stringify({ readonly_dirs: [path.join(dir, 'vault')] }));
+    const cases = [
+      ['broken config', { ...C0_ROOT, tool_name: 'Bash', tool_input: { command: 'git status' } }, ['--platform', 'codex', '--config', bad]],
+      ['unterminated quote', { ...C0_ROOT, tool_name: 'Bash', tool_input: { command: "echo it's done" } }, missing],
+      ['no command text', { ...C0_ROOT, tool_name: 'Bash', tool_input: {} }, missing],
+      ['Edit with neither a path nor a patch', { ...C0_CHILD, tool_name: 'Edit', tool_input: { command: 'x' } },
+        ['--platform', 'codex', '--config', path.join(dir, 'ro.json')]],
+      ['not JSON', 'not json', missing],
+    ];
+    for (const [label, input, args] of cases) {
+      const r = runGuard(input, args);
+      assert.equal(r.code, 2, `${label}: exit code`);
+      assert.equal(r.out, '', `${label}: stdout`);
+      assert.match(r.err, /AutoSkills 守卫.*已按失败处理/, `${label}: stderr`);
+    }
   });
 
   test('a config that exists but cannot be parsed is an error', () => {

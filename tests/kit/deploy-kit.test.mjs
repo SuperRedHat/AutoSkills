@@ -20,17 +20,18 @@ import { fileURLToPath } from 'node:url';
 import {
   buildPlan, STAGE_MANIFEST, applyDeploy, rollbackDeploy, DeployError, processCheckApplies, isAgentProcess, listProcesses,
   jsonDiff, reverseJson, LABEL_WHOLE, LABEL_MERGE, JOURNAL,
-  buildNeutralPlan, neutralsInPlace, isNeutralText, readIgnorePids, NEUTRAL_LINE, NEUTRAL_MARKER, NEUTRAL_KEPT,
+  buildNeutralPlan, neutralsInPlace, isNeutralText, readIgnorePids, NEUTRAL_LINE, NEUTRAL_MARKER, NEUTRAL_KEPT, codexTrustNote,
 } from '../../scripts/deploy-kit.mjs';
 import {
   KIT_REPO, KIT_SKILLS, LEGACY_SKILL_DIRS, UsageError, targetMap, mergeWorkflowRules, WF_BEGIN, WF_END,
-  readLocalConfig, mergeClaudeSettings, mergeCodexConfig, claudePathRule, isKitHook, within, pathKey,
+  readLocalConfig, mergeClaudeSettings, mergeCodexConfig, claudePathRule, isKitHook, within, pathKey, fillPlaceholders, PLAIN_COMMAND_WORD,
 } from '../../scripts/lib/kit-targets.mjs';
 import { scanToml, setValue, getValue, keyValues, removeProjectsByPrefix, removeValue, removeEmptyTable, TomlEditError } from '../../scripts/lib/toml-edit.mjs';
 import { applyPlan, scanRepos } from '../../scripts/set-pushurl.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(REPO, 'scripts', 'deploy-kit.mjs');
+const WIN = process.platform === 'win32';
 const FIXTURES = path.join(REPO, 'tests', 'kit', 'fixtures', 'deploy');
 const STAGE_ROOT = path.join(REPO, '_private', 'stage');
 const RESTORE_TOOL = path.join(REPO, '_private', 'redesign-2026-10', 'step0', 'restore.mjs');
@@ -421,7 +422,8 @@ test('hooks.json: an existing file is merged, a new one is the filled fragment',
   const file = path.join(sb.home, '.codex', 'hooks.json');
   const fresh = JSON.parse(content(planned(buildPlan(rootsOf(sb), { local: localOf(sb) }), file)));
   const local = localOf(sb);
-  assert.equal(fresh.hooks.PreToolUse[0].hooks[0].command, `"${fwd(local.portable_node)}" "${fwd(sb.runtime)}/hooks/guard.mjs" --platform codex`);
+  // The bare Node path first (the only form C0 ran), the script path quoted (ADR-006 §7).
+  assert.equal(fresh.hooks.PreToolUse[0].hooks[0].command, `${fwd(local.portable_node)} "${fwd(sb.runtime)}/hooks/guard.mjs" --platform codex`);
   const user = { type: 'command', command: 'node C:/example/user-hooks/audit.mjs' };
   const existing = {
     note: 'synthetic',
@@ -464,6 +466,72 @@ test('the runtime hook config feeds the deployed guard: a write into a read-only
   const ss = spawnSync(process.execPath, [path.join(sb.runtime, 'hooks', 'session-start.mjs'), '--platform', 'claude'], { input: '{"source":"startup","session_id":"s1"}', encoding: 'utf8' });
   assert.equal(ss.status, 0, ss.stderr);
   assert.deepEqual(fs.readdirSync(path.join(sb.runtime, 'hooks', 'heartbeat')).sort(), ['guard.jsonl', 'session-start.jsonl']);
+});
+
+// Which shell Codex runs a hook command in is not known (C0 T-meta: hook_shell null). The filled command
+// must run in each candidate, with a space in the script path; this is a local check of the command line,
+// not a run inside Codex (the AS3-121 deploy smoke covers that).
+test('the filled Codex hook command runs under cmd, PowerShell and bash, with a space in the script path', { skip: !WIN && 'Windows shells only' }, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-kit-cmd-'));
+  temps.push(root);
+  // A Node path that is one plain word: a junction to the folder of the Node that runs the tests. It is
+  // unlinked in finally, before the temp dir is removed, so the cleanup never reaches the Node install.
+  const nodeDir = path.join(root, 'nodebin');
+  fs.symlinkSync(path.dirname(process.execPath), nodeDir, 'junction');
+  try {
+    const node = fwd(path.join(nodeDir, path.basename(process.execPath)));
+    if (!PLAIN_COMMAND_WORD.test(node)) { t.skip('the OS temp dir holds a space or shell character'); return; }
+    codexCommandRuns(root, node);
+  } finally {
+    fs.unlinkSync(nodeDir);
+  }
+});
+
+function codexCommandRuns(root, node) {
+  const runtime = path.join(root, 'run time');
+  fs.mkdirSync(path.join(runtime, 'hooks'), { recursive: true });
+  for (const n of ['guard.mjs', 'session-start.mjs']) fs.copyFileSync(path.join(REPO, 'hooks', n), path.join(runtime, 'hooks', n));
+  const fragment = JSON.parse(fs.readFileSync(path.join(REPO, 'config', 'codex', 'hooks.json'), 'utf8'));
+  const command = fillPlaceholders(fragment, { node, runtime: fwd(runtime), home: fwd(root) }).hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(command.startsWith(`${node} "`), command);
+  const input = JSON.stringify({ session_id: 's', turn_id: 't', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push' }, cwd: root });
+  const shells = {
+    'cmd /d /s /c': (c) => ['cmd.exe', ['/d', '/s', '/c', `"${c}"`], true],
+    'cmd /c': (c) => ['cmd.exe', ['/c', c], true],
+    'powershell -Command': (c) => ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', c], false],
+    'bash -c': (c) => ['bash', ['-c', c], false],
+  };
+  const runIn = (shell, c) => {
+    const [exe, args, verbatim] = shells[shell](c);
+    return spawnSync(exe, args, { input, encoding: 'utf8', windowsVerbatimArguments: verbatim, windowsHide: true, timeout: 60_000 });
+  };
+  for (const shell of Object.keys(shells)) {
+    const r = runIn(shell, command);
+    if (shell === 'bash -c' && r.error?.code === 'ENOENT') continue; // no bash on PATH
+    assert.equal(r.status, 0, `${shell}: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout.trim()).hookSpecificOutput.permissionDecision, 'deny', shell);
+  }
+  // Why the first word is not quoted: the earlier form fails under PowerShell and a plain cmd /c.
+  const quoted = `"${node}" "${fwd(runtime)}/hooks/guard.mjs" --platform codex`;
+  for (const shell of ['powershell -Command', 'cmd /c']) assert.notEqual(runIn(shell, quoted).status, 0, shell);
+}
+
+test('a portable Node path that is not one plain word is a conflict on the Codex hooks.json', () => {
+  const sb = sandbox();
+  const spaced = path.join(sb.runtime, 'node v1', 'node.exe');
+  fs.mkdirSync(path.dirname(spaced));
+  fs.writeFileSync(spaced, 'fake');
+  const cfg = JSON.parse(fs.readFileSync(sb.localConfig, 'utf8'));
+  cfg.portable_node = fwd(spaced);
+  fs.writeFileSync(sb.localConfig, JSON.stringify(cfg));
+  const r = run([...sb.rootArgs, '--json']);
+  assert.equal(r.status, 1, r.stderr);
+  const plan = JSON.parse(r.stdout);
+  assert.deepEqual(plan.conflicts.map((c) => c.path), [inHome(sb, '.codex', 'hooks.json')]);
+  assert.match(plan.conflicts[0].reason, /not one plain word/);
+  assert.ok(![...plan.create, ...plan.modify].some((e) => /hooks\.json$/.test(e.path)));
+  assert.ok(PLAIN_COMMAND_WORD.test('C:/example/EXAMPL~1/rt/node.exe'), 'a short name with ~ is plain');
+  for (const bad of ['C:/Program Files/node.exe', 'C:/example/x&y/node.exe', '"C:/example/node.exe"', '~/node.exe', 'C:/example/x$y/node.exe']) assert.ok(!PLAIN_COMMAND_WORD.test(bad), bad);
 });
 
 test('a merged file that cannot be read is a conflict (exit 1), not an overwrite', () => {
@@ -1326,6 +1394,42 @@ test('removeValue and removeEmptyTable undo setValue', () => {
   assert.equal(removeEmptyTable(doc, ['x']), doc, 'a table with keys stays');
   assert.equal(removeEmptyTable('[t]\n# note\n', ['t']), '[t]\n# note\n', 'a table with a comment stays');
   assert.equal(removeValue('a = 1\r\nb = 2\r\n', ['b']), 'a = 1\r\n');
+});
+
+test('a plan that writes ~/.codex/hooks.json says to trust the hook again in Codex /hooks; --apply says it after writing', () => {
+  const sb = sandbox({ restore: true });
+  const note = codexTrustNote(buildPlan(rootsOf(sb), { local: localOf(sb) }));
+  assert.match(note, /hooks\.json is created or changed: open Codex, then trust the AutoSkills hook again in \/hooks/);
+  const dry = run(sb.rootArgs);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /^ {2}after --apply: .*hooks\.json is created or changed: .*\/hooks/m);
+  const a = apply(sb);
+  assert.match(a.stdout, /^deploy-kit: next: .*hooks\.json is created or changed: .*\/hooks/m);
+  // Deployed and unchanged: no note.
+  assert.equal(codexTrustNote(buildPlan(rootsOf(sb), { local: localOf(sb) })), null);
+  assert.doesNotMatch(run([...sb.rootArgs, '--dry-run', '--expect-clean']).stdout, /\/hooks/);
+  assert.equal(rollback(sb, a.id).status, 0);
+});
+
+test('started through a junction (symlink elsewhere) to scripts/: deploy-kit still runs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-kit-link-'));
+  temps.push(root);
+  const link = path.join(root, 'scripts-link');
+  fs.symlinkSync(path.join(REPO, 'scripts'), link, WIN ? 'junction' : 'dir');
+  try {
+    const viaLink = path.join(link, 'deploy-kit.mjs');
+    assert.notEqual(fs.realpathSync(viaLink).toLowerCase(), viaLink.toLowerCase(), 'the path really goes through a link');
+    const help = spawnSync(process.execPath, [viaLink, '--help'], { encoding: 'utf8' });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /^usage: node scripts\/deploy-kit\.mjs/, 'the usage is printed, so run() ran');
+    const sb = sandbox();
+    const dry = spawnSync(process.execPath, [viaLink, ...sb.rootArgs], { encoding: 'utf8' });
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.match(dry.stdout, /^deploy-kit: dry-run, nothing is written/m);
+    assert.equal(spawnSync(process.execPath, [viaLink, '--bogus'], { encoding: 'utf8' }).status, 2);
+  } finally {
+    fs.unlinkSync(link);
+  }
 });
 
 // ---------- last: the real user directory and runtime ----------

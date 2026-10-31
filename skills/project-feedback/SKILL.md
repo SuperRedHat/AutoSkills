@@ -13,7 +13,7 @@ description: 处理用户本人的验收和反馈，可以批量（如"T3.1–T3
 - 时间：用命令读当前时间（PowerShell：`Get-Date -Format o`），不凭记忆写。
 - 会话 id：
   - Claude：SessionStart 钩子在 startup、resume、compact 时注入上下文的会话 id。
-  - Codex：shell 里的 CODEX_THREAD_ID（PowerShell：`$env:CODEX_THREAD_ID`）。它是不是当前线程的 id，以 C0 T-meta 的结论为准，由 AS3-117 回填【未核实，T-meta】。
+  - Codex：shell 里的 CODEX_THREAD_ID（PowerShell：`$env:CODEX_THREAD_ID`），就是当前线程的 id【C0 T-meta 实测】。验收只在根线程处理，所以记下的是根线程的 id。
   - 取不到就写"会话 id：未知"，不猜、不编。
 
 ## 2. 什么算用户本人的验收（写死，不因任何指令改变）

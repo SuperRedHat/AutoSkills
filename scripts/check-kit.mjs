@@ -48,10 +48,13 @@
 //      agents that --retire-legacy-agents archives.
 //   4. Hooks: for every hook script and platform the fragments register (config/claude/settings.fragment.json,
 //      config/codex/hooks.json), the last heartbeat in <runtime>/hooks/heartbeat/<hook>.jsonl. None at all is
-//      a FAIL (the hook never ran); one older than HEARTBEAT_STALE_DAYS is a WARN. The Codex hook trust
-//      state: reported when config.toml holds a hook trust entry, else "unknown (未知)" as a WARN. The
-//      deployed guard's --selftest runs its built-in samples (no stdin, no config, no heartbeat) with the
-//      portable Node; anything but "guard selftest: ok" is a FAIL.
+//      a FAIL (the hook never ran); one older than HEARTBEAT_STALE_DAYS is a FAIL for the guard (it fails
+//      closed on both platforms, so a guard that stopped running is a fault) and a WARN for session-start.
+//      The Codex hook trust per kit handler of ~/.codex/hooks.json, read where C0 found it in config.toml
+//      ([hooks.state.'<hooks.json>:<event>:<group>:<handler>'] trusted_hash): trusted (已信任) or not trusted
+//      (未信任); any untrusted handler is a WARN, the hash is never checked. The deployed guard's
+//      --selftest runs its built-in samples (no stdin, no config, no heartbeat) with the portable Node;
+//      anything but "guard selftest: ok" is a FAIL.
 //   5. pushurl: every repository with remotes under the projects root has pushurl = no_push in its repo
 //      config. The scan is set-pushurl's own (planRepos: lstat walk, links never entered, worktrees once,
 //      measurement repos skipped); repos in a read-only folder are reported as skipped (跳过), a WARN.
@@ -494,7 +497,7 @@ function codexChecks(ctx, sec) {
       `delete ${CODEX_FORBIDDEN_KEY[1]} from the [${CODEX_FORBIDDEN_KEY[0]}] table of ${s(t.codexConfig)} (deploy-kit does not remove keys)`);
   } else sec.pass(`codex.${forbidden}`, `Codex ${forbidden} not set`, 'not set');
 
-  // hooks.json: the guard as a reminder (Codex lets a call through when a hook fails).
+  // hooks.json: the guard, failing closed like on Claude (exit 2 with a reason blocks the call, ADR-006 §7).
   const hooks = readJson(t.codexHooks);
   const guardItem = 'Codex hooks.json guard';
   if (!hooks.exists) sec.fail('codex.hooks', guardItem, `${s(t.codexHooks)} does not exist`, deployFix(ctx));
@@ -885,22 +888,45 @@ export function lastHeartbeats(file) {
   return { exists: true, last };
 }
 
+/** A hooks.json event name in the snake_case form of Codex's trust keys: PreToolUse -> pre_tool_use. */
+export const snakeEvent = (event) => String(event).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+
 /**
- * Codex hook trust as far as config.toml shows it: keys whose path names both a hook and trust. Where Codex
- * really keeps the trust is settled by C0 (AS3-117); until then nothing found reads as unknown.
- * @param {string|null} text config.toml, or null when it does not exist
- * @returns {string[]} dotted key paths
+ * Codex hook trust per kit handler, where C0 T-meta found it (codex-cli 0.166): config.toml holds one table
+ * per trusted handler, [hooks.state.'<absolute hooks.json>:<snake_case event>:<group>:<handler>'] with
+ * trusted_hash = "sha256:...", group and handler counted from 0. Trusting a project does not trust its
+ * hooks. The hash method is unknown, so a trusted_hash that is there reads as trusted, never as "the hash
+ * matches"; C0 saw the layout for a project hooks.json, the user-level one is assumed to be the same.
+ * @param {string|null} toml config.toml text, or null when it does not exist
+ * @param {string} hooksFile absolute path of the hooks.json the handlers are in
+ * @param {object} hooks the hooks object of that file
+ * @returns {{handler: string, trusted: boolean}[]} one entry per kit handler, handler = <event>:<group>:<index>
  */
-export function codexHookTrust(text) {
-  if (text === null) return [];
-  try {
-    // [projects.'<dir>'] trust_level is folder trust, even when the folder name holds "hook".
-    return keyValues(text).map((kv) => kv.path).filter((p) => p[0] !== 'projects' && p.some((x) => /hook/i.test(x)) && p.some((x) => /trust/i.test(x)))
-      .map((p) => p.join('.'));
-  } catch (e) {
-    if (e instanceof TomlEditError) return [];
-    throw e;
+export function codexHookTrust(toml, hooksFile, hooks) {
+  const norm = (p) => (WIN ? slash(p).toLowerCase() : slash(p));
+  const trusted = new Set();
+  if (toml !== null) {
+    let kvs = [];
+    try { kvs = keyValues(toml); } catch (e) { if (!(e instanceof TomlEditError)) throw e; }
+    for (const kv of kvs) {
+      const [a, b, key, leaf] = kv.path;
+      if (a !== 'hooks' || b !== 'state' || leaf !== 'trusted_hash' || kv.path.length !== 4) continue;
+      if (!/^"sha256:[0-9a-f]+"$/i.test(String(kv.raw).trim())) continue;
+      const m = /^(.*):([a-z_]+):(\d+):(\d+)$/.exec(key);
+      if (m) trusted.add(`${norm(m[1])}|${m[2]}:${m[3]}:${m[4]}`);
+    }
   }
+  const out = [];
+  for (const [event, groups] of Object.entries(isObject(hooks) ? hooks : {})) {
+    (Array.isArray(groups) ? groups : []).forEach((g, gi) => {
+      (Array.isArray(g?.hooks) ? g.hooks : []).forEach((h, hi) => {
+        if (!isKitHook(h)) return;
+        const handler = `${snakeEvent(event)}:${gi}:${hi}`;
+        out.push({ handler, trusted: trusted.has(`${norm(hooksFile)}|${handler}`) });
+      });
+    });
+  }
+  return out;
 }
 
 /**
@@ -942,15 +968,28 @@ export function hookChecks(ctx, sec, { now = new Date(), selftest = runSelftest 
     }
     const days = (now - at) / 86_400_000;
     const age = days < 1 ? `${Math.max(0, Math.round(days * 24))} h ago` : `${Math.floor(days)} day(s) ago`;
-    if (days > HEARTBEAT_STALE_DAYS) sec.warn(id, item, `last ${at.toISOString()} (${age}; older than ${HEARTBEAT_STALE_DAYS} days)`);
+    const detail = `last ${at.toISOString()} (${age}; older than ${HEARTBEAT_STALE_DAYS} days)`;
+    // The guard fails closed on both platforms, so an old guard heartbeat is a guard fault (it may not be
+    // running, or not trusted any more); the SessionStart hook only adds hints.
+    if (days > HEARTBEAT_STALE_DAYS && hook === 'guard') {
+      sec.fail(id, item, detail, `${platform === 'codex' ? 'check the trust row below and /hooks in Codex, then run one tool call in Codex'
+        : 'run one tool call in Claude Code'}; if no new line appears, check the hook rows of check 1 and the selftest row`);
+    } else if (days > HEARTBEAT_STALE_DAYS) sec.warn(id, item, detail);
     else sec.pass(id, item, `last ${at.toISOString()} (${age})`);
   }
 
+  // Trust per kit handler of ~/.codex/hooks.json. A WARN, not a FAIL: the layout was read from a project
+  // hooks.json in C0; the guard heartbeat above is the row that shows whether the hook really runs.
   let toml = null;
   try { toml = fs.readFileSync(ctx.t.codexConfig, 'utf8'); } catch { /* missing */ }
-  const trust = codexHookTrust(toml);
-  if (trust.length) sec.pass('hooks.codex-trust', 'Codex hook trust', `read from ${s(ctx.t.codexConfig)}: ${listSome(trust)}`);
-  else sec.warn('hooks.codex-trust', 'Codex hook trust', `unknown (未知): no hook trust entry readable in ${s(ctx.t.codexConfig)}; trust the AutoSkills hook once in Codex /hooks`);
+  const hooksJson = readJson(ctx.t.codexHooks);
+  const trust = hooksJson.exists && !hooksJson.error ? codexHookTrust(toml, ctx.t.codexHooks, hooksJson.value?.hooks) : [];
+  const trustItem = 'Codex hook trust';
+  const shownTrust = trust.map((x) => `${x.handler} ${x.trusted ? 'trusted (已信任)' : 'not trusted (未信任)'}`).join(', ');
+  const trustFix = `open Codex, trust the AutoSkills hook in /hooks (Codex writes [hooks.state.'${slash(ctx.t.codexHooks)}:<event>:<group>:<handler>'] into ${s(ctx.t.codexConfig)})`;
+  if (!trust.length) sec.warn('hooks.codex-trust', trustItem, `no kit handler in ${s(ctx.t.codexHooks)} (see the codex.hooks row)`);
+  else if (trust.every((x) => x.trusted)) sec.pass('hooks.codex-trust', trustItem, `${shownTrust}: trusted_hash in ${s(ctx.t.codexConfig)} (the hash itself is not checked)`);
+  else sec.warn('hooks.codex-trust', trustItem, `${shownTrust}: no trusted_hash in ${s(ctx.t.codexConfig)} for the untrusted ones`, trustFix);
 
   const item = 'guard --selftest (deployed rules)';
   if (!runtime) { sec.warn('hooks.selftest.guard', item, 'no runtime root: the deployed guard is not known'); return; }
@@ -1171,10 +1210,13 @@ function run(argv) {
   return exit;
 }
 
+// Both sides by real path, as in the hooks: Node gives the main module its real path, so a start through a
+// junction or symlink would otherwise skip run() and exit 0 without a word.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
-  const a = path.resolve(process.argv[1]);
-  return WIN ? a.toLowerCase() === SELF.toLowerCase() : a === SELF;
+  let a, b;
+  try { a = fs.realpathSync(path.resolve(process.argv[1])); b = fs.realpathSync(SELF); } catch { return false; }
+  return WIN ? a.toLowerCase() === b.toLowerCase() : a === b;
 })();
 if (invokedDirectly) {
   try {

@@ -1,6 +1,6 @@
 # ADR-006：AutoSkills 3.0 第 1 批 —— 串行版文字和配置
 
-- **状态**：Accepted —— 设计方案 v3（修订稿）于 2026-10-30 获用户批准，19 条确认项全部按推荐；第 1 批实施中（任务 AS3-100..AS3-123）。阶段门禁（AS3-123）通过后补“结果”一节。
+- **状态**：Accepted —— 设计方案 v3（修订稿）于 2026-10-30 获用户批准，19 条确认项全部按推荐；第 1 批实施中（任务 AS3-100..AS3-123）。C0 探针（2026-10-31）的结论已回填（AS3-117，见 §7）。阶段门禁（AS3-123）通过后补“结果”一节。
 - **日期**：2026-10-30
 - **作者**：Claude Code（Opus 5.5）
 - **目标组件**：AutoSkills 套件本身：共用契约和模板、`skills/`、`hooks/`、`config/`、`scripts/`（部署、检查、pushurl、lint）。**不改** `mcp/project-manager`，第 1 批仍用 1.5.1。
@@ -17,7 +17,7 @@
 | K2 | 技能 | 11 个并成 7 个：resume、next（改循环）、plan（吸收 init、design、change）、feedback（批量验收）、status、consult、quick。退役 ask、change、design、discuss、init、review |
 | K3 | 外部编排 | 去掉 CouncilFlow 和 Gemini |
 | K4 | 独立校验 | 有风险的任务和里程碑由只读校验者按原始标准审查：Claude 用 project-verifier 子代理；Codex 先由主线程只读核对，需要单独进程时用安装目录的 codex.exe 跑只读的 `codex exec` |
-| K5 | 护栏 | Bash 和 PowerShell 两种形式的 deny 规则；`onFailure: block` 的 Node 守卫钩子；`pushurl = no_push`；Codex 的规则和钩子只当提醒。守卫第 4 条是新增的，可删 |
+| K5 | 护栏 | Bash 和 PowerShell 两种形式的 deny 规则；`onFailure: block` 的 Node 守卫钩子；`pushurl = no_push`；守卫在两个平台都是出错即拦截，Codex 的规则只当提醒。守卫第 4 条是新增的，可删 |
 | K6 | 平台设置 | 两边各一份声明式片段，由部署脚本合并 |
 | K7 | 部署和检查 | 部署脚本先备份、默认 dry-run、只删旧 project-* 副本、可回滚；检查脚本只读 |
 | K8 | 执行方式 | 只串行：一个主循环按顺序做，子代理只做只读的活 |
@@ -109,15 +109,15 @@
   - 登记过的只读目录的 Edit 和 Write；已知客户数据目录的 Read；
   - 对外发送类的 MCP 工具（邮件的发送、回复、转发，网盘共享，日历的建立、修改、回复）。
   - 只读目录和客户数据目录的清单放在不进 git 的本地配置里，部署时生成规则；仓库里只放占位。
-- **守卫钩子**（`hooks/guard.mjs`，Node，PreToolUse，Claude 里设 `onFailure: "block"`）：解析 Bash 和 PowerShell 两种命令形式，按 `;`、`&&`、`|` 和 `&` 调用分段判断。每次运行写一行心跳（只记时间、平台、事件和决定，不记命令原文），供检查脚本确认钩子真的跑过。
+- **守卫钩子**（`hooks/guard.mjs`，Node，PreToolUse，Claude 里设 `onFailure: "block"`；两个平台都是出错即拦截：出错时退出 2，原因写 stderr，见 §7）：解析 Bash 和 PowerShell 两种命令形式，按 `;`、`&&`、`|` 和 `&` 调用分段判断。每次运行写一行心跳（只记时间、平台、事件和决定，不记命令原文），供检查脚本确认钩子真的跑过。
   1. 拦 git push 的各种写法、gh 写操作、带写方法的 gh api、npm publish；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较，解析 junction 和 symlink；
   3. 拦子代理（带 agent_id 的调用）调用账本写工具和 `set_project_dir`（v2 §3.7 第 2 条）；
   4. **在本仓库拦带 `-x` 或 `-X` 的 git clean**。它会清掉 `_private/` 里的运行区、部署备份和测量数据，回滚就没了。**这一条是 v2/v3 清单之外新增的，可以删**，不影响其他决定。
-- **SessionStart 钩子**（`hooks/session-start.mjs`）：startup、resume、compact 时注入几行提示（五种停点、证据规则、先 `set_project_dir`）和会话 id。
+- **SessionStart 钩子**（`hooks/session-start.mjs`，只在 Claude 注册，见 §7）：startup、resume、compact 时注入几行提示（五种停点、证据规则、先 `set_project_dir`）和会话 id。
 - **pushurl**：脚本（`scripts/set-pushurl.mjs`）给项目根目录下所有有远端的仓库设 `pushurl = no_push`，先记原值，可按日志恢复；登记的只读目录跳过；检查脚本对漏设的仓库报警。
-- **Codex**：在 `hooks.json` 里注册同一个守卫；`rules/autoskills.rules` 用 `prefix_rule` 的 forbidden 拦 git push、gh 写操作、npm publish。Codex 的钩子出错时会放行，规则只匹配简单命令，所以两者**只当提醒**（见 §4）。无人值守时停用 github 插件的写工具（第 1 批不开无人值守）。
-- 钩子一律用 Node 写，输出 UTF-8，路径加引号；由运行区的便携 Node 24.22.2 启动。project-manager 仍用系统 Node 启动，切换留到 P0。
+- **Codex**：在 `hooks.json` 里注册同一个守卫，出错也拦截（负责人 2026-10-31 选定，见 §7）；`rules/autoskills.rules` 用 `prefix_rule` 的 forbidden 拦 git push、gh 写操作、npm publish。规则只匹配简单命令，所以规则**只当提醒**（见 §4）。无人值守时停用 github 插件的写工具（第 1 批不开无人值守）。
+- 钩子一律用 Node 写，输出 UTF-8，路径加引号（Codex 钩子命令的首词除外，见 §7）；由运行区的便携 Node 24.22.2 启动。project-manager 仍用系统 Node 启动，切换留到 P0。
 
 ### 2.6 两个平台的设置（K6）
 
@@ -179,12 +179,15 @@
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。用户自己推送时用 `git push <完整地址> <分支>`，在普通终端里做：写完整地址时不经过远端的 pushurl，守卫和 deny 规则只管代理的工具调用，管不到用户的终端。反过来，代理如果在 Codex 上用包裹形式写完整地址，pushurl 也挡不住，只剩钩子。
-- **Codex 钩子出错时放行**：守卫在 Codex 上只是提醒。
-- **Codex 规则只挡简单命令**：`git -C`、`bash -lc` 或 `powershell -Command` 包裹的命令、用 `;` 串起来的复合命令都匹配不到，只剩钩子和 pushurl 兜底。钩子实际收到的命令形式由 C0 探针确认后回填本节（AS3-117）。
+- **守卫出错即拦截，两个平台一样**（负责人 2026-10-31 选定）：守卫出错时退出 2，原因写 stderr，Claude 按 `onFailure: "block"`、Codex 按退出 2 拦下这次调用。代价是 `hook-config.json` 坏了或守卫本身出错时，匹配到的调用全部被拦，直到修好；检查脚本把自检失败、心跳缺失或过期报为 FAIL。Codex 把退出 2 当拦截是从程序里的字符串推断的，没有实测；Codex 钩子超时时怎么处理也没测。
+- **Codex 钩子的命令写法和 matcher 没在 Codex 里跑过**：C0 只跑通了不带 matcher 的 `node "<路径>" "<路径>"`，钩子用哪个 shell 没测出来。套件改成同样的形状（首词是不加引号的 node 绝对路径，脚本路径加引号，可以含空格），本机在 cmd、PowerShell 5.1 和 bash 里都跑通；正则 matcher 和真实 Codex 里的运行留给 AS3-121 的部署冒烟。便携 Node 的路径含空格或 shell 字符时部署脚本报冲突，不写 hooks.json。
+- **Codex 钩子要单独信任**：信任存在 `~/.codex/config.toml`，每个处理器一张 `[hooks.state.'<hooks.json 绝对路径>:<事件>:<组>:<序号>']`（C0 在项目级 hooks.json 上看到的格式，用户级按同样格式读）；没信任的钩子不运行，守卫心跳的 FAIL 会显出来。哈希怎么算不知道，检查脚本只看有没有 trusted_hash，不核对哈希。
+- **Codex 规则只挡简单命令**：`git -C`、`bash -lc` 或 `powershell -Command` 包裹的命令、用 `;` 串起来的复合命令都匹配不到，只剩钩子和 pushurl 兜底。C0 实测：钩子收到的就是模型写的原始命令字符串（tool_name 是 Bash，tool_input.command，常是 PowerShell，例如 `git -C <目录> status --porcelain`、`Get-Content -LiteralPath '...'`），没有拆成 argv，也没有包成 `powershell -Command`；所以守卫自己按 Bash 和 PowerShell 两种语法解析，而 prefix_rule 碰到实际常见的 `git -C <目录> push` 写法匹配不到。execpolicy 怎么切分这些字符串没测；C0 没捕获到真实的 apply_patch 输入，它的形状也没测。
 - **间接执行能绕过守卫**：写进脚本文件再运行、Invoke-Expression、编码过的命令，守卫都看不到原命令。
-- **here-doc 和 here-string 的正文不检查**：守卫把它们的正文当数据跳过，但未加引号的 bash here-doc（`<<EOF`，不是 `<<'EOF'`）和 PowerShell 的 `@"..."@` 里，`$( )` 和反引号照样会被 shell 展开执行，正文里这样写的推送守卫看不到。不改代码：检查正文会误拦写文档、写提交说明这类常见命令。真正挡推送的是仓库的 `pushurl = no_push`。
+- **here-doc 和 here-string 的正文不检查**：守卫把它们的正文当数据跳过，但未加引号的 bash here-doc（`<<EOF`，不是 `<<'EOF'`）和 PowerShell 的 `@"..."@` 里，命令替换照样会执行：bash here-doc 里是 `$( )` 和反引号，PowerShell here-string 里只有 `$( )`（反引号在 PowerShell 里是转义符），正文里这样写的推送守卫看不到。不改代码：检查正文会误拦写文档、写提交说明这类常见命令。真正挡推送的是仓库的 `pushurl = no_push`。
 - **Codex 这边没有读拦截**：客户数据目录的 Read 只靠 Claude 的 deny 规则。
-- **子代理写账本的拦截依赖 agent_id**：workflow 代理的钩子输入里有没有 agent_id 由 C0 探针确认；没有就改为写进契约、靠事后检查。
+- **子代理写账本的拦截依赖 agent_id**：C0 E2 实测 49 条 workflow 代理的 PreToolUse 全部带 agent_id 和 agent_type，所以对 Claude workflow 代理有效；Codex 子线程的输入也带 agent_id（根线程没有）。将来哪个平台版本不带了，规则 3 就分不出子代理和主会话。
+- **Codex 里有守卫看不到的写入工具**：project_worker 角色关掉 features 之后仍能用 `mcp__node_repl__js` 和 `mcp__artifact_session__js`，它们能跑会写文件的代码，不在 Codex 钩子的 matcher 里（C0 T-role）。第 1 批不并行写代码、子代理只读，所以只记为残余风险；改不改守卫覆盖的工具待你确认（§7.3）。
 - **验收原话的记录只能事后核对，不是身份证明**：project-feedback 逐字记下原话并附会话 id 和时间，可以对照会话记录核对；同一账户下代理也能写这份记录。
 - **测量是冒烟级**：基线和第 1 批每组各跑 1 次；平台版本和基线不同时结论会漂移，对比脚本会标出。
 
@@ -192,7 +195,7 @@
 
 ## 5. 上线顺序与退出条件
 
-1. **C0 探针**（需要用户在场的一次会话）：确认钩子输入字段、钩子用哪个 shell、拒绝 JSON 是否被接受、Codex 项目级配置和信任等；结论回填第 1 批套件和本 ADR 的残余风险（AS3-117）。
+1. **C0 探针**（需要用户在场的一次会话，2026-10-31 已做，负责人已验收）：确认钩子输入字段、钩子用哪个 shell、拒绝 JSON 是否被接受、Codex 项目级配置和信任等；结论已回填第 1 批套件和本 ADR 的残余风险（AS3-117，见 §7）。
 2. **部署到用户级**（需要用户在场）：dry-run → 补本地配置 → `--apply` → 重开两个平台、信任钩子 → 冒烟矩阵 → 检查脚本严格模式和 `--dry-run --expect-clean` 都退出 0。任何一步不对就 `--rollback`。
 3. **对比基线测量**：测量时用户级切到中性档，被测版本放在测试仓库的项目级。原因：Claude 遇到同名技能时用户级优先，Codex 遇到同名技能会两份都列出来。测完用一条命令恢复。
 4. **阶段门禁**：用户看测量报告、检查脚本的报告和本 ADR，决定是否收口。
@@ -217,3 +220,48 @@
 | 把 Codex 规则当硬拦截 | 规则语法表达不了 `git -C`、包裹和复合命令；只能当提醒，由钩子和 pushurl 兜底 |
 | 用单独账户、WSL2 或沙箱做强隔离 | 对日常使用改动太大，本轮不做；残余风险写明 |
 | 第 1 批就加 Codex 线程上限 | 第 1 批子代理只读，上限没有对象；见 §3 |
+
+---
+
+## 7. C0 结论（2026-10-31，AS3-117 回填）
+
+依据：C0 结果页和同名 JSON（`C0_results_20261031`）、守卫对真实 Codex 钩子输入的核对（wf_03915b61）和证据副本，都在本地私有目录，不进 git。平台版本：Claude Code 2.1.316，codex-cli 0.166.0-alpha.5.1（桌面版 26.1027）。按任务要求，只按 E2、T-meta、T-cfg（含信任）的结论改第 1 批；其余只记录。“实测”指 C0 里看到的，“推断”指没有实跑。
+
+### 7.1 第 1 批的结论和改动
+
+| 项 | 结论 | 改了什么 / 不改的理由 |
+|---|---|---|
+| 守卫出错的处理 | 负责人 2026-10-31 选“出错即拦截（推荐）”。Codex 把 PreToolUse 退出 2 加 stderr 原因当拦截：从程序里的字符串推断，没有实测 | `hooks/guard.mjs` 头注释、`config/codex/hooks.json` 的说明、规则文件注释、§2.5、§4 改成出错即拦截；守卫入口把没接住的异常也转成退出 2（否则是退出 1，不是 Codex 拦截的退出码）；检查脚本把守卫心跳过期从 WARN 改成 FAIL（缺失和自检失败本来就是 FAIL），都给修法。SessionStart 钩子的心跳过期仍是 WARN |
+| E2 agent_id | 49 条 workflow 代理的 PreToolUse 全部带 agent_id 和 agent_type（实测）；内部辅助代理只触发 SubagentStop，agent_type 为空串 | 不改代码：规则 3 本来就按 agent_id 判断，不需要 F.4 的 E2 退路；头注释和测试注释写明。第 1 批没有依赖 SubagentStop 的逻辑，“按已知 agent_type 过滤”留给用到它的 P0 钩子 |
+| Codex 的输入字段 | PreToolUse 有 session_id、turn_id、transcript_path、cwd、hook_event_name、model、permission_mode、tool_name、tool_input、tool_use_id，子线程另有 agent_id、agent_type（实测）。shell 调用是 tool_name Bash、tool_input.command 为原样字符串；MCP 工具是 `mcp__<server>__<tool>`，服务名的连字符变下划线；派生和等待是 collaborationspawn_agent、collaborationwait_agent | 解析逻辑不用改：Codex 上的 Bash 本来就按 Bash 和 PowerShell 两种语法解析，下划线的服务名本来就认。头注释按实测重写；自检和测试加上 C0 形状的输入（值是合成的）；C0 没见过的 shell 工具名留作兜底 |
+| 拒绝 JSON | `hookSpecificOutput.permissionDecision: "deny"` 加退出 0 实测生效，但只测了根线程调 MCP 工具这一种情况 | 格式不变；头注释写明实测范围 |
+| Edit、Write 没有 file_path | C0 没捕获到真实的补丁输入 | 守卫在 Edit、Write（也包括 MultiEdit、NotebookEdit）没有路径字段时改用补丁读取（tool_input 的 command、input、patch）；路径和补丁都读不出才算出错 |
+| 钩子的 shell 和命令写法 | 钩子用哪个 shell 没测出来；只跑通了不带 matcher 的 `node "<路径>" "<路径>"`。本机另试：首词加引号的写法在 `powershell -Command` 和不带 /s 的 `cmd /c` 下都跑不起来 | hooks.json 改成 `<node> "<runtime>/hooks/guard.mjs" --platform codex`，首词不加引号；便携 Node 的路径不是一个普通词（含空格或 shell 字符）时，部署脚本对 `~/.codex/hooks.json` 报冲突；测试在 `cmd /d /s /c`、`cmd /c`、PowerShell 5.1 和 bash 里跑填好的命令（脚本路径含空格）。**在 Codex 里未实测**，AS3-121 的部署冒烟必须覆盖，正则 matcher 同样 |
+| Codex 的 SessionStart | 只对根线程触发：每个新对话一次 source startup，随后一次 source fork（session_id 在别处都没出现过，transcript_path 为 null），从不对子线程触发（实测）；输出的 additionalContext 是否生效没测 | 不注册：`~/.codex/AGENTS.md` 已经带同样的契约，会话 id 由 project-feedback 从 CODEX_THREAD_ID 读；多注册一个处理器就多一次信任、多一条没测过的输出路径。session-start.mjs 头注释写明，fork 会被跳过 |
+| CODEX_THREAD_ID | 模型的 shell 里等于线程 id，根线程和子线程都是；钩子进程的环境里没有（实测） | project-feedback 去掉“未核实”，写明实测；守卫只从输入取身份（本来就是） |
+| Codex 规则和命令形式 | 钩子收到的是模型写的原样字符串，不是拆开的 argv，也没有包成 `powershell -Command` | 规则的匹配不改，只改注释；结论写进 §4 |
+| 嵌套仓库信任、`codex exec` 写信任段 | 父目录的信任不覆盖嵌套的 git 仓库（实测）；`codex exec` 是否自己写 `[projects]` 信任段：很可能，未实测 | 写进测量说明（harness README，本地私有）；由 AS3-122 第 5 步删段前后的计数确认 |
+| 钩子信任存在哪里 | `~/.codex/config.toml` 里每个处理器一张 `[hooks.state.'<hooks.json 绝对路径>:<snake_case 事件名>:<组>:<序号>']`，内容 `trusted_hash = "sha256:…"`，组和序号从 0 起；信任项目不等于信任它的钩子；内容一改要不要重新信任是推断 | 检查脚本按这个位置逐个已部署的处理器报“已信任 / 未信任”（未信任是 WARN，哈希不核对），替换原来按键名猜的读法；部署脚本在 dry-run 和 `--apply` 会写 `~/.codex/hooks.json` 时提示到 /hooks 重新信任 |
+| workflow 代理的 cwd | 继承主会话当前的 shell 目录（实测） | `templates/global-claude-CLAUDE.md` 讲 workflow 的那一行补上“路径一律用绝对路径”（改原行，不加行）；验收只由主会话记录，契约里已有，不重复写 |
+| Claude 设置片段 | C0 对它没有要改的结论 | `config/claude/settings.fragment.json` 不改：JSON 没有注释，`onFailure: "block"` 本来就是出错即拦截 |
+
+### 7.2 只记录，留给 P0（第 1 批不改）
+
+- **E1**：自定义代理定义在 workflow 里生效；只读靠工具白名单；haiku 接受 effort medium；定义里不写 model、effort 时继承会话的档位，所以定义里要显式写。
+- **E2 附带**：内部辅助代理（输入建议、离开回顾）只触发 SubagentStop，agent_type 为空串；CLAUDE_PROJECT_DIR 在交互会话和 `claude -p` 下斜杠方向不同；worktree 隔离在 PreToolUse 之前就拒绝越界的 Write。人类开启的回合里启动的 workflow 代理会收到原样转述的用户消息，所以 H3 禁止带 agent_id 的 record_acceptance 是关键。
+- **E3**：原生 worktree 的位置、分支名和起点（主检出当前的 HEAD）；平台建的分支在删掉 worktree 后仍保留。
+- **E4**：label 不进重放键；effort 和提示词进，而且会带动之后的代理重跑。
+- **E5**：run_in_background 起的进程随代理结束被杀；自行 detached 的进程活下来。
+- **E6**：用户级 workflow 模板可以按名字调用、按名字放行、嵌套一层。
+- **T-meta**：线程身份的对应关系（_meta.threadId = CODEX_THREAD_ID = 钩子的 agent_id）；每个线程第一次调 MCP 工具时起一个 MCP 进程。
+- **T-role**：项目角色能被发现；关掉 features 后仍可用的工具清单；project_worker 的 features 要不要收紧在 P0 定。
+- **R-task**：注册不需要管理员；任务进程不在关闭即杀的 job 里，按需启动保留；杀 runner 后 job host 仍写出结果；`schtasks /end` 停不掉 runner 树，停止只能走 runner 的控制通道。
+- **T-bind**：本次没做（可选）；通过之前 Codex 原生子线程只读。
+- **T-cfg 附带**：项目级 `[mcp_servers.project-manager] enabled = false` 能盖过用户级的同名服务。
+- Codex 线程上限仍按 §3 留到 P0。
+- 文档核查，不是 C0：Claude Code 2.1.316 新增 `CLAUDE_CODE_SUBAGENT_EFFORT`；检查脚本要不要像 `CLAUDE_CODE_EFFORT_LEVEL` 一样报告它，由你决定。
+
+### 7.3 待你确认（F.4 之外的设计改动，没有自动做）
+
+- **job host 启动任务时带 CREATE_NO_WINDOW**（R-task）：运行期间不时闪出空白命令行窗口（你屏幕所见）；原因很可能是原型启动任务时不带这个标志，没有证实。F.4 没有“可见窗口”这一行，所以改不改、要不要加自动的窗口检查，等你定（P0）。
+- **守卫覆盖哪些 Codex 工具**（T-role）：要不要把 `mcp__node_repl__js`、`mcp__artifact_session__js` 加进 matcher，或另行限制。现在只记为 §4 的残余风险。

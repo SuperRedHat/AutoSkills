@@ -4,7 +4,8 @@
 # - git -C <目录> push、git -c <键>=<值> push、git.exe 或 git 的完整路径；
 # - bash -lc、powershell.exe -Command 包裹的命令，用 ; 串起来的复合命令，写进脚本再运行的间接执行；
 # - 写在端点之后的 gh api -X/--method（只有紧跟在 api 后面的能匹配）。
-# 这些写法由守卫钩子（hooks/guard.mjs）和 pushurl = no_push 兜底；Codex 的钩子出错时会放行。
+# 这些写法由守卫钩子（hooks/guard.mjs，出错即拦截）和 pushurl = no_push 兜底。C0 实测 Codex 的 shell 调用是
+# 模型写的原始命令字符串（常是 PowerShell），execpolicy 怎么切分它没有测（ADR-006 §7）。
 # 实际判定结果见 tests/kit/codex-rules.test.mjs 的输出。
 #
 # Codex 是否加载 rules 目录里 default.rules 以外的文件，由部署冒烟的拒绝来源确认（AS3-121）；

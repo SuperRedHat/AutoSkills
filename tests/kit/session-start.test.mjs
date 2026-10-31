@@ -95,6 +95,19 @@ describe('SessionStart output', () => {
     assert.ok(contextOf(none.out).includes('synthetic-codex-thread'));
   });
 
+  test('Codex input as C0 recorded it: startup gets the hints, the fork that follows each chat prints nothing', () => {
+    const codex = (source) => ({
+      session_id: '00000000-0000-7000-8000-000000000001', transcript_path: source === 'fork' ? null : '~/.codex/sessions/rollout-synthetic.jsonl',
+      cwd: '~/demo', hook_event_name: 'SessionStart', model: 'synthetic-model', permission_mode: 'bypassPermissions', source,
+    });
+    const start = runHook(codex('startup'), ['--platform', 'codex', '--config', path.join(tempDir(), 'missing.json')]);
+    assert.equal(start.code, 0, start.err);
+    assertHints(contextOf(start.out));
+    const fork = runHook(codex('fork'), ['--platform', 'codex', '--config', path.join(tempDir(), 'missing.json')]);
+    assert.equal(fork.code, 0, fork.err);
+    assert.equal(fork.out.length, 0);
+  });
+
   test('a session id that is not an id is never echoed', () => {
     const rt = tempRuntime();
     for (const id of ['two words', 'line\nbreak', 'x'.repeat(129), '', 42]) {

@@ -11,3 +11,7 @@ followUpQueueMode = "steer"
 [mcp_servers.project-manager]
 command = "node"
 args = ["<home>/.claude/mcp-project-manager/dist/index.js"]
+
+# Codex writes one table per trusted hook handler when the owner trusts it in /hooks (C0 T-meta layout).
+[hooks.state.'<home>/.codex/hooks.json:pre_tool_use:0:0']
+trusted_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"

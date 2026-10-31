@@ -294,7 +294,7 @@ describe('Codex config fragment', () => {
 describe('Codex hooks.json', () => {
   const hooks = readJson(CODEX_HOOKS);
 
-  test('registers the same guard for the shell, patch and ledger tools, as a reminder', () => {
+  test('registers the same guard for the shell, patch and ledger tools, failing closed', () => {
     const groups = hooks.hooks?.PreToolUse ?? [];
     assert.equal(groups.length, 1);
     const sees = (tool) => matcherSelects(groups[0].matcher, tool);
@@ -303,11 +303,14 @@ describe('Codex hooks.json', () => {
     for (const t of ['Read', 'TodoWrite', 'NotebookEdit2', 'mcp__claude_ai_Gmail__send_message', 'xBash']) assert.ok(!sees(t), t);
     const [h] = groups[0].hooks;
     assert.equal(h.type, 'command');
-    assert.equal(h.command, '"<node>" "<runtime>/hooks/guard.mjs" --platform codex');
+    // The bare Node path first, the script path quoted: the only form C0 ran (ADR-006 §7).
+    assert.equal(h.command, '<node> "<runtime>/hooks/guard.mjs" --platform codex');
     assert.ok(Number.isInteger(h.timeout) && h.timeout > 0);
+    assert.match(hooks.description, /出错即拦截/);
+    assert.doesNotMatch(hooks.description, /放行|只当提醒/);
   });
 
-  test('only the events batch 1 decides now: SessionStart waits for the C0 result', () => {
+  test('SessionStart is not registered on Codex (C0: root thread only, ADR-006 §7)', () => {
     assert.deepEqual(Object.keys(hooks.hooks), ['PreToolUse']);
   });
 });

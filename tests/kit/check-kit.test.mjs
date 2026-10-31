@@ -146,9 +146,9 @@ const row = (rows, id) => { const r = rows.find((x) => x.id === id); assert.ok(r
 
 // ---------- the six fake user directories, through the CLI ----------
 
-// Rows of checks 3-6 that are a WARN on a correct deploy: the Codex hook trust cannot be read yet (C0),
-// and home-ok has a repository in its read-only folder (pushurl skipped).
-const DEPLOYED_WARN = ['hooks.codex-trust', 'pushurl.readonly'];
+// Rows of checks 3-6 that are a WARN on a correct deploy: home-ok has a repository in its read-only folder
+// (pushurl skipped). Its config.toml trusts the kit's Codex hook handler, so that row passes.
+const DEPLOYED_WARN = ['pushurl.readonly'];
 
 test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl and rules row passes, the tree is unchanged', () => {
   const sb = sandbox('home-ok');
@@ -168,7 +168,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'skills.kit.agents').detail, /7 skills match/);
   assert.match(row(json.rows, 'hooks.selftest.guard').detail, /^guard selftest: ok \(\d+ samples\) \(portable Node\)/);
   for (const id of ['hooks.heartbeat.claude.guard', 'hooks.heartbeat.claude.session-start', 'hooks.heartbeat.codex.guard']) assert.match(row(json.rows, id).detail, /1 h ago/);
-  assert.match(row(json.rows, 'hooks.codex-trust').detail, /unknown \(未知\)/);
+  assert.match(row(json.rows, 'hooks.codex-trust').detail, /^pre_tool_use:0:0 trusted \(已信任\): trusted_hash in .*\(the hash itself is not checked\)$/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -486,7 +486,7 @@ test('helpers: command tokens, TOML strings, hook parts, row counts', () => {
   assert.deepEqual(countRows([{ status: 'PASS' }, { status: 'FAIL' }, { status: 'FAIL' }]), { PASS: 1, WARN: 0, FAIL: 2 });
 });
 
-test('heartbeats: an old one is a WARN, none is a FAIL; a failing selftest is a FAIL; the registered hooks come from the fragments', () => {
+test('heartbeats: none is a FAIL, an old guard one is a FAIL, an old session-start one a WARN; a failing selftest is a FAIL; the registered hooks come from the fragments', () => {
   assert.deepEqual(registeredHooks(), [
     { hook: 'guard', platform: 'claude' }, { hook: 'session-start', platform: 'claude' }, { hook: 'guard', platform: 'codex' },
   ]);
@@ -494,10 +494,14 @@ test('heartbeats: an old one is a WARN, none is a FAIL; a failing selftest is a 
   const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
   const later = new Date(Date.now() + (HEARTBEAT_STALE_DAYS + 3) * 86_400_000);
   const rows = runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions, now: later, selftest: () => ({ ok: false, out: 'guard selftest: 2 of 30 failed' }) });
+  // The guard fails closed on both platforms (owner decision 2026-10-31): an old guard heartbeat is a fault.
   for (const id of ['hooks.heartbeat.claude.guard', 'hooks.heartbeat.codex.guard']) {
-    assert.equal(row(rows, id).status, 'WARN');
+    assert.equal(row(rows, id).status, 'FAIL');
     assert.match(row(rows, id).detail, /older than 7 days/);
+    assert.match(row(rows, id).fix, /run one tool call/);
   }
+  assert.match(row(rows, 'hooks.heartbeat.codex.guard').fix, /\/hooks/);
+  assert.equal(row(rows, 'hooks.heartbeat.claude.session-start').status, 'WARN');
   const st = row(rows, 'hooks.selftest.guard');
   assert.equal(st.status, 'FAIL');
   assert.match(st.detail, /2 of 30 failed/);
@@ -525,11 +529,42 @@ test('the deployed guard selftest runs the real samples and writes no heartbeat'
   assert.equal(runSelftest(process.execPath, stub).ok, false);
 });
 
-test('Codex hook trust: unknown when config.toml shows none, reported when it holds a hook trust key', () => {
-  assert.deepEqual(codexHookTrust(null), []);
-  assert.deepEqual(codexHookTrust('model = "gpt-5"\n[projects.\'<projects>/hooks-demo\']\ntrust_level = "trusted"\n'), []);
-  assert.deepEqual(codexHookTrust('[hooks.trusted]\nguard = "sha256:00"\n'), ['hooks.trusted.guard']);
-  assert.deepEqual(codexHookTrust('[broken\n'), []);
+test('Codex hook trust: one entry per kit handler, trusted only by its own hooks.state table', () => {
+  const file = WIN ? 'C:\\example\\home\\.codex\\hooks.json' : '/example/home/.codex/hooks.json';
+  const kit = { type: 'command', command: '/opt/node "/rt/hooks/guard.mjs" --platform codex' };
+  const user = { type: 'command', command: 'node /example/user-hooks/audit.mjs' };
+  const hooks = { PreToolUse: [{ matcher: '^Bash$', hooks: [user] }, { matcher: '^apply_patch$', hooks: [user, kit] }], SessionStart: [{ hooks: [kit] }] };
+  const table = (key, value = '"sha256:9e9f"') => `[hooks.state.'${key}']\ntrusted_hash = ${value}\n`;
+  assert.deepEqual(codexHookTrust(null, file, hooks), [
+    { handler: 'pre_tool_use:1:1', trusted: false }, { handler: 'session_start:0:0', trusted: false },
+  ]);
+  // Slashes (and on Windows case) of the hooks.json path do not matter; the event, group and index do, and
+  // project trust or another file's table never counts.
+  const spelled = WIN ? 'c:/EXAMPLE/home/.codex/hooks.json' : file;
+  const toml = [
+    'model = "gpt-5"', `[projects.'${file}:session_start:0:0']`, 'trust_level = "trusted"',
+    table(`${spelled}:pre_tool_use:1:1`), table(`${file}:pre_tool_use:0:0`), table(`${file}:session_start:0:0`, '""'),
+    table('/example/other/.codex/hooks.json:session_start:0:0'),
+  ].join('\n');
+  assert.deepEqual(codexHookTrust(toml, file, hooks), [
+    { handler: 'pre_tool_use:1:1', trusted: true }, { handler: 'session_start:0:0', trusted: false },
+  ]);
+  assert.deepEqual(codexHookTrust('[broken\n', file, hooks).map((x) => x.trusted), [false, false]);
+  assert.deepEqual(codexHookTrust(toml, file, { PreToolUse: [{ hooks: [user] }] }), []);
+});
+
+test('Codex hook trust row: PASS when every kit handler is trusted, WARN with the /hooks fix when one is not', () => {
+  const sb = sandbox('home-ok');
+  const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
+  const trustRow = () => row(runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions }), 'hooks.codex-trust');
+  assert.equal(trustRow().status, 'PASS');
+  const config = path.join(sb.home, '.codex', 'config.toml');
+  const text = fs.readFileSync(config, 'utf8');
+  fs.writeFileSync(config, text.slice(0, text.indexOf('[hooks.state.')));
+  const untrusted = trustRow();
+  assert.equal(untrusted.status, 'WARN');
+  assert.match(untrusted.detail, /^pre_tool_use:0:0 not trusted \(未信任\)/);
+  assert.match(untrusted.fix, /\/hooks/);
 });
 
 test('rule-file lines: retired skills and CouncilFlow with a replacement each; kit skills and set_project_dir are not reported', () => {
@@ -558,6 +593,21 @@ test('usage errors exit 2', () => {
   fs.writeFileSync(bad, '{ not json');
   assert.equal(cli(['--local-config', bad, '--report-only']).status, 2);
   assert.equal(cli(['--help']).status, 0);
+});
+
+test('started through a junction (symlink elsewhere) to scripts/: check-kit still runs', () => {
+  const link = path.join(tempDir('check-kit-link-'), 'scripts-link');
+  fs.symlinkSync(path.join(REPO, 'scripts'), link, WIN ? 'junction' : 'dir');
+  try {
+    const viaLink = path.join(link, 'check-kit.mjs');
+    assert.notEqual(fs.realpathSync(viaLink).toLowerCase(), viaLink.toLowerCase(), 'the path really goes through a link');
+    const r = spawnSync(process.execPath, [viaLink, '--help'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^usage: node scripts\/check-kit\.mjs/, 'the usage is printed, so run() ran');
+    assert.equal(spawnSync(process.execPath, [viaLink, '--bogus'], { encoding: 'utf8' }).status, 2);
+  } finally {
+    fs.unlinkSync(link);
+  }
 });
 
 test('the fixtures, the real Codex temp folder and the real settings files are unchanged', () => {

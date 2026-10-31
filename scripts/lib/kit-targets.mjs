@@ -34,6 +34,7 @@
 //   ~/.codex/config.toml      only the keys of config/codex/config.fragment.toml are set (scripts/lib/
 //                             toml-edit.mjs); order, comments, trust, plugin and MCP sections stay.
 //   ~/.codex/hooks.json       the filled config/codex/hooks.json; merged like settings.json when it exists.
+//                             A portable_node that is not one plain word (PLAIN_COMMAND_WORD) is a conflict.
 //   ~/.codex/rules/autoskills.rules   config/codex/rules/autoskills.rules, whole file.
 //   <runtime>/hooks/          guard.mjs and session-start.mjs (it imports ./guard.mjs) from hooks/, plus
 //                             hook-config.json with runtime, readonly_dirs and kit_repo for the guard.
@@ -360,6 +361,16 @@ export function claudePathRule(tool, dir) {
   return `${tool}(${posix.replace(/\/+$/, '')}/**)`;
 }
 
+/**
+ * A Codex hook command is one string, and which shell Codex runs it in is not known (C0 T-meta: hook_shell
+ * null). The only form C0 ran is a bare executable followed by quoted paths (node "<path>" "<path>"); a
+ * quoted first word fails under powershell -Command and a plain cmd /c (tried on the dev machine,
+ * 2026-10-31; tests/kit/deploy-kit.test.mjs runs the filled command in each). So the Node path that starts
+ * the command must be one plain word: no space, no quote, no shell character (a ~ inside the word, as in a
+ * Windows short name, is plain). The quoted script path after it may hold spaces.
+ */
+export const PLAIN_COMMAND_WORD = /^[A-Za-z0-9_.:/+-][A-Za-z0-9_.:/+~-]*$/;
+
 /** True for a hook entry of the kit (its command or args run hooks/guard.mjs or hooks/session-start.mjs). */
 export function isKitHook(hook) {
   if (!isObject(hook)) return false;
@@ -611,11 +622,14 @@ export function desiredFiles(roots, { claudeContract = DEFAULT_OPTIONS.claude_co
   const codexHooks = fragment('config', 'codex', 'hooks.json');
   const curHooks = readJsonTarget(t.codexHooks);
   if (curHooks.error) conflict(t.codexHooks, 'hooks', curHooks.error);
-  else {
+  else if (!PLAIN_COMMAND_WORD.test(fill.node)) {
+    conflict(t.codexHooks, 'hooks', `portable_node ${fill.node} is not one plain word (a space or a shell character): the Codex hook command `
+      + 'starts with the bare Node path (ADR-006 §7); move the portable Node to a folder without spaces and update portable_node');
+  } else {
     try {
       mergedJson(t.codexHooks, curHooks, mergeCodexHooks(curHooks.value, codexHooks), {
         group: 'hooks', mode: curHooks.exists ? 'merge' : 'whole', source: hooksSrc,
-        reason: curHooks.exists ? 'Codex guard hook merged into the existing hooks.json; other hooks stay' : 'Codex guard hook (a reminder: Codex lets a call through when the hook fails)',
+        reason: curHooks.exists ? 'Codex guard hook merged into the existing hooks.json; other hooks stay' : 'Codex guard hook (fails closed: a guard error blocks the call)',
       });
     } catch (e) {
       if (!(e instanceof MergeError)) throw e;

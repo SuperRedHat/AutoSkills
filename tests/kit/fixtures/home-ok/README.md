@@ -17,7 +17,9 @@ of its own: `contract` (~/.claude/AGENTS.md, CLAUDE.md, ~/.codex/AGENTS.md), `sk
 fixture is laid down first and this one on top. Each git-remotes.json becomes a git repository in its
 folder with those remotes (and pushurl where given); the marker file is removed.
 
-Expected: no FAIL; check-kit exits 0 in strict mode. WARN: the Codex hook trust (unknown), the repo in the
-read-only folder projects/demo/frozen (pushurl skipped) and the synthetic project-manager build.
+Expected: no FAIL; check-kit exits 0 in strict mode. WARN: the repo in the read-only folder
+projects/demo/frozen (pushurl skipped) and the synthetic project-manager build. home/.codex/config.toml
+holds a synthetic hook trust table for the one kit handler of home/.codex/hooks.json (pre_tool_use:0:0, in
+the layout C0 found), so the Codex hook trust row passes.
 home/.codex/rules/autoskills.rules is a copy of config/codex/rules/autoskills.rules and must be updated
 with it.
