@@ -278,7 +278,7 @@
 - **Codex 钩子**：部署的命令行生效；matcher 里 shell 命令和 apply_patch 这两支都经过了守卫。账本工具那一支没有冒烟：C0 测过 MCP 工具的拒绝，但用的是另一种命令写法，也没有 matcher。
   - 正常的补丁放行；`git push`、`git push --dry-run`、`git -C <目录> push` 和往只读目录写文件都被拦下。
   - 引号不闭合的命令按守卫出错拦下，理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头。
-  - 子线程上没有测，冒烟记录里没有子线程。钩子用哪个 shell 仍没测出来；退出 2 那条路没测，AS3-126 起已经不用它。
+  - 子线程上没有测。钩子用哪个 shell 仍没测出来；退出 2 那条路没测，AS3-126 起已经不用它。
 - **apply_patch 的输入**：守卫读到的是补丁原文（`*** Begin Patch`、`*** Add File: <绝对路径>`），按真实路径判断是否落在只读目录。
 - **execpolicy**：
   - Codex 加载了 `~/.codex/rules/autoskills.rules`：`gh repo create --help` 被它拒绝。
