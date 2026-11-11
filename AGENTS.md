@@ -31,7 +31,7 @@
 - 第 1 批已部署（部署 id 20261101-013622-7ec9）。main 保持这个状态，一直到最终发布；本地标签 batch1-deployed 指向它。P0 全部在分支 `p0`、worktree `.autoskills/dev/p0` 上开发。
 - 中间版本不部署到用户级。不从 worktree 跑 deploy-kit 的 --apply、--rollback、--neutral。要在真实平台上测的，先用测试实例（`scripts/test-instance.mjs`，环境变量只传给子进程）；隔离不成立的平台才走临时测试档（`scripts/test-profile.mjs`），由负责人在普通终端启动，结束时自动恢复并比对。
 - 要子代理或 Codex 子线程的正向用例，只在 p0 实例或 p0 档里做：用户级的第 1 批守卫会拦子代理对 2.0 的写调用。
-- 测试实例长期保留（2026-11-11 起）：受管实例 diag-p0 不再每次销毁重建，里面留着负责人的登录；套件变了用 `scripts/test-instance.mjs --refresh` 只换套件文件。主会话可以在负责人不在场时用它跑最小自检（`scripts/platform-selfcheck.mjs`），只在门禁时和 P0 期间发现 CLI 版本变了时跑；每次花的额度第一次跑时量出来报给负责人，再定上限。实例 runner 的计划任务 `AutoSkills-runner-diag-p0` 平时不运行，最终发布时删除；runner 代码变了要请负责人重新注册。
+- 测试实例长期保留（2026-11-11 起）：受管实例 diag-p0 不再每次销毁重建，里面留着负责人的登录；套件变了用 `scripts/test-instance.mjs --refresh` 只换套件文件。主会话可以在负责人不在场时用它跑最小自检（`scripts/platform-selfcheck.mjs`），只在门禁时和 P0 期间发现 CLI 版本变了时跑；每次花的额度第一次跑时量出来报给负责人，再定上限。实例 runner 的计划任务 `AutoSkills-runner-diag-p0` 平时不运行，最终发布时删除；它指向实例里路径固定的启动文件（`rt/runner/start.mjs`），套件刷新后不用重新注册，便携 Node 或实例的位置变了才要。
 - 无人值守的 Codex 测试运行（探针、最小自检、诊断测量）一律带 `--dangerously-bypass-hook-trust`，同一平台的新旧变体都带，事先写进规格。这些运行不检验"信任"这一环，留到最终发布时核对。
 - 平台 CLI 更新不让已有证据作废，只有被测套件变了才作废；门禁时在当时的 CLI 版本上重跑最小自检。
 - worktree 和验证池里不放 junction 或 symlink，尤其不要把 `_private` 链进 worktree（`git worktree remove` 会顺着 junction 清空目标）。
