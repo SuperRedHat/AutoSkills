@@ -43,7 +43,7 @@
 - 常规实现选择由主会话定，记进 ADR-008（P0 的在 ADR-007）；只把会改最终效果、范围或投入的事交负责人。
 - 套件或门禁的测试失败时，先查失败的测试是不是某条验收标准的证据、能不能确定性重现；是缺陷的话，延后修由负责人定，主会话只给建议。
 - 相关改动合并做独立审查：AS3-332 到 AS3-349 在 AS3-350 分三组各审一次（账本和服务端、runner、套件文字和模板）；其余高风险任务各自审查。
-- kit 测试：AS3-202 修好前，要在 PATH 上第一个 bash 不是 WSL 启动器的环境里跑（例如从 Git Bash 启动）；跑 kit 测试时不能有别的会话或代理在调工具（第 90 条会失败）。
+- kit 测试：AS3-202 修好前，要在 PATH 上第一个 bash 不是 WSL 启动器的环境里跑（例如从 Git Bash 启动）；跑 kit 测试时不能有别的会话或代理在调工具（否则 `deploy-kit.test.mjs` 里的 “the real user directory targets, the real runtime and the .git/config of the real repos are unchanged” 会失败）。
 - 迁移不在别的仓库里提交，只写各仓库的 `.git/info/exclude`。
 - 仓库已有 git 标签 v1.5.1、v2.0（旧套件），新标签不得重名。标签只打本地，不推送。
 - 文档和面向负责人的文字用中文；代码和注释沿用仓库现有的英文。
