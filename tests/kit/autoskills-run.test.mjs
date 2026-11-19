@@ -37,7 +37,7 @@ const tempDir = (prefix) => {
 const FAKE = String.raw`
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 const argv = process.argv.slice(2);
 if (argv[0] === '--version') { console.log('9.9.9 (stand-in)'); process.exit(0); }
 const calls = process.env.FAKE_CALLS;
@@ -50,6 +50,11 @@ const step = JSON.parse(fs.readFileSync(process.env.FAKE_SCRIPT, 'utf8'))[n] || 
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 out({ type: 'system', subtype: 'init', session_id: 'fake-' + n, model: flag('--model') || 'stand-in', permissionMode: flag('--permission-mode'), tools: [], mcp_servers: [] });
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// A process of the session's own (what a Bash call or a test run is to a real session); it ends by itself after 60 s.
+if (step.grandchild) {
+  const c = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 60000)'], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(path.dirname(calls), 'grandchild.pid'), String(c.pid));
+}
 if (step.idleMs) sleep(step.idleMs);
 const state = path.join(process.cwd(), '.claude', 'state');
 const tf = path.join(state, 'tasks.json'), lf = path.join(state, 'logs.json');
@@ -149,6 +154,16 @@ async function drive(p, extraArgs = [], deps = {}) {
   const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null);
   const record = run ? JSON.parse(read(path.join(runsDir(p.proj), run, 'run.json')) || 'null') : null;
   return { code, io, run, record, report: run ? read(path.join(runsDir(p.proj), run, 'report.md')) : null, waits };
+}
+
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** The process the stand-in started with `grandchild: true`: its pid, and whether it is gone within 5 s. */
+async function grandchildGone(p) {
+  const pid = Number(fs.readFileSync(path.join(p.dir, 'grandchild.pid'), 'utf8'));
+  for (let i = 0; i < 50 && pidAlive(pid); i += 1) await new Promise((r) => setTimeout(r, 100));
+  const gone = !pidAlive(pid);
+  if (!gone) killTree(pid);
+  return { pid, gone };
 }
 
 const promptsOf = (p) => p.calls().map((c) => c.prompt);
@@ -289,6 +304,25 @@ describe('picking the task', () => {
     assert.deepEqual([r.code, r.record.end_reason, p.calls().length], [1, 'blocked', 0]);
     assert.match(r.report, /A task A：受阻：缺账号/);
   });
+
+  test('blocked tasks and tasks awaiting acceptance together: the reason names both (exit 1)', async () => {
+    const p = project({ tasks: [T('A', { notes: '受阻：缺账号' }), T('B', { status: 'awaiting_manual_acceptance', acceptance_mode: 'manual' })] });
+    const r = await drive(p);
+    assert.deepEqual([r.code, r.record.end_reason, p.calls().length], [1, 'blocked', 0]);
+    assert.match(r.record.end_detail, /受阻 A；待验收 B/);
+    assert.match(r.report, /## 等你验收的\n\n- B task B/);
+  });
+
+  test('a task a session left at auto_verified is in hand: it is named before any ready task', async () => {
+    const tasks = [T('A'), T('B', { status: 'auto_verified' }), T('C', { status: 'auto_verified', notes: '受阻：等负责人定' })];
+    const done = (id) => ({ status: { [id]: 'done' }, files: { [`${id}.txt`]: id }, commit: `feat(${id})` });
+    const p = project({ tasks, script: [done('B'), done('A')] });
+    const r = await drive(p);
+    assert.deepEqual(named(p), ['B', 'A'], 'B first; the blocked C is skipped');
+    assert.equal(r.record.verifies.B.passed, true);
+    assert.deepEqual([r.code, r.record.end_reason], [1, 'blocked']);
+    assert.match(r.record.end_detail, /剩下的都受阻：C/);
+  });
 });
 
 // ---------- the driver's verification ----------
@@ -348,7 +382,7 @@ describe('verification on the committed tree', () => {
     assert.equal(v.clean, true);
     assert.match(v.reason, /no verification commands/);
     assert.equal(r.code, 0);
-    assert.match(r.report, /没复验：the task has no verification commands/);
+    assert.match(r.report, /没复验：任务没有验证命令/);
   });
 
   test('failed while awaiting acceptance: the task is left alone, the report says reject; no rework', async () => {
@@ -428,9 +462,9 @@ describe('brakes and stop requests', () => {
     assert.deepEqual([r.code, r.record.end_reason], [0, 'max_tasks']);
   });
 
-  test('--until: no new task after the time; exit 0', async () => {
+  test('--until not reached: every task is opened; exit 0', async () => {
     const p = project({ tasks: [T('A'), T('B')], script: [doneStep('A'), doneStep('B')] });
-    let clock = new Date(2026, 10, 19, 6, 50, 0);
+    const clock = new Date(2026, 10, 19, 6, 50, 0);
     const now = () => clock;
     const io = { stdout: sink(), stderr: sink() };
     const code = await runWith([p.proj, '--cli', p.fake, '--until', '07:00'], io, {
@@ -440,17 +474,20 @@ describe('brakes and stop requests', () => {
     // The clock never moves: both tasks start before 07:00.
     assert.equal(code, 0);
     assert.deepEqual(named(p), ['A', 'B']);
+  });
+
+  test('--until passes while a task is in hand: that task is finished and verified, the next one is not opened', async () => {
     const q = project({ tasks: [T('A'), T('B')], script: [doneStep('A'), doneStep('B')] });
-    clock = new Date(2026, 10, 19, 6, 50, 0);
-    let calls = 0;
-    const stepping = () => { calls += 1; return calls > 3 ? new Date(2026, 10, 19, 7, 1, 0) : clock; };
-    const io2 = { stdout: sink(), stderr: sink() };
-    const code2 = await runWith([q.proj, '--cli', q.fake, '--until', '07:00'], io2, {
-      baseEnv: { ...process.env, FAKE_SCRIPT: q.scriptFile, FAKE_CALLS: q.callsFile }, now: stepping, accept: async () => 0,
-    });
-    assert.equal(code2, 0);
-    assert.ok(q.calls().length < 2, 'B does not start after 07:00');
-    assert.match(io2.stdout.text(), /到了 --until 07:00/);
+    // 06:50 until the session of A has started, 07:01 from then on: the time passes during A.
+    const stepping = () => (q.calls().length >= 1 ? new Date(2026, 10, 19, 7, 1, 0) : new Date(2026, 10, 19, 6, 50, 0));
+    const r = await drive(q, ['--until', '07:00'], { now: stepping });
+    assert.deepEqual(named(q), ['A'], 'A started before 07:00 and B did not start after it');
+    assert.equal(r.record.sessions.length, 1);
+    assert.equal(r.record.sessions[0].error_kind, null, 'the session in hand ran to its end');
+    assert.equal(r.record.verifies.A.passed, true, 'the task in hand was still verified');
+    assert.deepEqual(q.ledger().map((t) => t.status), ['done', 'todo']);
+    assert.deepEqual([r.code, r.record.end_reason], [0, 'until']);
+    assert.match(r.io.stdout.text(), /到了 --until 07:00/);
   });
 
   test('no progress: three sessions in a row with no commit and no status change stop the run; exit 1; the ledger is untouched', async () => {
@@ -466,10 +503,11 @@ describe('brakes and stop requests', () => {
   });
 
   test('a session that goes quiet is ended with its tree after --idle-min; the next session goes on with the task', async () => {
-    const p = project({ tasks: [T('A')], script: [{ idleMs: 20000 }, doneStep('A')] });
+    const p = project({ tasks: [T('A')], script: [{ idleMs: 20000, grandchild: true }, doneStep('A')] });
     const t0 = Date.now();
     const r = await drive(p, ['--idle-min', '0.02']);
     assert.ok(Date.now() - t0 < 15000, 'the quiet session did not run its 20 s');
+    assert.equal((await grandchildGone(p)).gone, true, 'the process the quiet session had started ended with it');
     assert.deepEqual(r.record.sessions.map((s) => s.error_kind), ['idle_timeout', null]);
     assert.deepEqual(named(p), ['A', 'A']);
     assert.deepEqual([r.code, r.record.end_reason], [0, 'all_done']);
@@ -507,13 +545,17 @@ describe('brakes and stop requests', () => {
   });
 
   test('Ctrl+C twice: the session in hand ends at once with its tree, the record says so, the lock goes (exit 1)', async () => {
-    const p = project({ tasks: [T('A')], script: [{ idleMs: 30000 }] });
+    const p = project({ tasks: [T('A')], script: [{ idleMs: 30000, grandchild: true }] });
     const opts = parseRun([p.proj, '--cli', p.fake]);
     const d = new Driver(opts, { stdout: sink(), stderr: sink() }, { baseEnv: { ...process.env, FAKE_SCRIPT: p.scriptFile, FAKE_CALLS: p.callsFile }, accept: async () => 0, pollMs: 20 });
     const t0 = Date.now();
     const running = d.run();
     while (!d.currentChild) await new Promise((r) => setTimeout(r, 20));
     const pid = d.currentChild.pid;
+    // The session is in hand once the stand-in has started its own process.
+    while (!fs.existsSync(path.join(p.dir, 'grandchild.pid'))) await new Promise((r) => setTimeout(r, 20));
+    while (!fs.readFileSync(path.join(p.dir, 'grandchild.pid'), 'utf8')) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(pidAlive(Number(fs.readFileSync(path.join(p.dir, 'grandchild.pid'), 'utf8'))), true, 'the session\'s own process runs before the second Ctrl+C');
     d.interrupt();
     assert.equal(d.abortNow(killTree), 1);
     assert.equal(await running, 1);
@@ -521,6 +563,7 @@ describe('brakes and stop requests', () => {
     let alive = true;
     try { process.kill(pid, 0); } catch { alive = false; }
     assert.equal(alive, false);
+    assert.equal((await grandchildGone(p)).gone, true, 'the process the session had started ended with it');
     assert.equal(fs.existsSync(lockFile(p.proj)), false);
     const rec = JSON.parse(fs.readFileSync(path.join(runsDir(p.proj), p.runs()[0], 'run.json'), 'utf8'));
     assert.equal(rec.end_reason, 'interrupt_now');
@@ -585,6 +628,18 @@ describe('one driver a project', () => {
     const io = { stdout: sink(), stderr: sink() };
     assert.equal(await stopCommand([p.proj], io), 1);
     assert.equal(fs.existsSync(stopFile(p.proj)), false);
+  });
+
+  test('a lock file that cannot be read is replaced, not kept; no file is left beside the lock', async () => {
+    const p = project({ tasks: [T('A')], script: [{ status: { A: 'done' }, files: { 'a.txt': '1' }, commit: 'feat(A)' }] });
+    fs.writeFileSync(lockFile(p.proj), 'not json');
+    let seen = null;
+    let beside = null;
+    const r = await drive(p, [], { accept: async (proj) => { seen = readLock(proj); beside = fs.readdirSync(path.dirname(lockFile(proj))).filter((n) => n.startsWith('run.lock')); return 0; } });
+    assert.equal(r.code, 0);
+    assert.equal(seen.pid, process.pid);
+    assert.deepEqual(beside, ['run.lock'], 'the lock moved aside is deleted');
+    assert.equal(fs.existsSync(lockFile(p.proj)), false);
   });
 
   test('while it runs, the lock names this process and this run', async () => {

@@ -40,8 +40,8 @@ Options:
 Stop it: node scripts/autoskills.mjs stop <project dir> (after the task in hand), or Ctrl+C once (the same),
 twice (at once: the session in hand ends, its half-done changes stay in the working tree).
 Report: <project>/.autoskills/runs/<run>/report.md. Settings: <project>/.autoskills/run.json.
-Exit codes: 0 a normal stop point (all done, only the owner's part left, stop file or Ctrl+C, --until, --max-tasks);
-1 a brake (no progress, the rest blocked) or an error; 2 usage error.
+Exit codes: 0 a normal stop point (all done, only the owner's part left, stop file or one Ctrl+C, --until,
+--max-tasks); 1 a brake (no progress, the rest blocked), a second Ctrl+C or an error; 2 usage error.
 `;
 
 export const STOP_USAGE = `Usage: node scripts/autoskills.mjs stop <project dir>

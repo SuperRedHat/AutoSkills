@@ -34,7 +34,7 @@ export function verifyWords(v, reject) {
   if (!v) return '没复验';
   let s;
   if (v.passed === true) s = '通过';
-  else if (v.passed === null) s = `没复验：${v.reason || '没有验证命令'}`;
+  else if (v.passed === null) s = '没复验：任务没有验证命令';
   else if (!v.clean) s = `没过：工作目录不干净（${(v.dirty || []).length} 个文件没提交）`;
   else {
     const bad = v.commands.find((c) => c.exit_code !== 0);

@@ -38,7 +38,7 @@
 | `rm -rf …` | 被拒绝规则拦：`Permission to use Bash with command rm -rf probe-tmp has been denied.` | 同左 |
 
 - 两次会话都是退出码 0、result success、permission_denials 3，被拦的调用作为错误结果回到会话里，会话照常写完汇报就结束，没有卡住等人点。没有换写法重试。
-- 测试仓库的推送日志（`logs/push-attempts.log`）不存在，说明推送没走到 git。
+- 测试仓库的推送日志（`logs/push-attempts.log`）是空的，说明推送没走到 git。
 - 用时和 token：bypassPermissions 39 秒、187,541；auto 43 秒、188,229。
 
 **结论**：
@@ -49,7 +49,7 @@
 
 ## 3. Ctrl+C
 
-**做了什么**：不起真实会话。替身程序在会话目录的 scratchpad 里（`ctrlc/`）：替身驱动（node）起替身会话（node，不处理 SIGINT，所以默认收到 Ctrl+C 就退出），替身会话干 8 秒活，并起两个 powershell 孙进程，查它们有没有控制台窗口、窗口可不可见。替身驱动收到第一次 Ctrl+C 只记一行，第二次 `taskkill /T /F` 结束替身会话的进程树再退出。替身驱动用 `Start-Process` 起在新控制台里，再由另一个 PowerShell 进程 `AttachConsole` 到那个控制台、`GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`，和在那个控制台里按 Ctrl+C 一样，发给挂在这个控制台上的全部进程。
+**做了什么**：不起真实会话。替身程序和每次的日志留在主检出的 `_private/eval/finish-probe/p-ctrlc/`（原先在窗口会话的临时目录里，主控收窗口后原样复制过来）：替身驱动（node）起替身会话（node，不处理 SIGINT，所以默认收到 Ctrl+C 就退出），替身会话干 8 秒活，并起两个 powershell 孙进程，查它们有没有控制台窗口、窗口可不可见。替身驱动收到第一次 Ctrl+C 只记一行，第二次 `taskkill /T /F` 结束替身会话的进程树再退出。替身驱动用 `Start-Process` 起在新控制台里，再由另一个 PowerShell 进程 `AttachConsole` 到那个控制台、`GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`，和在那个控制台里按 Ctrl+C 一样，发给挂在这个控制台上的全部进程。
 
 **看到了什么**：
 
@@ -78,7 +78,7 @@
 node scripts/autoskills.mjs run <p3-trial>/repo --max-tasks 2 --model claude-opus-5-5 --effort high
 ```
 
-没写项目设置，复验用默认的 PowerShell 5.1。控制台输出存在会话 scratchpad 的 `trial.console.log`，报告在测试仓库的 `.autoskills/runs/2026-11-19T03-25-39Z/report.md`。
+没写项目设置，复验用默认的 PowerShell 5.1。控制台输出在 `_private/eval/finish-probe/window-a-logs/trial.console.log`（三次探查的控制台输出和提示词也在这个目录），报告在测试仓库的 `.autoskills/runs/2026-11-19T03-25-39Z/report.md`。
 
 **结果**：退出码 0，停在“做完了 --max-tasks 2 个任务”，2 分 58 秒。
 
@@ -99,3 +99,7 @@ node scripts/autoskills.mjs run <p3-trial>/repo --max-tasks 2 --model claude-opu
 - 没碰到复验没过、额度用完、会话挂死：这些路径只在替身测试里走过。
 
 **token**：试跑 1,317,126，在 150 万以内。探查加试跑合计 2,365,064。
+
+## 后来改过的地方
+
+2026-11-19，主控按独立审查（AS3-370）的意见改了三处，结论没有变：推送日志是“空的”，原先写成了“不存在”；Ctrl+C 探查的替身和日志从窗口会话的临时目录复制到了 `_private/eval/finish-probe/p-ctrlc/`；探查和短试跑的控制台输出复制到了 `_private/eval/finish-probe/window-a-logs/`。

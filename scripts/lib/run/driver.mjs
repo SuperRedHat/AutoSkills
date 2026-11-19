@@ -74,14 +74,39 @@ export class Driver {
 
   /** Take the project's lock. Returns an error text when a live driver holds it. */
   lock() {
-    const held = readLock(this.o.project);
-    if (held && held.alive && held.pid !== process.pid) {
-      return `another driver runs in this project (pid ${held.pid}, run ${held.run}, started ${held.started_at}); `
-        + `if none does, delete ${lockFile(this.o.project)}`;
-    }
-    if (held) this.notes.push(`接手了旧锁：pid ${held.pid} 的驱动（运行 ${held.run}，${held.started_at} 开始）已经不在了。`);
+    const file = lockFile(this.o.project);
+    const refuse = (held) => `another driver runs in this project (pid ${held.pid}, run ${held.run}, started ${held.started_at}); `
+      + `if none does, delete ${file}`;
     fs.mkdirSync(autoDir(this.o.project), { recursive: true });
-    fs.writeFileSync(lockFile(this.o.project), `${JSON.stringify({ pid: process.pid, run: this.run, started_at: this.startedAt }, null, 2)}\n`);
+    let taken = false;
+    // Two drivers started at the same moment must not both get the lock. A lock left behind is moved aside by a
+    // rename (only one of them can rename the same file) and the new one is created exclusively (only one create
+    // succeeds); whoever loses a step looks again and finds the winner's lock.
+    for (let attempt = 0; attempt < 5 && !taken; attempt += 1) {
+      const held = readLock(this.o.project);
+      if (held && held.alive && held.pid !== process.pid) return refuse(held);
+      if (held || fs.existsSync(file)) {
+        const aside = `${file}.${process.pid}.old`;
+        try {
+          fs.renameSync(file, aside);
+        } catch (e) {
+          if (e.code === 'ENOENT') continue;
+          throw e;
+        }
+        fs.rmSync(aside, { force: true });
+        if (held) this.notes.push(`接手了旧锁：pid ${held.pid} 的驱动（运行 ${held.run}，${held.started_at} 开始）已经不在了。`);
+      }
+      try {
+        fs.writeFileSync(file, `${JSON.stringify({ pid: process.pid, run: this.run, started_at: this.startedAt }, null, 2)}\n`, { flag: 'wx' });
+        taken = true;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+    }
+    if (!taken) {
+      const held = readLock(this.o.project);
+      return held ? refuse(held) : `could not take the lock ${file}; try again`;
+    }
     this.locked = true;
     // `stop` writes the stop file only while a driver runs, and the driver deletes it when it ends; one found now was
     // left by a driver that did not end normally.
@@ -120,18 +145,21 @@ export class Driver {
     const usable = (t) => !isBlocked(t) && !this.skip.has(t.id);
     const n = this.perSession();
     const named = (t, kind) => ({ kind, taskId: t.id, prompt: n > 1 ? multiPrompt(t.id, n) : taskPrompt(t.id) });
-    const going = inProgress(tasks).find(usable);
+    // A task in hand: in progress, or left at auto_verified by a session that ended between that step and the next
+    // one (done or awaiting acceptance). Neither is ready by the server's rule, so without this nobody would finish it.
+    const going = [...inProgress(tasks), ...tasks.filter((t) => t.status === 'auto_verified')].find(usable);
     if (going) return named(going, 'task');
     const ready = readyTasks(tasks, { awaitingBlocks: this.settings.awaiting_blocks_downstream }).find(usable);
     if (ready) return named(ready, 'task');
     const open = tasks.filter((t) => !CLOSED.includes(t.status));
     if (!open.length) return { stop: 'all_done', detail: '账本里的任务全部关闭了' };
     const blocked = open.filter((t) => isBlocked(t) || this.skip.has(t.id));
+    const waiting = awaitingAcceptance(tasks).map((t) => t.id);
     if (!blocked.length) {
-      const waiting = awaitingAcceptance(tasks).map((t) => t.id);
       return { stop: 'owner', detail: `只剩等负责人验收或决定的${waiting.length ? `（待验收：${waiting.join('、')}）` : ''}` };
     }
-    return { stop: 'blocked', detail: `剩下的都受阻：${blocked.map((t) => t.id).join('、')}` };
+    const ids = blocked.map((t) => t.id).join('、');
+    return { stop: 'blocked', detail: waiting.length ? `剩下的不是受阻就是在等验收：受阻 ${ids}；待验收 ${waiting.join('、')}` : `剩下的都受阻：${ids}` };
   }
 
   perSession() {
@@ -230,7 +258,7 @@ export class Driver {
       });
       this.verifies.set(t.id, v);
       rec.verified.push({ task: t.id, status: t.status, passed: v.passed, clean: v.clean });
-      const word = v.passed === true ? '通过' : v.passed === null ? `没复验（${v.reason}）` : `没过：${failureText(v)}`;
+      const word = v.passed === true ? '通过' : v.passed === null ? '没复验（任务没有验证命令）' : `没过：${failureText(v)}`;
       this.say(`  ${t.id} ${t.status === 'done' ? '完成' : '待验收'}，复验${word}`);
       const lin = this.lineages.find((l) => !l.closed && l.task === t.id);
       if (v.passed !== false) {
