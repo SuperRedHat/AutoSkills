@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { acceptCommand } from '../../scripts/lib/accept/cli.mjs';
 import { stateDir } from '../../scripts/lib/ledger-read.mjs';
@@ -199,9 +200,12 @@ describe('the lock', () => {
     fs.mkdirSync(path.join(dir, '.autoskills'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.autoskills', 'run.lock'), JSON.stringify({ pid, run: 'r', started_at: 'now' }));
   };
-  test('a live lock warns, a dead lock and no lock do not', async () => {
+  test('a live lock warns, a dead lock and no lock do not', async (t) => {
     const live = project([W('A')]);
-    lock(live, process.pid);
+    // Another live process stands in for a running driver.
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+    t.after(() => other.kill());
+    lock(live, other.pid);
     const warned = (await run([live])).html;
     assert.match(warned, /有长跑正在跑/);
     // The stop command on the page can be pasted as it is: the kit's entry, the command, this project.
@@ -211,6 +215,14 @@ describe('the lock', () => {
     lock(dead, 2 ** 22 + 12345);
     assert.ok(!(await run([dead])).html.includes('有长跑正在跑'));
     assert.ok(!(await run([project([W('A')])])).html.includes('有长跑正在跑'));
+  });
+  test('the lock of this very process (the driver writing its closing sheet) does not ask to stop the run', async () => {
+    const dir = project([W('A')]);
+    lock(dir, process.pid);
+    const { code, html } = await run([dir]);
+    assert.equal(code, 0);
+    assert.ok(!html.includes('有长跑正在跑'), 'the driver that writes the sheet is ending; there is nothing to stop');
+    assert.match(html, /<li>A 通过<\/li>/);
   });
 });
 

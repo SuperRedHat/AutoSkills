@@ -120,7 +120,9 @@ export async function acceptCommand(args, io) {
     generatedAt: now.toISOString(),
     groups: arrange(items),
     count: items.length,
-    running: Boolean(lock && lock.alive),
+    // A lock held by this very process is the driver writing its closing sheet (it calls this command just before it
+    // ends and lets go of the lock): there is nothing left to stop, so the page does not ask for it.
+    running: Boolean(lock && lock.alive && lock.pid !== process.pid),
     stopCommand: `node "${ENTRY}" stop "${project}"`,
   });
   const file = path.resolve(out ?? path.join(acceptanceDir(project), `${stampOf(now)}.html`));
