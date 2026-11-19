@@ -170,6 +170,6 @@ export function failureText(rec) {
   const bad = rec.commands.find((c) => c.exit_code !== 0);
   if (!bad) return '';
   const i = rec.commands.indexOf(bad) + 1;
-  const how = bad.timed_out ? '超时没跑完' : bad.exit_code === null ? `没能启动（${bad.error || '未知原因'}）` : `退出码 ${bad.exit_code}`;
+  const how = bad.timed_out ? '超时没跑完' : bad.exit_code !== null ? `退出码 ${bad.exit_code}` : bad.error ? `没能启动（${bad.error}）` : '被中途结束，没有退出码';
   return `第 ${i} 条验证命令 \`${bad.command}\` ${how}，日志在 ${bad.log}`;
 }

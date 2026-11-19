@@ -8,6 +8,15 @@ export function taskPrompt(taskId) {
   return `用 project-next 只做 ${taskId}；做完、验证、提交、记账就结束；${UNATTENDED}`;
 }
 
+/**
+ * A task a session left at auto_verified (it ended between that step and done or awaiting acceptance): project-resume
+ * has the rule for it, so the prompt names that skill and says where the task stands.
+ */
+export function resumePrompt(taskId) {
+  return `用 project-resume 的做法接着做 ${taskId}，只做 ${taskId}；它停在 auto_verified（上一个会话验证完、还没改成完成或待验收就断了）：`
+    + `在本会话重跑它的验证命令，通过就照验收字段推进，记账就结束；别的任务这次不做。${UNATTENDED}`;
+}
+
 /** --tasks-per-session N > 1: start with the named task, then take ready ones, up to n in all. */
 export function multiPrompt(taskId, n) {
   return `用 project-next 从 ${taskId} 开始做，最多做 ${n} 个任务（${taskId} 算第一个，之后按账本的就绪顺序取）；`

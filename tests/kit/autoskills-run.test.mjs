@@ -13,7 +13,7 @@ import { runWith, stopCommand, runCommand, parseRun, untilDate, DEFAULT_PERMISSI
 import { Driver, exitCodeOf, NORMAL_ENDS, LIMIT_WAITS_MIN } from '../../scripts/lib/run/driver.mjs';
 import { childEnv, outcomeOf, USAGE_LIMIT_RE, sessionArgs, killTree } from '../../scripts/lib/run/session.mjs';
 import { dirtyFiles, failureText, shellSpec } from '../../scripts/lib/run/verify.mjs';
-import { taskPrompt, reworkPrompt, giveUpPrompt, multiPrompt } from '../../scripts/lib/run/prompts.mjs';
+import { taskPrompt, reworkPrompt, giveUpPrompt, multiPrompt, resumePrompt } from '../../scripts/lib/run/prompts.mjs';
 import { lockFile, stopFile, settingsFile, runsDir, verifyFile, readLock } from '../../scripts/lib/run-paths.mjs';
 import { main } from '../../scripts/autoskills.mjs';
 
@@ -51,8 +51,11 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 out({ type: 'system', subtype: 'init', session_id: 'fake-' + n, model: flag('--model') || 'stand-in', permissionMode: flag('--permission-mode'), tools: [], mcp_servers: [] });
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // A process of the session's own (what a Bash call or a test run is to a real session); it ends by itself after 60 s.
+// It is detached on purpose: an attached child of a Node process on Windows ends as soon as its parent does, whoever
+// ended the parent, so only a detached one tells "the whole tree was ended" from "the session alone was ended".
 if (step.grandchild) {
-  const c = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 60000)'], { stdio: 'ignore' });
+  const c = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 60000)'], { stdio: 'ignore', detached: true });
+  c.unref();
   fs.writeFileSync(path.join(path.dirname(calls), 'grandchild.pid'), String(c.pid));
 }
 if (step.idleMs) sleep(step.idleMs);
@@ -319,6 +322,9 @@ describe('picking the task', () => {
     const p = project({ tasks, script: [done('B'), done('A')] });
     const r = await drive(p);
     assert.deepEqual(named(p), ['B', 'A'], 'B first; the blocked C is skipped');
+    assert.equal(promptsOf(p)[0], resumePrompt('B'), 'the prompt says where the task stands and names project-resume');
+    assert.match(promptsOf(p)[0], /project-resume.*auto_verified/);
+    assert.equal(promptsOf(p)[1], taskPrompt('A'));
     assert.equal(r.record.verifies.B.passed, true);
     assert.deepEqual([r.code, r.record.end_reason], [1, 'blocked']);
     assert.match(r.record.end_detail, /剩下的都受阻：C/);
@@ -640,6 +646,61 @@ describe('one driver a project', () => {
     assert.equal(seen.pid, process.pid);
     assert.deepEqual(beside, ['run.lock'], 'the lock moved aside is deleted');
     assert.equal(fs.existsSync(lockFile(p.proj)), false);
+  });
+
+  // Six drivers start on one project at the same instant (each waits for the same go file, then takes the lock and,
+  // when it got it, holds it for a while). Whatever was there before, exactly one of them holds the lock.
+  const RACER = String.raw`
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [driverFile, project, goFile, outFile] = process.argv.slice(2);
+const { Driver } = await import(pathToFileURL(driverFile).href);
+const d = new Driver({ project }, { stdout: { write() {} }, stderr: { write() {} } });
+d.startedAt = new Date().toISOString();
+d.run = 'race-' + process.pid;
+fs.writeFileSync(outFile + '.ready', '');
+while (!fs.existsSync(goFile)) { /* spin: all racers leave this loop within the same millisecond or two */ }
+const err = d.lock();
+fs.writeFileSync(outFile, JSON.stringify({ pid: process.pid, got: err === null, err }));
+if (err === null) setTimeout(() => {}, 4000);
+`;
+  async function race(prepare) {
+    const p = project({ tasks: [T('A')] });
+    prepare(p);
+    const racer = path.join(p.dir, 'racer.mjs');
+    fs.writeFileSync(racer, RACER);
+    const go = path.join(p.dir, 'go');
+    const outs = Array.from({ length: 6 }, (_, i) => path.join(p.dir, `racer-${i}.json`));
+    const kids = outs.map((out) => spawn(process.execPath, [racer, path.join(REPO, 'scripts', 'lib', 'run', 'driver.mjs'), p.proj, go, out], { stdio: 'ignore', windowsHide: true }));
+    try {
+      const until = Date.now() + 20000;
+      while (!outs.every((o) => fs.existsSync(`${o}.ready`)) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      assert.ok(outs.every((o) => fs.existsSync(`${o}.ready`)), 'all six racers are ready');
+      fs.writeFileSync(go, '');
+      while (!outs.every((o) => fs.existsSync(o) && fs.readFileSync(o, 'utf8')) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      const results = outs.map((o) => JSON.parse(fs.readFileSync(o, 'utf8')));
+      const lock = readLock(p.proj);
+      return { p, results, winners: results.filter((r) => r.got), lock };
+    } finally {
+      for (const k of kids) k.kill();
+    }
+  }
+  const exactlyOne = ({ p, results, winners, lock }, what) => {
+    assert.equal(winners.length, 1, `${what}: ${JSON.stringify(results)}`);
+    assert.equal(lock.pid, winners[0].pid, 'the lock names the one that got it');
+    assert.equal(lock.alive, true);
+    for (const r of results.filter((x) => !x.got)) assert.match(r.err, /another driver runs in this project/, what);
+    assert.deepEqual(fs.readdirSync(path.dirname(lockFile(p.proj))).filter((n) => n.startsWith('run.lock')), ['run.lock'], 'no takeover file is left');
+  };
+  test('six drivers starting at once on a project without a lock: exactly one holds it', async () => {
+    exactlyOne(await race(() => {}), 'no lock');
+  });
+  test('six drivers starting at once on a lock left by a dead driver: exactly one takes it over', async () => {
+    const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8', windowsHide: true });
+    exactlyOne(await race((p) => fs.writeFileSync(lockFile(p.proj), JSON.stringify({ pid: Number(gone.stdout), run: 'old-run', started_at: '2026-11-18T00:00:00Z' }))), 'dead lock');
+  });
+  test('six drivers starting at once on a lock file that cannot be read: exactly one replaces it', async () => {
+    exactlyOne(await race((p) => fs.writeFileSync(lockFile(p.proj), 'not json')), 'unreadable lock');
   });
 
   test('while it runs, the lock names this process and this run', async () => {

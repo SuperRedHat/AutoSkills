@@ -9,7 +9,7 @@ import {
 } from '../run-paths.mjs';
 import { runSession, childEnv, sessionArgs, cliVersion } from './session.mjs';
 import { verifyTask, failureText, headOf, commitsBetween } from './verify.mjs';
-import { taskPrompt, multiPrompt, reworkPrompt, giveUpPrompt } from './prompts.mjs';
+import { taskPrompt, multiPrompt, reworkPrompt, giveUpPrompt, resumePrompt } from './prompts.mjs';
 import { renderReport } from './report.mjs';
 
 /** Waits after the subscription's usage runs out, in minutes; the last one repeats. */
@@ -21,6 +21,16 @@ export const REWORK_ROUNDS = 2;
 /** Rework prompts in a row that create no rework task before the driver gives that rework up. */
 const REWORK_TRIES = 2;
 const FINISHED = ['done', 'awaiting_manual_acceptance'];
+// Taking the lock: how often it is tried, how long a try waits, and how often a lock that does not parse is read
+// again before it counts as broken.
+const LOCK_TRIES = 60;
+const LOCK_PAUSE_MS = 50;
+const LOCK_UNREADABLE_TRIES = 5;
+
+/** Blocks this thread for ms; the lock's short waits happen before anything else runs. */
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 /** End reasons that are normal stop points: exit 0. Every other reason is a brake or an error: exit 1. */
 export const NORMAL_ENDS = Object.freeze(['all_done', 'owner', 'stop_file', 'interrupt', 'until', 'max_tasks']);
@@ -78,34 +88,58 @@ export class Driver {
     const refuse = (held) => `another driver runs in this project (pid ${held.pid}, run ${held.run}, started ${held.started_at}); `
       + `if none does, delete ${file}`;
     fs.mkdirSync(autoDir(this.o.project), { recursive: true });
+    const body = `${JSON.stringify({ pid: process.pid, run: this.run, started_at: this.startedAt }, null, 2)}\n`;
+    // Exclusive create: of several drivers that create the same file, one succeeds.
+    const create = (target, text) => {
+      try {
+        fs.writeFileSync(target, text, { flag: 'wx' });
+        return true;
+      } catch (e) {
+        if (e.code === 'EEXIST') return false;
+        throw e;
+      }
+    };
+    // Two drivers must never both hold the lock, however their steps interleave.
+    // - No lock: the exclusive create is the whole step.
+    // - A lock is there: a live driver's is never touched.
+    // - A lock left behind is replaced by one driver at a time. The takeover file is created exclusively too; only
+    //   inside that section is a lock ever deleted, and only after it was read again there. A lock that does not
+    //   parse may be one that is being written this instant, so it gets a few more reads before it counts as broken.
+    // - The takeover file is never deleted by anyone but the driver that created it: a driver that died inside the
+    //   section leaves it, and the next start says so instead of guessing.
+    const takeover = `${file}.takeover`;
     let taken = false;
-    // Two drivers started at the same moment must not both get the lock. A lock left behind is moved aside by a
-    // rename (only one of them can rename the same file) and the new one is created exclusively (only one create
-    // succeeds); whoever loses a step looks again and finds the winner's lock.
-    for (let attempt = 0; attempt < 5 && !taken; attempt += 1) {
+    for (let attempt = 0; attempt < LOCK_TRIES && !taken; attempt += 1) {
+      if (create(file, body)) { taken = true; break; }
       const held = readLock(this.o.project);
       if (held && held.alive && held.pid !== process.pid) return refuse(held);
-      if (held || fs.existsSync(file)) {
-        const aside = `${file}.${process.pid}.old`;
-        try {
-          fs.renameSync(file, aside);
-        } catch (e) {
-          if (e.code === 'ENOENT') continue;
-          throw e;
-        }
-        fs.rmSync(aside, { force: true });
-        if (held) this.notes.push(`接手了旧锁：pid ${held.pid} 的驱动（运行 ${held.run}，${held.started_at} 开始）已经不在了。`);
-      }
+      if (!create(takeover, `${process.pid}\n`)) { pause(LOCK_PAUSE_MS); continue; }
       try {
-        fs.writeFileSync(file, `${JSON.stringify({ pid: process.pid, run: this.run, started_at: this.startedAt }, null, 2)}\n`, { flag: 'wx' });
-        taken = true;
-      } catch (e) {
-        if (e.code !== 'EEXIST') throw e;
+        let again = readLock(this.o.project);
+        for (let i = 0; !again && fs.existsSync(file) && i < LOCK_UNREADABLE_TRIES; i += 1) {
+          pause(LOCK_PAUSE_MS);
+          again = readLock(this.o.project);
+        }
+        if (again && again.alive && again.pid !== process.pid) return refuse(again);
+        let note = null;
+        if (fs.existsSync(file)) {
+          fs.rmSync(file, { force: true, maxRetries: 5, retryDelay: 20 });
+          note = again
+            ? `接手了旧锁：pid ${again.pid} 的驱动（运行 ${again.run}，${again.started_at} 开始）已经不在了。`
+            : '换掉了一个读不出来的锁文件。';
+        }
+        if (create(file, body)) {
+          taken = true;
+          if (note) this.notes.push(note);
+        }
+      } finally {
+        fs.rmSync(takeover, { force: true });
       }
     }
     if (!taken) {
       const held = readLock(this.o.project);
-      return held ? refuse(held) : `could not take the lock ${file}; try again`;
+      if (held && held.alive && held.pid !== process.pid) return refuse(held);
+      return `could not take the lock ${file}${fs.existsSync(takeover) ? `: a driver that was replacing an old lock left ${takeover}; if no driver is starting now, delete that file` : ''}; try again`;
     }
     this.locked = true;
     // `stop` writes the stop file only while a driver runs, and the driver deletes it when it ends; one found now was
@@ -148,7 +182,7 @@ export class Driver {
     // A task in hand: in progress, or left at auto_verified by a session that ended between that step and the next
     // one (done or awaiting acceptance). Neither is ready by the server's rule, so without this nobody would finish it.
     const going = [...inProgress(tasks), ...tasks.filter((t) => t.status === 'auto_verified')].find(usable);
-    if (going) return named(going, 'task');
+    if (going) return going.status === 'auto_verified' ? { kind: 'task', taskId: going.id, prompt: resumePrompt(going.id) } : named(going, 'task');
     const ready = readyTasks(tasks, { awaitingBlocks: this.settings.awaiting_blocks_downstream }).find(usable);
     if (ready) return named(ready, 'task');
     const open = tasks.filter((t) => !CLOSED.includes(t.status));
