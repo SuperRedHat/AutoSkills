@@ -63,7 +63,7 @@
 claude --strict-mcp-config --mcp-config <空配置文件> --model <模型> --effort <档位> "<提示词>"
 ```
 
-- `<空配置文件>` 是一个只有 `{"mcpServers": {}}` 的 JSON 文件，放在仓库外面（比如主检出里不进 git 的目录）。`--strict-mcp-config` 让会话只用这个文件里的服务，于是一个都不起。
+- `<空配置文件>` 是一个只有 `{"mcpServers": {}}` 的 JSON 文件，放在不进 git 的地方（比如主检出里被 git 忽略的目录）。`--strict-mcp-config` 让会话只用这个文件里的服务，于是一个都不起。
 - 在那一块的 worktree 目录里启动。提示词一句话就够，比如“你是手动并行的窗口 T（块名 t）。照 docs/windows/finish/t-text.md 做，先读 docs/windows/finish/README.md。”
 - 取多个值的选项（`--mcp-config`、`--add-dir`、`--disallowedTools`）后面不能直接跟提示词，否则提示词会被当成它的又一个值。在它和提示词之间先放一个只取一个值的选项，比如 `--model` 或 `--effort`。
 - 钩子照常跑。窗口启动时 SessionStart 钩子仍会提示“先设项目目录”，说明文件里那句“没有账本工具是有意的”就是为这个写的。
@@ -72,6 +72,8 @@ claude --strict-mcp-config --mcp-config <空配置文件> --model <模型> --eff
 
 ## 几种意外
 
+下面四种，收尾这一批都没有碰到。写的是打算怎么处理，**未试**。
+
 - **窗口中断**：它是完整的会话，在那个目录里 `claude --continue` 接着做；没提交的改动还在。
 - **某块没做完，想先合别的**：照常收做完的那几块；没做完的块任务保持进行中，备注改成实际的情况，联调任务等它。
 - **合并冲突**：说明文件分好了范围，正常不会有。有的话，纯机械的主控直接解，别的并进联调任务。
@@ -79,4 +81,4 @@ claude --strict-mcp-config --mcp-config <空配置文件> --model <模型> --eff
 
 ## 例子
 
-AutoSkills 3.0 收尾这一批（AS3-364 到 AS3-372）就是照这个做法做的：契约任务 AS3-364，三个块任务 AS3-365 到 AS3-367，主控收窗口是 AS3-368。共用约定和三份说明文件在 `docs/windows/finish/`，实测情况在同一目录的 `result.md`（主控收完以后写）。
+AutoSkills 3.0 收尾这一批（AS3-364 到 AS3-372）就是照这个做法做的：契约任务 AS3-364，三个块任务 AS3-365 到 AS3-367，主控收窗口是 AS3-368。只有一处和上面的步骤不同：完成信号没有等负责人回话，主控用后台循环看三块的完成标记，标记齐了就开始收。共用约定和三份说明文件在 `docs/windows/finish/`，实测情况在同一目录的 `result.md`。
