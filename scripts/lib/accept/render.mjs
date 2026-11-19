@@ -29,7 +29,7 @@ const DIRTY_SHOWN = 20;
 /** How one verification command ended: its exit code, or why there is none. */
 const endWords = (c) => {
   if (c.timed_out) return '超时没跑完';
-  if (c.exit_code === null || c.exit_code === undefined) return c.error ? `没能启动：${c.error}` : '没能启动';
+  if (c.exit_code === null || c.exit_code === undefined) return c.error ? `没能启动：${c.error}` : '被中途结束，没有退出码';
   return String(c.exit_code);
 };
 

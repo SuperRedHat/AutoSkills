@@ -19,10 +19,28 @@ Options:
 Exit codes: 0 done, 1 failed (no ledger, unreadable ledger, cannot write), 2 usage error.
 `;
 
-/** True when `file` is `dir` itself or lies below it. */
+/**
+ * Where a path really leads, for a file that may not exist yet: its nearest existing ancestor with links, junctions
+ * and short names resolved, and the rest of the path after it.
+ */
+function realPathOf(file) {
+  let cur = path.resolve(file);
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(cur), ...rest);
+    } catch { /* not there: try the folder above */ }
+    const up = path.dirname(cur);
+    if (up === cur) return path.join(cur, ...rest);
+    rest.unshift(path.basename(cur));
+    cur = up;
+  }
+}
+
+/** True when `file` is `dir` itself or lies below it, by where both really lead. */
 const within = (file, dir) => {
-  const rel = path.relative(dir, file);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  const rel = path.relative(realPathOf(dir), realPathOf(file));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 };
 
 /** Group the waiting tasks by module and order them: gates first, then most unblocked, then ledger order. */

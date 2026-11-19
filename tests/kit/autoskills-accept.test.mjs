@@ -163,6 +163,7 @@ describe('driver verification', () => {
         { command: 'node slow.mjs', exit_code: null, timed_out: true, log: 'logs/2.log' },
         { command: 'node gone.mjs', exit_code: null, error: 'spawn ENOENT', log: 'logs/3.log' },
         { command: 'node bad.mjs', exit_code: 3, log: 'logs/4.log' },
+        { command: 'node killed.mjs', exit_code: null, timed_out: false, error: null, log: 'logs/5.log' },
       ],
     });
     const { html } = await run([dir]);
@@ -170,6 +171,8 @@ describe('driver verification', () => {
     assert.match(html, /node slow\.mjs<\/code><\/td><td>超时没跑完<\/td><td>logs\/2\.log/);
     assert.match(html, /node gone\.mjs<\/code><\/td><td>没能启动：spawn ENOENT<\/td><td>logs\/3\.log/);
     assert.match(html, /node bad\.mjs<\/code><\/td><td>3<\/td><td>logs\/4\.log/);
+    // Ended from outside (no exit code, no timeout, no start error): it did start, so the page does not say it did not.
+    assert.match(html, /node killed\.mjs<\/code><\/td><td>被中途结束，没有退出码<\/td><td>logs\/5\.log/);
   });
   test('a record without a readable passed is treated as no record', async () => {
     const dir = project([W('A')]);
@@ -234,6 +237,34 @@ describe('options', () => {
       assert.ok(target === ledger || !fs.existsSync(target), `${target} was not written`);
     }
     assert.equal(fs.readFileSync(ledger, 'utf8'), before);
+  });
+  test('--out is judged by where the path really leads: a junction into the ledger folder, another spelling, a ..name file', async () => {
+    const dir = project([W('A')]);
+    const ledger = path.join(stateDir(dir), 'tasks.json');
+    const before = fs.readFileSync(ledger, 'utf8');
+    // A file whose name only starts with two dots is still inside the folder.
+    const dotted = path.join(stateDir(dir), '..sheet.html');
+    assert.equal((await run([dir, '--out', dotted])).code, 2);
+    assert.equal(fs.existsSync(dotted), false);
+    // A junction (a directory link that needs no privilege on Windows) or a symlink that leads into the ledger folder.
+    const link = path.join(dir, 'elsewhere');
+    let linked = true;
+    try { fs.symlinkSync(stateDir(dir), link, 'junction'); } catch { linked = false; }
+    if (linked) {
+      const r = await run([dir, '--out', path.join(link, 'tasks.json')]);
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /ledger folder/);
+      assert.equal((await run([dir, '--out', path.join(link, 'new.html')])).code, 2);
+      assert.equal(fs.existsSync(path.join(stateDir(dir), 'new.html')), false);
+    }
+    if (process.platform === 'win32') {
+      assert.equal((await run([dir, '--out', path.join(dir, '.CLAUDE', 'STATE', 'tasks.json')])).code, 2, 'another letter case is the same folder on Windows');
+    }
+    assert.equal(fs.readFileSync(ledger, 'utf8'), before);
+    // A folder next to the ledger folder whose name merely starts the same way is not inside it.
+    const near = path.join(dir, '.claude', 'state-notes', 'sheet.html');
+    assert.equal((await run([dir, '--out', near])).code, 0);
+    assert.ok(fs.existsSync(near));
   });
   test('--help exits 0; usage errors exit 2', async () => {
     assert.equal((await run(['--help'])).code, 0);
