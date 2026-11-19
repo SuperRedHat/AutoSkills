@@ -9,6 +9,7 @@ description: 处理用户本人的验收和反馈，可以批量（如"T3.1–T3
 
 ## 1. 开始
 - 本会话还没调过时，用主检出的绝对路径调 `set_project_dir`，再用 `get_server_info` 核对 state_files。
+- 项目里有长跑在跑（`<项目>/.autoskills/run.lock` 里记的进程还活着）时，先请用户停下它再记账：两边同时写账本会丢更新。
 - 原话：用户这条消息的原文。
 - 时间：用命令读当前时间（PowerShell：`Get-Date -Format o`），不凭记忆写。
 - 会话 id：
@@ -44,7 +45,7 @@ description: 处理用户本人的验收和反馈，可以批量（如"T3.1–T3
 
 ## 6. 记一条 decision
 - 推进之后 `add_log`：type 写 "acceptance"，kind 写 "decision"；message 写原话（逐字）、会话 id、时间，以及通过、驳回、失败、跳过的任务；entities 写成对象，如 `{"accepted": ["T3.1"], "rejected": ["T3.3"], "failed": [], "skipped": [], "session_id": "<id 或 未知>", "at": "<时间>"}`。一条消息记一条。
-- 1.5.1 不核对引文：这份记录只能事后对照会话记录核对，不是身份证明，同一账户下代理也能写出这样的记录。P0 起由 H4 钩子采集用户的每条消息，服务端核对引文。
+- 1.5.1 不核对引文：这份记录只能事后对照会话记录核对，不是身份证明，同一账户下代理也能写出这样的记录。
 - 阶段门禁收口：通过的任务里有 stage_gate=true 的，再记一条 `add_log(type="stage_gate_closed", kind="decision", ...)`，写阶段或里程碑名、任务 id 和原话。账本里的任务全部是 done、cancelled 或 superseded 时，`update_project_info(status="completed")`。
 
 ## 7. 报告，然后接着做

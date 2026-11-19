@@ -1,8 +1,8 @@
 # 部署、回滚和恢复
 
-这份文档讲 AutoSkills 3.0 第 1 批怎么部署到用户级、怎么确认部署生效、怎么回滚，以及钩子坏了怎么恢复。设计依据见 [ADR-006](adr-006-autoskills-3-batch1-serial-kit.md)；下文的命令都在仓库根目录、普通的 Windows PowerShell 5.1 窗口里执行。
+这份文档讲 AutoSkills 3.0 怎么部署到用户级、怎么确认部署生效、怎么回滚，以及钩子坏了怎么恢复。部署脚本是第 1 批写的，设计依据见 [ADR-006](adr-006-autoskills-3-batch1-serial-kit.md)；收尾（[ADR-009](adr-009-autoskills-3-finish.md)）没有改脚本，只是要部署的文字变了（四个技能和审查员定义）。下文的命令都在**主检出**的根目录、普通的 Windows PowerShell 5.1 窗口里执行：本地配置、部署记录和恢复工具都在主检出不进 git 的目录里，在 worktree 里跑会找不到。
 
-**第 1 批只串行**：一个主循环按顺序做，子代理只做只读的活；并行写入、无人值守长跑和额度续跑都在 P0 之后。同一个项目同一时间只让一个进程写账本，不要 Claude 和 Codex 同时写。
+**同一个项目同一时间只让一个进程写账本**：不要 Claude 和 Codex 同时写；长跑驱动（`scripts/autoskills.mjs run`）跑着的时候，也不要在同一个项目里另开会话记账。长跑、停、验收包三条命令是仓库里的脚本，不在部署的范围里。
 
 ---
 
@@ -33,7 +33,7 @@
 - **合并**（只动套件的键，其余保留）：`~/.claude/settings.json`、`~/.codex/config.toml`、`~/.workflow-core/policies/workflow-rules.md`。
 - **pushurl**：项目根目录下所有有远端的仓库设 `remote.<name>.pushurl = no_push`；登记的只读目录和测量仓库跳过。
 - **删除**：只删旧的 project-* 副本（`~/.claude/skills` 里已退役的那几个，`~/.codex/skills`、`~/.codex/agents/skills`、`~/.workflow-core/skills` 和已不再支持的平台目录里的旧副本），pdf、playwright 等其他技能一律不动。名字以 `{` 开头的目录（失败的花括号展开）只列出，不删。3 个引用已退役技能的旧 agents（`~/.claude/agents/` 里的 code-reviewer、researcher、tester）只在 `--retire-legacy-agents` 下先备份再删。
-- **从不碰**：`~/.claude.json`、project-manager 的 dist、`verification-profiles.json` 和 `acceptance-matrix.json`、project-manager 的 MCP 注册（第 1 批仍是 1.5.1，用系统 Node 启动）。
+- **从不碰**：`~/.claude.json`、project-manager 的 dist、`verification-profiles.json` 和 `acceptance-matrix.json`、project-manager 的 MCP 注册（仍是 1.5.1，用系统 Node 启动）。
 - **只列不改**：各项目 CLAUDE.md、AGENTS.md 里引用旧技能的行，由检查脚本第 6 项列出并给一行替换建议，改不改由你定。
 
 ---
@@ -48,7 +48,7 @@
   | Git | 部署时读写各仓库的 pushurl |
   | 系统 Node 20+ | 构建和运行 project-manager，跑所有脚本 |
   | 便携 Node 24.22.2（win-x64） | 解压到 `_private/rt/node-v24.22.2-win-x64/`，钩子用它启动；bootstrap 缺它时会打印下载地址和 SHA-256 核对步骤 |
-  | Windows PowerShell 5.1 | 第 1 批只在 Windows 上部署和测过 |
+  | Windows PowerShell 5.1 | 只在 Windows 上部署和测过 |
   | Claude Code、Codex 桌面版 | 至少装一个；bootstrap 跳过没装的那个 |
   | 第 0 步恢复工具 `restore.mjs` | **不在仓库里**，只在本机私有目录 `_private/redesign-2026-10/step0/`；本地配置的 `restore_tool` 指向它。没有它，`--apply`、`--drill` 和 `--rollback` 都以退出 2 停下（自动回滚和手动回滚都要用它）。新机器上要先从原机器拷过来 |
 
