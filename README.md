@@ -1,8 +1,13 @@
 # AutoSkills
 
-> Claude Code 和 Codex 共用的一套项目工作流：一份短的自主契约、7 个 `project-*` 技能、护栏钩子、两个平台的设置片段，加上部署、检查和 lint 脚本。任务状态存在 `project-manager` MCP 账本里（第 1 批仍是 1.5.1）。
+> Claude Code 和 Codex 共用的一套项目工作流：一份短的自主契约、7 个 `project-*` 技能、护栏钩子、两个平台的设置片段，三条在会话外面跑的命令（长跑、停、验收包），加上部署、检查和 lint 脚本。任务状态存在 `project-manager` MCP 账本里（1.5.1）。
 
-当前是 **AutoSkills 3.0 第 1 批**：只改文字和配置，**只串行**——一个主循环按顺序做，子代理只做只读的活；并行写入、无人值守长跑、额度续跑和账本改造都在 P0 之后。设计决定和取舍见 [ADR-006](docs/adr-006-autoskills-3-batch1-serial-kit.md)，部署和回滚见 [docs/deploy.md](docs/deploy.md)。
+当前是 **AutoSkills 3.0**。它由两部分组成：
+
+- **第 1 批**（2026-11-01 部署）：串行的契约、技能、钩子和部署脚本。一个主循环按顺序做，子代理只做只读的活。设计决定见 [ADR-006](docs/adr-006-autoskills-3-batch1-serial-kit.md)。
+- **收尾**（2026-11-19）：在上面加了三样。长跑驱动让任务一个接一个做下去，不用守着（[docs/run.md](docs/run.md)）；验收包把等你验收的任务排成一页（[docs/accept.md](docs/accept.md)）；手动并行是一套开几个窗口同时做的做法，只有文字（[docs/manual-parallel.md](docs/manual-parallel.md)）。设计决定见 [ADR-009](docs/adr-009-autoskills-3-finish.md)。
+
+默认仍然串行。自动并行和账本改造做到试点为止，已存档，不接着做。部署和回滚见 [docs/deploy.md](docs/deploy.md)。
 
 ---
 
@@ -10,6 +15,7 @@
 
 - [共用契约](#共用契约)
 - [7 个技能](#7-个技能)
+- [三条命令](#三条命令)
 - [护栏](#护栏)
 - [两个平台的设置](#两个平台的设置)
 - [部署和检查](#部署和检查)
@@ -49,7 +55,23 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 | **project-consult** | 要外部第二意见时，在项目文件夹里写一份自包含的提示词，由你自己复制过去；你把回答贴回来后逐条核实再记进账本 | “问问 Pro”“要个第二意见”“写个咨询提示词” |
 | **project-quick** | 小事快修：不碰门禁和接口、一次提交就能回滚、不需要重型套件时用；超出就转成正式任务 | “顺手修一下”“小改一下”“快修” |
 
-有风险的任务和里程碑，由只读的独立校验者按原始验收标准审查：Claude 用 `project-verifier` 子代理（`config/claude/agents/project-verifier.md`，只给读工具）；Codex 先由主线程只读核对。旧版的其余技能已退役，退役说明见 ADR-006 §2.2；部署时会删掉用户级的旧副本。
+有风险的任务和里程碑，由只读的独立校验者按原始验收标准审查：Claude 用 `project-verifier` 子代理（`config/claude/agents/project-verifier.md`，只给读工具）；Codex 先由主线程只读核对。找不到证据的条目就是没满足，只有一个例外：任务做完会停下等你验收时，只有你本人能确认的条目留给你验收（ADR-009 §2.13）。旧版的其余技能已退役，退役说明见 ADR-006 §2.2；部署时会删掉用户级的旧副本。
+
+---
+
+## 三条命令
+
+在**普通的 PowerShell 窗口**里敲，不在 Claude Code 或 Codex 的会话里敲。它们是仓库里的脚本，不部署到用户级；目前只支持 Claude Code。
+
+| 命令 | 作用 | 说明 |
+|---|---|---|
+| `node scripts/autoskills.mjs run <项目目录>` | 长跑驱动：每个任务开一个全新的无头会话去做，会话结束后在提交好的代码上把任务的验证命令再跑一遍，到停点就停，留一份报告 | [docs/run.md](docs/run.md) |
+| `node scripts/autoskills.mjs stop <项目目录>` | 让正在跑的驱动做完手上的任务后停 | 同上 |
+| `node scripts/autoskills.mjs accept <项目目录>` | 验收包：把等你验收的任务排成一页 HTML，不起会话，不花 token | [docs/accept.md](docs/accept.md) |
+
+- 驱动和验收包都**只读账本**。任务状态仍由会话里的技能改；验收仍要你本人在会话里点名任务说通过或驳回。
+- 驱动跑着的时候，不要在同一个项目里另开会话记账：账本没有锁，两边同时写会丢更新。
+- 想让一个阶段里互不相干的几块同时做，见 [docs/manual-parallel.md](docs/manual-parallel.md)：规划时点名并行，主控拆好块、给出每个窗口的启动命令，你开窗口，做完由主控逐块验证、合并、记账。
 
 ---
 
@@ -78,7 +100,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 片段里不含本机路径，用 `<home>`、`<runtime>`、`<node>` 占位，由部署脚本合并；合并只动套件的键，其余内容保留。
 
 - **Claude**（`config/claude/settings.fragment.json`）：`subagentPromptCacheTtl: "1h"`；`worktree.baseRef: "head"`；`CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=6`；上面的 deny 规则和两个钩子。**不设** `CLAUDE_CODE_EFFORT_LEVEL`：设了任何值都会盖过子代理定义里的 effort，检查脚本会查它。
-- **Codex**（`config/codex/config.fragment.toml`、`config/codex/hooks.json`）：`model_reasoning_effort = "medium"`（只管 CLI 和默认值）；`[desktop] followUpQueueMode = "steer"`（运行中说“暂停”能及时送达）；不设 `agents.default_subagent_reasoning_effort`；技能装到 `~/.agents/skills`；守卫注册在 `~/.codex/hooks.json`，要在 Codex 的 /hooks 里信任。线程上限留到 P0。
+- **Codex**（`config/codex/config.fragment.toml`、`config/codex/hooks.json`）：`model_reasoning_effort = "medium"`（只管 CLI 和默认值）；`[desktop] followUpQueueMode = "steer"`（运行中说“暂停”能及时送达）；不设 `agents.default_subagent_reasoning_effort`；技能装到 `~/.agents/skills`；守卫注册在 `~/.codex/hooks.json`，要在 Codex 的 /hooks 里信任。线程上限没有设。
 - **桌面版的用法**：每个新聊天选“完全访问”；规划时可临时选 xhigh，开 `/goal` 前切回执行档位；ultra 只用于又大、又能拆成独立几块、并且有人看着的任务。
 
 ---
@@ -94,6 +116,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 | `scripts/check-kit.mjs` | 只读健康检查，输出 PASS、WARN、FAIL 表；`--report-only` 总是退出 0，部署前用 |
 | `scripts/set-pushurl.mjs` | 给仓库设 `pushurl = no_push`，或按日志恢复；deploy-kit 部署时调用它 |
 | `scripts/lint-kit.mjs` | 套件文本的检查：隐私、工具名、技能格式、旧内容、契约、源码 |
+| `scripts/autoskills.mjs` | 会话外面跑的三条命令：`run`、`stop`、`accept`（见[三条命令](#三条命令)）；不部署 |
 
 新机器的顺序：
 
@@ -105,7 +128,7 @@ node scripts/deploy-kit.mjs --apply                  # 先关掉所有 Claude Co
 node scripts/check-kit.mjs                           # 重开两个平台、在 Codex /hooks 信任钩子之后
 ```
 
-套件自己的测试：`node --test tests/kit/*.test.mjs`，`node scripts/lint-kit.mjs --check all`。
+套件自己的测试：`tests/kit/` 下每个测试文件用 `node --test tests/kit/<文件全名>` 逐个跑，再跑 `node scripts/lint-kit.mjs --check all`。不用通配：`node --test` 的通配匹配不到文件也退出 0。`deploy-kit.test.mjs` 要在没有别的会话调工具时跑，并且只能在主检出跑（它要用不进 git 的恢复工具）。
 
 ---
 
@@ -125,7 +148,11 @@ git push (git remote get-url origin) <分支>
 
 ## 残余风险
 
-如实写明，不承诺隔离（详见 ADR-006 §4）：
+如实写明，不承诺隔离（详见 ADR-006 §4；长跑驱动和验收包带来的见 ADR-009 §4）：
+
+- **长跑时没有人看着**：无头会话在自动模式下跑，守卫钩子和拒绝规则照常生效，但原生 Windows 上没有沙箱。头几次跑完请看报告。
+- **驱动跑着的时候，同一个项目里别的会话不能记账**：账本没有锁，只靠技能里的一句话和验收包页首的提示。
+- **驱动的几条路只在替身测试里走过**：复验没过以后的返工、接着做断在半路的任务、额度用完以后的等待、会话挂死。
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。代理如果在 Codex 上用包裹形式写完整地址推送，pushurl 挡不住，只剩钩子。
@@ -140,7 +167,7 @@ git push (git remote get-url origin) <分支>
 - **Codex 里有守卫看不到的写入工具**：`mcp__node_repl__js`、`mcp__artifact_session__js` 不在 Codex 钩子的 matcher 里；第 1 批子代理只读，所以只记为风险。
 - **Codex 上的独立校验较弱**：默认是主线程自己核对，独立性弱于 Claude 的子代理；单独开 `codex exec` 时，Windows 上只读沙箱的效果没验证过。
 - **验收原话的记录只能事后核对，不是身份证明**：同一账户下代理也能写这份记录。
-- **测量是冒烟级**：基线和第 1 批每组各跑 1 次。
+- **测量是冒烟级**：基线和第 1 批每组各跑 1 次；长跑驱动的真实试跑也只跑了 1 次（[docs/finish-trial.md](docs/finish-trial.md)）。
 
 ---
 
@@ -154,11 +181,15 @@ git push (git remote get-url origin) <分支>
 | `config/codex/` | Codex 的 `config.fragment.toml`、`hooks.json`、`rules/autoskills.rules` |
 | `config/kit-local.example.json` | 本地配置的字段说明（真实值在不进 git 的 `_private/kit-local.json`） |
 | `hooks/` | 守卫 `guard.mjs`、`session-start.mjs` 和 `hook-config.example.json` |
-| `scripts/` | 部署、检查、pushurl、lint、bootstrap 脚本；`scripts/lib/` 是共用的目标映射和 TOML 定向改写 |
+| `scripts/` | 部署、检查、pushurl、lint、bootstrap 脚本和三条命令的入口 `autoskills.mjs`；`scripts/lib/` 是共用的目标映射、TOML 定向改写、只读账本读取（`ledger-read.mjs`）、命令在项目里放文件的位置（`run-paths.mjs`），以及长跑驱动（`run/`）和验收包（`accept/`） |
 | `tests/kit/` | 套件测试（node:test，夹具全部合成） |
-| `mcp/project-manager/` | 账本 MCP 服务端，1.5.1，第 1 批不改；工具清单见 [它的 README](mcp/project-manager/README.md)，版本记录见 [CHANGELOG](mcp/project-manager/CHANGELOG.md) |
+| `mcp/project-manager/` | 账本 MCP 服务端，1.5.1，3.0 没有改它；工具清单见 [它的 README](mcp/project-manager/README.md)，版本记录见 [CHANGELOG](mcp/project-manager/CHANGELOG.md) |
 | `mcp-manifest.json` | MCP 注册的单一真源，bootstrap 读它 |
 | `docs/deploy.md` | 部署、冒烟、回滚和恢复 |
+| `docs/run.md`、`docs/accept.md`、`docs/manual-parallel.md` | 长跑驱动、验收包、手动并行的用法 |
+| `docs/finish-trial.md` | 长跑驱动在测试仓库上的一次真实试跑：每个任务的 token 和用时，和 2026-11-01 的数的对比 |
+| `docs/windows/finish/` | 收尾这一批用三个手动窗口做时的约定、三份窗口说明、探查记录和实测结果，可以当手动并行的例子看 |
 | `docs/adr-006-*.md` | 第 1 批的设计决定、不做的事和残余风险 |
+| `docs/adr-009-*.md` | 收尾的设计决定、不做的事和残余风险 |
 | `docs/adr-001..005-*.md` 和各份报告 | project-manager 1.1–1.5 和旧套件时期的历史记录，按当时的状态理解 |
 | `_private/`（不进 git） | 本机的运行区（便携 Node、已部署的钩子、心跳）、部署记录和备份、本地配置、测量数据 |
