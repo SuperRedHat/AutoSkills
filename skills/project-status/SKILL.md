@@ -22,7 +22,7 @@ description: 只读看进度：完成率、在做什么、卡在哪、等用户�
   - next_task_blocked_reason 不是 none 或 all_done 时，说明是哪种；
   - 依赖被 cancelled 的任务；
   - 只因依赖还在等用户验收而不能开始的任务。
-- 等用户验收：awaiting_manual_acceptance 的任务，逐个列 review_checklist（第一条压成"风险 中，改用户级文件 否"这样一行）。
+- 等用户验收：awaiting_manual_acceptance 的任务，逐个列 review_checklist（第一条压成"风险 中，改用户级文件 否"这样一行）。`<项目>/.autoskills/acceptance/` 下有当天的 HTML 验收包时，在这一段末尾给出它的路径。
 - 预计还要多久（估计）：
   - 从 task_transition 日志算最近完成的任务从 →in_progress 到 →auto_verified 的时长，取中位数，乘以还没完成的 todo 和 in_progress 任务数；
   - 等用户验收的时间不算在内，单独写"另有 n 个等你验收"；
