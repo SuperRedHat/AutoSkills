@@ -3,18 +3,27 @@
 //   acceptCommand(args, io) => exit code     args: <project dir> [--out <file>] [--help]
 import fs from 'node:fs';
 import path from 'node:path';
-import { readLedger, awaitingAcceptance, unblockedBy, hasLedger, LedgerReadError } from '../ledger-read.mjs';
+import { fileURLToPath } from 'node:url';
+import { readLedger, awaitingAcceptance, unblockedBy, hasLedger, stateDir, LedgerReadError } from '../ledger-read.mjs';
 import { acceptanceDir, latestVerify, readLock, stampOf } from '../run-paths.mjs';
 import { renderSheet } from './render.mjs';
+
+const ENTRY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'autoskills.mjs');
 
 const USAGE = `Usage: node scripts/autoskills.mjs accept <project dir> [--out <file>]
   Reads the ledger of the project and writes the tasks waiting for the owner's acceptance as one HTML page
   (default: <project>/.autoskills/acceptance/<stamp>.html). Prints the path. Starts no session, writes no ledger.
 Options:
-  --out <file>   write the page there instead
+  --out <file>   write the page there instead (a file inside the project's ledger folder is refused)
   --help         this text
 Exit codes: 0 done, 1 failed (no ledger, unreadable ledger, cannot write), 2 usage error.
 `;
+
+/** True when `file` is `dir` itself or lies below it. */
+const within = (file, dir) => {
+  const rel = path.relative(dir, file);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+};
 
 /** Group the waiting tasks by module and order them: gates first, then most unblocked, then ledger order. */
 export function arrange(items) {
@@ -62,6 +71,11 @@ export async function acceptCommand(args, io) {
     return 2;
   }
   project = path.resolve(project);
+  // The page never goes into the ledger folder: --out naming a state file would replace the ledger with HTML.
+  if (out !== null && within(path.resolve(out), stateDir(project))) {
+    io.stderr.write(`autoskills accept: --out points into the ledger folder (${stateDir(project)}); choose a file outside it\n\n${USAGE}`);
+    return 2;
+  }
   if (!fs.existsSync(project) || !hasLedger(project)) {
     io.stderr.write(`autoskills accept: no ledger in ${project} (expected .claude/state/tasks.json)\n`);
     return 1;
@@ -89,6 +103,7 @@ export async function acceptCommand(args, io) {
     groups: arrange(items),
     count: items.length,
     running: Boolean(lock && lock.alive),
+    stopCommand: `node "${ENTRY}" stop "${project}"`,
   });
   const file = path.resolve(out ?? path.join(acceptanceDir(project), `${stampOf(now)}.html`));
   try {

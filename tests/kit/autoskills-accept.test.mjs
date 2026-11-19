@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { acceptCommand } from '../../scripts/lib/accept/cli.mjs';
 import { stateDir } from '../../scripts/lib/ledger-read.mjs';
 
@@ -63,6 +64,26 @@ describe('grouping and order', () => {
     const { html } = await run([dir]);
     assert.match(html, /B the next one/);
   });
+  test('a tie keeps the ledger order; more unblocked still goes first', async () => {
+    // A and B each unblock one task, C unblocks two, D and E none: C, then A before B, then D before E.
+    const dir = project([
+      W('D'), W('A'), W('E'), W('B'), W('C'),
+      T('P', { dependencies: ['A'] }), T('Q', { dependencies: ['B'] }), T('R', { dependencies: ['C'] }), T('S', { dependencies: ['C'] }),
+    ]);
+    const { html } = await run([dir]);
+    const order = ['C task C', 'A task A', 'B task B', 'D task D', 'E task E'].map((s) => at(html, s));
+    assert.ok(order.every((n) => n > 0), 'all tasks are on the page');
+    assert.deepEqual([...order].sort((a, b) => a - b), order);
+  });
+  test('a group stands where its first-ranked task stands, not where its module first shows in the ledger', async () => {
+    // Module x comes first in the ledger, but the gate is in module y: y is the first group.
+    const dir = project([W('A', { module: 'x' }), W('B', { module: 'y', stage_gate: true }), W('C', { module: 'x' })]);
+    const { html } = await run([dir]);
+    assert.ok(at(html, '<h2>y</h2>') > 0 && at(html, '<h2>x</h2>') > 0);
+    assert.ok(at(html, '<h2>y</h2>') < at(html, '<h2>x</h2>'));
+    assert.ok(at(html, 'B task B') < at(html, 'A task A'));
+    assert.ok(at(html, 'A task A') < at(html, 'C task C'));
+  });
 });
 
 describe('escaping', () => {
@@ -106,6 +127,68 @@ describe('driver verification', () => {
     assert.match(html, /logs\/x\.log/);
     assert.match(html, /没有复验记录/);
   });
+  // The block of one task on the page: from its heading to the next card.
+  const block = (html, id) => {
+    const from = html.indexOf(`<h3>${id} `);
+    const to = html.indexOf('<section class="card">', from);
+    return html.slice(from, to < 0 ? undefined : to);
+  };
+  test('passed: null (a task with no verification commands) is "not run", never a suggested rejection', async () => {
+    const dir = project([W('A')]);
+    rec(dir, 'r1', 'A', { passed: null, clean: true, commit: 'abc', commands: [], reason: 'the task has no verification commands' });
+    const { html } = await run([dir]);
+    assert.match(html, /驱动复验：没有跑，任务没有验证命令/);
+    assert.ok(!html.includes('建议驳回'));
+    assert.ok(!html.includes('驱动复验：没过'));
+  });
+  test('an unclean tree says why and lists the files; a failed git status says so', async () => {
+    const dir = project([W('A'), W('B')]);
+    rec(dir, 'r1', 'A', { passed: false, clean: false, commit: 'abc', commands: [], reason: 'the working tree is not clean (2 file(s) not committed)', dirty: ['?? src/new <file>.mjs', ' M src/old.mjs'] });
+    rec(dir, 'r1', 'B', { passed: false, clean: false, commit: 'abc', commands: [], reason: 'git status failed', dirty: [] });
+    const { html } = await run([dir]);
+    const a = block(html, 'A');
+    assert.match(a, /驱动复验：没过，建议驳回/);
+    assert.match(a, /工作目录不干净，有 2 个文件没提交/);
+    assert.ok(a.includes('?? src/new &lt;file&gt;.mjs'));
+    assert.ok(a.includes('M src/old.mjs'));
+    const b = block(html, 'B');
+    assert.match(b, /驱动复验：没过，建议驳回/);
+    assert.match(b, /没能检查工作目录/);
+  });
+  test('a command that timed out or could not start says so instead of an empty exit code', async () => {
+    const dir = project([W('A')]);
+    rec(dir, 'r1', 'A', {
+      passed: false, clean: true, commit: 'abc', commands: [
+        { command: 'node ok.mjs', exit_code: 0, log: 'logs/1.log' },
+        { command: 'node slow.mjs', exit_code: null, timed_out: true, log: 'logs/2.log' },
+        { command: 'node gone.mjs', exit_code: null, error: 'spawn ENOENT', log: 'logs/3.log' },
+        { command: 'node bad.mjs', exit_code: 3, log: 'logs/4.log' },
+      ],
+    });
+    const { html } = await run([dir]);
+    assert.ok(!html.includes('node ok.mjs'), 'a command that passed is not listed');
+    assert.match(html, /node slow\.mjs<\/code><\/td><td>超时没跑完<\/td><td>logs\/2\.log/);
+    assert.match(html, /node gone\.mjs<\/code><\/td><td>没能启动：spawn ENOENT<\/td><td>logs\/3\.log/);
+    assert.match(html, /node bad\.mjs<\/code><\/td><td>3<\/td><td>logs\/4\.log/);
+  });
+  test('a record without a readable passed is treated as no record', async () => {
+    const dir = project([W('A')]);
+    rec(dir, 'r1', 'A', { commit: 'abc', commands: [] });
+    const { html } = await run([dir]);
+    assert.match(html, /复验记录不完整/);
+    assert.ok(!html.includes('建议驳回'));
+  });
+});
+
+describe('the reply example', () => {
+  test('one waiting task is named once; two are named together', async () => {
+    const one = (await run([project([W('A')])])).html;
+    assert.match(one, /<li>A 通过<\/li>/);
+    assert.ok(!one.includes('A、A'));
+    assert.match(one, /<li>A 驳回：&lt;原因&gt;<\/li>/);
+    const two = (await run([project([W('A'), W('B')])])).html;
+    assert.match(two, /<li>A、B 通过<\/li>/);
+  });
 });
 
 describe('the lock', () => {
@@ -116,7 +199,11 @@ describe('the lock', () => {
   test('a live lock warns, a dead lock and no lock do not', async () => {
     const live = project([W('A')]);
     lock(live, process.pid);
-    assert.match((await run([live])).html, /有长跑正在跑/);
+    const warned = (await run([live])).html;
+    assert.match(warned, /有长跑正在跑/);
+    // The stop command on the page can be pasted as it is: the kit's entry, the command, this project.
+    const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'autoskills.mjs');
+    assert.ok(warned.includes(`node &quot;${entry}&quot; stop &quot;${live}&quot;`), 'the stop command names the entry and the project');
     const dead = project([W('A')]);
     lock(dead, 2 ** 22 + 12345);
     assert.ok(!(await run([dead])).html.includes('有长跑正在跑'));
@@ -135,6 +222,18 @@ describe('options', () => {
     const d = await run([dir]);
     assert.ok(d.stdout.trim().startsWith(path.join(dir, '.autoskills', 'acceptance')));
     assert.ok(d.stdout.trim().endsWith('.html'));
+  });
+  test('--out inside the ledger folder is refused and the ledger stays as it was', async () => {
+    const dir = project([W('A')]);
+    const ledger = path.join(stateDir(dir), 'tasks.json');
+    const before = fs.readFileSync(ledger, 'utf8');
+    for (const target of [ledger, path.join(stateDir(dir), 'sheet.html'), path.join(dir, '.claude', 'state', 'sub', 'x.html')]) {
+      const r = await run([dir, '--out', target]);
+      assert.equal(r.code, 2, target);
+      assert.match(r.stderr, /ledger folder/);
+      assert.ok(target === ledger || !fs.existsSync(target), `${target} was not written`);
+    }
+    assert.equal(fs.readFileSync(ledger, 'utf8'), before);
   });
   test('--help exits 0; usage errors exit 2', async () => {
     assert.equal((await run(['--help'])).code, 0);

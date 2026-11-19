@@ -23,17 +23,38 @@ const list = (items, tag = 'ul') => (items.length
   ? `<${tag}>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</${tag}>`
   : '<p class="meta">（无）</p>');
 
+/** Uncommitted files listed on the page when the driver found the working tree unclean. */
+const DIRTY_SHOWN = 20;
+
+/** How one verification command ended: its exit code, or why there is none. */
+const endWords = (c) => {
+  if (c.timed_out) return '超时没跑完';
+  if (c.exit_code === null || c.exit_code === undefined) return c.error ? `没能启动：${c.error}` : '没能启动';
+  return String(c.exit_code);
+};
+
+// The driver's record (scripts/lib/run/verify.mjs) has three outcomes: passed true; passed false (a command failed,
+// or the tree was not clean and no command ran); passed null (the task has no verification commands, so nothing ran
+// and nothing failed). Only passed false suggests a rejection.
 function verifyBlock(v) {
   if (!v) return '<p class="meta">驱动复验：没有复验记录。</p>';
   const when = esc(v.at ?? '');
   const commit = v.commit ? `，提交 ${esc(String(v.commit).slice(0, 12))}` : '';
-  if (v.passed) return `<p class="ok">驱动复验：通过（${when}${commit}）。</p>`;
+  if (v.passed === true) return `<p class="ok">驱动复验：通过（${when}${commit}）。</p>`;
+  if (v.passed === null) return `<p class="meta">驱动复验：没有跑，任务没有验证命令（${when}${commit}）。</p>`;
+  if (v.passed !== false) return '<p class="meta">驱动复验：复验记录不完整，当作没有复验记录。</p>';
+  const head = `<p class="bad">驱动复验：没过，建议驳回（${when}${commit}）。</p>`;
+  if (v.clean === false) {
+    const dirty = Array.isArray(v.dirty) ? v.dirty : [];
+    if (!dirty.length) return `${head}<p>原因：没能检查工作目录（git status 失败），验证命令没有跑。</p>`;
+    const shown = dirty.slice(0, DIRTY_SHOWN);
+    const more = dirty.length > shown.length ? `下面是前 ${shown.length} 个。` : '';
+    return `${head}<p>原因：工作目录不干净，有 ${dirty.length} 个文件没提交，验证命令没有跑。${more}</p>${list(shown)}`;
+  }
   const failed = (Array.isArray(v.commands) ? v.commands : []).filter((c) => c && c.exit_code !== 0);
-  const rows = failed.map((c) => `<tr><td><code>${esc(c.command)}</code></td><td>${esc(c.exit_code)}</td><td>${esc(c.log ?? '')}</td></tr>`).join('');
-  const table = failed.length
-    ? `<div class="scroll"><table><tr><th>没过的命令</th><th>退出码</th><th>日志位置</th></tr>${rows}</table></div>`
-    : '';
-  return `<p class="bad">驱动复验：没过，建议驳回（${when}${commit}）。</p>${table}`;
+  if (!failed.length) return head;
+  const rows = failed.map((c) => `<tr><td><code>${esc(c.command)}</code></td><td>${esc(endWords(c))}</td><td>${esc(c.log ?? '')}</td></tr>`).join('');
+  return `${head}<div class="scroll"><table><tr><th>没过的命令</th><th>退出码</th><th>日志位置</th></tr>${rows}</table></div>`;
 }
 
 function taskBlock({ task, unblocks, verify }) {
@@ -51,17 +72,22 @@ ${verifyBlock(verify)}
 </section>`;
 }
 
-export function renderSheet({ project, generatedAt, groups, count, running }) {
+/** The stop command as the page shows it when the caller does not know the kit's and the project's folders. */
+const STOP_FORM = 'node <套件目录>/scripts/autoskills.mjs stop <项目目录>';
+
+export function renderSheet({ project, generatedAt, groups, count, running, stopCommand = STOP_FORM }) {
   const all = groups.flatMap((g) => g.tasks.map((t) => t.task.id));
-  const [a, b] = [all[0] ?? 'T1', all[1] ?? all[0] ?? 'T2'];
+  const first = esc(all[0] ?? 'T1');
+  // The example names real tasks: two when two wait, one when one waits (never the same task twice).
+  const passLine = all.length > 1 ? `${first}、${esc(all[1])} 通过` : `${first} 通过`;
   const body = count === 0
     ? '<p>没有等你验收的任务。</p>'
     : groups.map((g) => `<h2>${esc(g.module)}</h2>\n${g.tasks.map(taskBlock).join('\n')}`).join('\n');
   const reply = count === 0 ? '' : `<div class="reply"><strong>看完直接回一句，要点名任务：</strong>
-<ul><li>${esc(a)}、${esc(b)} 通过</li><li>${esc(a)} 驳回：&lt;原因&gt;</li></ul>
+<ul><li>${passLine}</li><li>${first} 驳回：&lt;原因&gt;</li></ul>
 <span class="meta">不点名的“都通过”验收技能不认。</span></div>`;
   const warn = running
-    ? '<div class="warn">有长跑正在跑：先停下长跑（<code>autoskills stop</code>）再验收，两边同时写账本会丢更新。</div>'
+    ? `<div class="warn">有长跑正在跑：先停下长跑再验收，两边同时写账本会丢更新。停的命令（它做完手上的任务后结束）：<div class="scroll"><code>${esc(stopCommand)}</code></div></div>`
     : '';
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
