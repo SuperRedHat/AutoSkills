@@ -99,14 +99,17 @@ export class Driver {
         throw e;
       }
     };
-    // Two drivers must never both hold the lock, however their steps interleave.
+    // Two drivers must not both hold the lock.
     // - No lock: the exclusive create is the whole step.
     // - A lock is there: a live driver's is never touched.
     // - A lock left behind is replaced by one driver at a time. The takeover file is created exclusively too; only
-    //   inside that section is a lock ever deleted, and only after it was read again there. A lock that does not
-    //   parse may be one that is being written this instant, so it gets a few more reads before it counts as broken.
+    //   inside that section is a lock ever deleted, and only the one that was read there: a dead driver's, or a file
+    //   that was there and did not parse on any of several reads (a lock is unreadable for an instant while its
+    //   driver writes it). A lock that was not there at a read is not deleted, whatever appears under the name after.
     // - The takeover file is never deleted by anyone but the driver that created it: a driver that died inside the
-    //   section leaves it, and the next start says so instead of guessing.
+    //   section leaves it, and a later start that cannot take over says so instead of guessing.
+    // What this does not cover: a driver that stalls between creating its lock file and writing it for longer than
+    // the re-reads take (LOCK_UNREADABLE_TRIES x LOCK_PAUSE_MS) can have its lock taken for a broken one.
     const takeover = `${file}.takeover`;
     let taken = false;
     for (let attempt = 0; attempt < LOCK_TRIES && !taken; attempt += 1) {
@@ -116,13 +119,15 @@ export class Driver {
       if (!create(takeover, `${process.pid}\n`)) { pause(LOCK_PAUSE_MS); continue; }
       try {
         let again = readLock(this.o.project);
-        for (let i = 0; !again && fs.existsSync(file) && i < LOCK_UNREADABLE_TRIES; i += 1) {
+        let broken = !again && fs.existsSync(file);
+        for (let i = 0; broken && i < LOCK_UNREADABLE_TRIES; i += 1) {
           pause(LOCK_PAUSE_MS);
           again = readLock(this.o.project);
+          broken = !again && fs.existsSync(file);
         }
         if (again && again.alive && again.pid !== process.pid) return refuse(again);
         let note = null;
-        if (fs.existsSync(file)) {
+        if (again || broken) {
           fs.rmSync(file, { force: true, maxRetries: 5, retryDelay: 20 });
           note = again
             ? `接手了旧锁：pid ${again.pid} 的驱动（运行 ${again.run}，${again.started_at} 开始）已经不在了。`
