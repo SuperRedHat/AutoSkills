@@ -19,7 +19,7 @@
 - [护栏](#护栏)
 - [两个平台的设置](#两个平台的设置)
 - [部署和检查](#部署和检查)
-- [你自己怎么推送](#你自己怎么推送)
+- [怎么推送](#怎么推送)
 - [残余风险](#残余风险)
 - [目录说明](#目录说明)
 
@@ -29,7 +29,7 @@
 
 两个平台读同一份契约（`templates/global-AGENTS.md`，约 50 行），部署到 `~/.claude/AGENTS.md` 和 `~/.codex/AGENTS.md`；`~/.claude/CLAUDE.md` 只写 `@AGENTS.md` 加几行 Claude 专属内容（`templates/global-claude-CLAUDE.md`）。要点：
 
-- **优先级**：平台约束和零例外规则（不 push、不发布、不对外发送、不改只读目录、不访问客户数据）最先，其余按本轮指令 > 项目契约 > 本契约 > 技能步骤。
+- **优先级**：平台约束和零例外规则（不发布、不对外发送、不改只读目录、不访问客户数据）最先；推送默认不做，要你本人在确认窗里点同意才推；其余按本轮指令 > 项目契约 > 本契约 > 技能步骤。
 - **执行循环**：取就绪任务 → 实现 → 按风险验证 → 提交 → 记录 → 取下一个，直到停点。
 - **停点只有五种**：本轮做完；只剩用户本人能定的事；真的卡住；预算或截止时间到；用户说暂停或控制器出错。
 - **证据**：只认本会话里实际执行的命令，写明命令、退出码和日志位置；提交号从 git 读取，不得编造。
@@ -80,14 +80,14 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 同一个 Windows 账户下，护栏只防误操作，不承诺隔离（见[残余风险](#残余风险)）。
 
 - **守卫钩子** `hooks/guard.mjs`（PreToolUse，两个平台共用）：
-  1. 拦 git push 的各种写法、gh 的写操作、带写方法的 gh api、npm publish；
+  1. git push 的各种写法：Claude 上弹出确认窗，你点同意才执行；无人值守的会话、Codex、弹不了窗的权限模式（dontAsk）下照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较；
   3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
   4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
 
   **出错即拦截，两个平台一样**：守卫出错时原因都写 stderr。Claude 上退出 2，按 `onFailure: "block"` 拦下这次调用；Codex 上输出拒绝 JSON（理由写明守卫出错和原因）并退出 0，Codex 照 JSON 拦下。Codex 上不靠退出 2，是因为 Windows PowerShell 5.1 的 `-Command` 会把退出 2 改成 1，而 Codex 只在退出 2 时拦。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
 - **SessionStart 钩子** `hooks/session-start.mjs`（只在 Claude 注册）：startup、resume、compact 时注入几行提示和会话 id。
-- **Claude 的 deny 规则**（`config/claude/settings.fragment.json`）：每类被禁命令同时写 `Bash(...)` 和 `PowerShell(...)`；对外发送类的 MCP 工具；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。
+- **Claude 的 deny 规则**（`config/claude/settings.fragment.json`）：每类被禁命令同时写 `Bash(...)` 和 `PowerShell(...)`；对外发送类的 MCP 工具；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。git push 没有 deny 规则：deny 规则先于守卫的询问，留着就弹不了确认窗；部署时会把以前写进去的那 10 条去掉，推送由守卫管。
 - **Codex 的规则**（`config/codex/rules/autoskills.rules`）：`prefix_rule` 拦简单形式的 git push、gh 写操作、npm publish。规则只匹配简单命令，**只当提醒**，由钩子和 pushurl 兜底。
 - **pushurl**：部署时给项目根目录下所有有远端的仓库设 `pushurl = no_push`（`scripts/set-pushurl.mjs`，先记原值，可恢复），登记的只读目录跳过。
 
@@ -132,9 +132,11 @@ node scripts/check-kit.mjs                           # 重开两个平台、在 
 
 ---
 
-## 你自己怎么推送
+## 怎么推送
 
-部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。你自己推送时，在**普通终端**（不是代理的会话）里写完整地址：
+**让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。无人值守的会话（长跑、`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
+
+**你自己推**：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。在**普通终端**（不是代理的会话）里写完整地址：
 
 ```powershell
 git push https://github.com/<owner>/<repo>.git <分支>
@@ -142,7 +144,7 @@ git push https://github.com/<owner>/<repo>.git <分支>
 git push (git remote get-url origin) <分支>
 ```
 
-写完整地址时不经过远端的 pushurl。守卫和 deny 规则只管代理的工具调用，管不到你自己的终端。不要为了推送去改回 pushurl。
+写完整地址时不经过远端的 pushurl。守卫和 deny 规则只管代理的工具调用，管不到你自己的终端。不要为了推送去改回 pushurl，代理也不改它。
 
 ---
 

@@ -28,12 +28,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK } from '../../hooks/guard.mjs';
+import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK, ASK_MODES } from '../../hooks/guard.mjs';
 import { shellForms } from '../../scripts/check-kit.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'hooks', 'guard.mjs');
-const REASON_HINT = '推送由你自己在普通终端做';
+const REASON_HINT = '用户本人可以在普通终端推送';
 
 const temps = [];
 const links = [];
@@ -79,9 +79,9 @@ function listFiles(dir) {
     .sort();
 }
 
-const claudeInput = (tool, command) => ({
+const claudeInput = (tool, command, mode = 'default') => ({
   session_id: 'synthetic-session', transcript_path: '~/.claude/projects/demo/synthetic-session.jsonl', cwd: '~/demo',
-  permission_mode: 'default', hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command }, tool_use_id: 'toolu_synthetic',
+  permission_mode: mode, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command }, tool_use_id: 'toolu_synthetic',
 });
 const codexInput = (command, tool = 'shell', field = 'command') => ({
   session_id: 'synthetic-session', turn_id: 'synthetic-turn', cwd: '~/demo', model: 'synthetic-model',
@@ -89,6 +89,18 @@ const codexInput = (command, tool = 'shell', field = 'command') => ({
 });
 
 const decision = (tool, command) => decide(claudeInput(tool, command), 'claude').decision;
+/** A Claude input in a mode that cannot show the confirmation dialog, where a push is still a plain deny. */
+const claudeNoDialog = (tool, command) => claudeInput(tool, command, 'dontAsk');
+/**
+ * A push on Claude, both ways: asked where the dialog can appear (mode default) and denied where it cannot
+ * (mode dontAsk). PUSH is the one good answer; anything else shows both decisions.
+ */
+const PUSH = 'ask, and deny without a dialog';
+const pushDecision = (tool, command) => {
+  const asked = decide(claudeInput(tool, command), 'claude').decision;
+  const refused = decide(claudeNoDialog(tool, command), 'claude').decision;
+  return asked === 'ask' && refused === 'deny' ? PUSH : `${asked} in mode default, ${refused} in mode dontAsk`;
+};
 const codexDecision = (command, tool, field) => decide(codexInput(command, tool, field), 'codex').decision;
 
 /** Run the guard on one input; returns exit code, stdout, stderr and the elapsed milliseconds. */
@@ -116,8 +128,8 @@ function expectAll(fn, commands, expected) {
 }
 
 describe('rule 1, Bash form', () => {
-  test('deny: git push in every spelling', () => {
-    expectAll((c) => decision('Bash', c), [
+  test('git push in every spelling: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('Bash', c), [
       'git push',
       'git push origin main',
       '  git push --force-with-lease origin HEAD',
@@ -145,11 +157,11 @@ describe('rule 1, Bash form', () => {
       'echo origin | xargs git push',
       '\\git push',
       "g'i't push",
-    ], 'deny');
+    ], PUSH);
   });
 
-  test('deny: git push behind ; && || | & groups, substitutions and wrapped shells', () => {
-    expectAll((c) => decision('Bash', c), [
+  test('git push behind ; && || | & groups, substitutions and wrapped shells: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('Bash', c), [
       'git status; git push',
       'git add -A && git commit -m "wip" && git push',
       'git fetch || git push',
@@ -171,7 +183,7 @@ describe('rule 1, Bash form', () => {
       'cmd.exe /C git push origin main',
       'powershell -NoProfile -Command "git push"',
       "pwsh -c '& git push'",
-    ], 'deny');
+    ], PUSH);
   });
 
   test('deny: gh repo, release, pr and workflow writes', () => {
@@ -285,13 +297,13 @@ describe('rule 1, Bash form', () => {
       "printf $'a\\tb\\\\' && git status",
       "echo $'git push is left to the owner\\''",
     ], 'allow');
-    expectAll((c) => decision('Bash', c), [
+    expectAll((c) => pushDecision('Bash', c), [
       "git $'push' origin main",
       "git $'\\x70ush'",
       "git $'\\160ush' origin",
       "$'git' push",
       "git commit -m $'it\\'s' && git push",
-    ], 'deny');
+    ], PUSH);
     const cfg = ['--config', path.join(tempDir(), 'missing.json')];
     const ok = runGuard(claudeInput('Bash', "git commit -m $'it\\'s done'"), cfg);
     assert.equal(ok.code, 0, ok.err);
@@ -315,13 +327,13 @@ describe('rule 1, Bash form', () => {
     ].join('\n');
     assert.equal(decision('Bash', cmd), 'allow');
     assert.equal(decision('Bash', 'cat <<-EOF > notes.txt\n\tgit push\n\tEOF\ngit status'), 'allow');
-    assert.equal(decision('Bash', 'cat <<EOF\ngit push\nEOF\ngit push'), 'deny', 'the command after the body is still checked');
+    assert.equal(pushDecision('Bash', 'cat <<EOF\ngit push\nEOF\ngit push'), PUSH, 'the command after the body is still checked');
   });
 });
 
 describe('rule 1, PowerShell form', () => {
-  test('deny: git push in every spelling, with the & call', () => {
-    expectAll((c) => decision('PowerShell', c), [
+  test('git push in every spelling, with the & call: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('PowerShell', c), [
       'git push',
       'git push origin main',
       '& git push origin main',
@@ -351,7 +363,7 @@ describe('rule 1, PowerShell form', () => {
       'powershell git push',
       'cmd /c git push',
       'bash -lc "git push"',
-    ], 'deny');
+    ], PUSH);
   });
 
   test('deny: gh writes, gh api writes and npm publish', () => {
@@ -817,9 +829,102 @@ describe('known gaps (ADR-006 §4 residual risks, allowed on purpose)', () => {
   });
 });
 
+describe('rule 1: a push is asked only where the owner can answer (AS3-379)', () => {
+  const push = 'git push https://example.com/acme/demo.git main';
+  const inMode = (mode, command = push, tool = 'Bash') => decide(claudeInput(tool, command, mode), 'claude');
+
+  test('the modes: ask in default, acceptEdits, auto, plan and bypassPermissions; deny in dontAsk, with no mode and with an unknown one', () => {
+    assert.deepEqual([...ASK_MODES].sort(), ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'plan']);
+    for (const mode of ASK_MODES) assert.equal(inMode(mode).decision, 'ask', mode);
+    for (const mode of ['dontAsk', 'somethingNew', '', 'DEFAULT', null, 7, ['default']]) assert.equal(inMode(mode).decision, 'deny', JSON.stringify(mode));
+    const { permission_mode, ...noMode } = claudeInput('Bash', push);
+    assert.equal(permission_mode, 'default');
+    assert.equal(decide(noMode, 'claude').decision, 'deny', 'no permission_mode field');
+  });
+
+  test('only on platform claude: codex and an unknown platform deny, whatever the mode says', () => {
+    for (const mode of ASK_MODES) {
+      assert.equal(decide(claudeInput('Bash', push, mode), 'codex').decision, 'deny', `codex, ${mode}`);
+      assert.equal(decide(claudeInput('Bash', push, mode), 'unknown').decision, 'deny', `unknown, ${mode}`);
+      assert.equal(decide({ ...codexInput(push), permission_mode: mode }, 'codex').decision, 'deny', `codex input, ${mode}`);
+    }
+  });
+
+  test('a push beside anything else that is refused stays a deny', () => {
+    const kit = tempDir();
+    for (const command of [
+      'git push origin main && npm publish',
+      'npm publish; git push origin main',
+      'git push origin main; gh pr create --fill',
+      'gh release create v1.0.0 && git push --tags',
+      'git push origin main | gh api -X POST repos/acme/demo/issues',
+    ]) {
+      for (const mode of ASK_MODES) assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
+    }
+    const withClean = { ...claudeInput('Bash', 'git clean -fdx && git push origin main'), cwd: kit };
+    assert.equal(decide(withClean, 'claude', { kitRepos: [kit] }).decision, 'deny', 'git clean -x in the kit repo beside a push');
+    assert.equal(decide({ ...withClean, tool_input: { command: 'git clean -fd && git push origin main' } }, 'claude', { kitRepos: [kit] }).decision, 'ask', 'a clean without -x is no reason to refuse');
+  });
+
+  test('publishing and gh writes are never asked', () => {
+    for (const mode of [...ASK_MODES, 'dontAsk']) {
+      for (const command of ['npm publish', 'npm publish --access public', 'gh pr create --fill', 'gh release create v1.0.0', 'gh repo create acme/demo --public', 'gh api -X POST repos/acme/demo/issues', 'gh workflow run ci.yml']) {
+        assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
+        assert.equal(inMode(mode, command, 'PowerShell').decision, 'deny', `${mode}, PowerShell: ${command}`);
+      }
+    }
+  });
+
+  test('the ask reason is for the owner: it names the push and says a yes is needed; the deny reason says why there was no dialog', () => {
+    const asked = inMode('bypassPermissions');
+    assert.match(asked.reason, /git push/);
+    assert.match(asked.reason, /点同意才推送/);
+    assert.doesNotMatch(asked.reason, /拒绝了这条命令/);
+    const refused = inMode('dontAsk');
+    assert.match(refused.reason, /拒绝了这条命令/);
+    assert.match(refused.reason, /确认窗/);
+    assert.match(refused.reason, new RegExp(REASON_HINT));
+  });
+
+  test('spawned: the ask is one JSON line with permissionDecision ask, exit 0, and the heartbeat says ask', () => {
+    const rt = tempRuntime();
+    const r = runGuard(claudeInput('Bash', push, 'bypassPermissions'), ['--config', rt.config, '--platform', 'claude']);
+    assert.equal(r.code, 0, r.err);
+    const lines = r.out.trim().split('\n');
+    assert.equal(lines.length, 1);
+    const o = JSON.parse(lines[0]).hookSpecificOutput;
+    assert.equal(o.hookEventName, 'PreToolUse');
+    assert.equal(o.permissionDecision, 'ask');
+    assert.match(o.permissionDecisionReason, /点同意才推送/);
+    // Without --platform the Claude input is detected as claude and asks too.
+    assert.equal(JSON.parse(runGuard(claudeInput('PowerShell', '& git.exe push'), ['--config', rt.config]).out).hookSpecificOutput.permissionDecision, 'ask');
+    const entries = fs.readFileSync(rt.heartbeat, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(entries.map((e) => e.decision), ['ask', 'ask']);
+    assert.deepEqual(entries.map((e) => e.platform), ['claude', 'claude']);
+    assert.doesNotMatch(fs.readFileSync(rt.heartbeat, 'utf8'), /git|example\.com/);
+  });
+
+  test('spawned with --platform codex: the same Claude-looking input is a deny, never an ask', () => {
+    const rt = tempRuntime();
+    for (const mode of ASK_MODES) {
+      const r = runGuard(claudeInput('Bash', push, mode), ['--config', rt.config, '--platform', 'codex']);
+      assert.equal(r.code, 0, r.err);
+      assert.equal(JSON.parse(r.out).hookSpecificOutput.permissionDecision, 'deny', mode);
+    }
+    const decisions = fs.readFileSync(rt.heartbeat, 'utf8').trim().split('\n').map((l) => JSON.parse(l).decision);
+    assert.deepEqual([...new Set(decisions)], ['deny']);
+  });
+
+  test('a call the guard cannot read is still an error, not an ask', () => {
+    const r = runGuard(claudeInput('Bash', 'git push "origin', 'bypassPermissions'), ['--config', path.join(tempDir(), 'missing.json')]);
+    assert.equal(r.code, 2);
+    assert.equal(r.out, '');
+  });
+});
+
 describe('hook contract (spawned guard)', () => {
   test('deny: one UTF-8 JSON line on stdout, exit 0, the reason says who pushes', () => {
-    const r = runGuard(claudeInput('Bash', 'git push origin main'), ['--config', path.join(tempDir(), 'missing.json')]);
+    const r = runGuard(claudeNoDialog('Bash', 'git push origin main'), ['--config', path.join(tempDir(), 'missing.json')]);
     assert.equal(r.code, 0, r.err);
     const lines = r.out.trim().split('\n');
     assert.equal(lines.length, 1);
@@ -836,10 +941,10 @@ describe('hook contract (spawned guard)', () => {
     assert.notEqual(fs.realpathSync(viaLink).toLowerCase(), viaLink.toLowerCase(), 'the path really goes through a link');
     const cfg = ['--config', path.join(tempDir(), 'missing.json')];
     const spawnLinked = (file, input, args) => spawnSync(process.execPath, [file, ...args], { input: JSON.stringify(input), encoding: 'utf8' });
-    const deny = spawnLinked(viaLink, claudeInput('Bash', 'git push origin main'), cfg);
+    const deny = spawnLinked(viaLink, claudeNoDialog('Bash', 'git push origin main'), cfg);
     assert.equal(deny.status, 0, deny.stderr);
     assert.equal(JSON.parse(deny.stdout).hookSpecificOutput.permissionDecision, 'deny');
-    const ps = spawnLinked(viaLink, claudeInput('PowerShell', '& git.exe push'), cfg);
+    const ps = spawnLinked(viaLink, claudeNoDialog('PowerShell', '& git.exe push'), cfg);
     assert.equal(JSON.parse(ps.stdout).hookSpecificOutput.permissionDecision, 'deny');
     const self = spawnSync(process.execPath, [viaLink, '--selftest'], { encoding: 'utf8', input: '' });
     assert.equal(self.status, 0, self.stderr);
@@ -863,7 +968,7 @@ describe('hook contract (spawned guard)', () => {
   test('heartbeat: one line per run with exactly ts, platform, event and decision, never the command', () => {
     const rt = tempRuntime();
     const marker = 'feature-zz-heartbeat-marker';
-    runGuard(claudeInput('Bash', `git push origin ${marker}`), ['--config', rt.config]);
+    runGuard(claudeNoDialog('Bash', `git push origin ${marker}`), ['--config', rt.config]);
     runGuard(claudeInput('Bash', `git log ${marker}`), ['--config', rt.config]);
     runGuard(codexInput(`git push origin ${marker}`), ['--config', rt.config]);
     runGuard(claudeInput('Bash', `git push "${marker}`), ['--config', rt.config]);
@@ -894,7 +999,7 @@ describe('hook contract (spawned guard)', () => {
     const old = `${JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', platform: 'claude', event: 'PreToolUse', decision: 'allow' })}\n`;
     fs.writeFileSync(rt.heartbeat, old.repeat(Math.ceil((1024 * 1024 + 4096) / old.length)));
     assert.ok(fs.statSync(rt.heartbeat).size > 1024 * 1024);
-    const r = runGuard(claudeInput('Bash', 'git push'), ['--config', rt.config]);
+    const r = runGuard(claudeNoDialog('Bash', 'git push'), ['--config', rt.config]);
     assert.equal(r.code, 0, r.err);
     const size = fs.statSync(rt.heartbeat).size;
     assert.ok(size <= 1024 * 1024, `size after the cut: ${size}`);
@@ -907,7 +1012,7 @@ describe('hook contract (spawned guard)', () => {
 
   test('no config file: no heartbeat, the decision still holds', () => {
     const dir = tempDir();
-    const r = runGuard(claudeInput('Bash', 'git push'), ['--config', path.join(dir, 'hook-config.json')]);
+    const r = runGuard(claudeNoDialog('Bash', 'git push'), ['--config', path.join(dir, 'hook-config.json')]);
     assert.equal(r.code, 0, r.err);
     assert.equal(JSON.parse(r.out).hookSpecificOutput.permissionDecision, 'deny');
     assert.deepEqual(listFiles(dir), []);

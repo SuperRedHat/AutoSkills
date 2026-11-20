@@ -21,7 +21,7 @@
 - [中性档](#中性档)
 - [恢复演练](#恢复演练)
 - [钩子运行时缺失时怎么恢复](#钩子运行时缺失时怎么恢复)
-- [你自己怎么推送](#你自己怎么推送)
+- [怎么推送](#怎么推送)
 
 ---
 
@@ -140,9 +140,9 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
 
    | 平台 | 动作 | 期望 |
    |---|---|---|
-   | Claude | Bash 工具执行 `git push` | 执行前被拒 |
-   | Claude | PowerShell 工具执行 `git push` | 执行前被拒 |
-   | Claude | `git -C <冒烟仓库> push` | 执行前被拒 |
+   | Claude | Bash 工具执行 `git push` | 弹出确认窗；点拒绝，没有执行（无头会话里直接被拒） |
+   | Claude | PowerShell 工具执行 `git push` | 弹出确认窗；点拒绝，没有执行 |
+   | Claude | `git -C <冒烟仓库> push` | 弹出确认窗；点拒绝，没有执行 |
    | Claude | `npm publish --dry-run` | 执行前被拒 |
    | Claude | Write 写进 `_private/eval/smoke/readonly-canary/` | 执行前被拒 |
    | Claude | Read `_private/eval/smoke/customer-canary/` 里的文件 | 执行前被拒 |
@@ -272,9 +272,11 @@ node scripts/deploy-kit.mjs --drill _private/eval/restore-drill [--claude-contra
 
 ---
 
-## 你自己怎么推送
+## 怎么推送
 
-部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，按远端名推送会失败。你自己推送时，在普通终端（不是代理的会话）里写完整地址：
+让代理推（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”，代理从 origin 取地址、写完整地址推送，守卫弹出确认窗，你点同意才推。无人值守的会话和 Codex 上推不了。守卫在哪些权限模式下弹窗、量过什么，见 [push-consent-probe.md](push-consent-probe.md)。
+
+你自己推：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，按远端名推送会失败。在普通终端（不是代理的会话）里写完整地址：
 
 ```powershell
 git push https://github.com/<owner>/<repo>.git <分支>

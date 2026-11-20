@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { RETIRED_CLAUDE_DENY, mergeClaudeSettings } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CONFIG = path.join(REPO, 'config');
@@ -24,13 +25,14 @@ const KIT_LOCAL = path.join(CONFIG, 'kit-local.example.json');
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
 /** The deny categories of ADR-006 §2.5 with commands each must stop and nearby reads it must not. */
+/**
+ * git push is not in this list since AS3-379: a deny rule in the settings wins over the guard's "ask", and the
+ * owner decides a push in the confirmation dialog. The guard still sees every push (guard-hook.test.mjs).
+ */
+const PUSH_SAMPLES = ['git push', 'git push origin main', 'git push --force origin HEAD',
+  'git push https://example.invalid/owner/repo.git main', 'git -C . push', 'git -C sub/repo push origin main',
+  'git -c push.default=current push', 'git -c credential.helper= push origin main'];
 const DENY_SAMPLES = {
-  'git push': {
-    denied: ['git push', 'git push origin main', 'git push --force origin HEAD',
-      'git push https://example.invalid/owner/repo.git main', 'git -C . push', 'git -C sub/repo push origin main',
-      'git -c push.default=current push', 'git -c credential.helper= push origin main'],
-    allowed: ['git status', 'git pull', 'git commit -m "fix"', 'git log --oneline', 'git -C . status'],
-  },
   'gh repo': {
     denied: ['gh repo create x', 'gh repo edit --visibility public', 'gh repo delete owner/repo --yes',
       'gh repo rename y', 'gh repo archive', 'gh repo deploy-key add key.pub'],
@@ -157,9 +159,33 @@ describe('Claude settings fragment', () => {
     });
   }
 
+  test('git push has no deny rule: none of the retired ones is in the fragment and no rule matches a push', () => {
+    assert.equal(RETIRED_CLAUDE_DENY.length, 10);
+    assert.deepEqual(deny.filter((r) => RETIRED_CLAUDE_DENY.includes(r)), []);
+    assert.deepEqual(deny.filter((r) => /\bpush\b/i.test(r)), [], 'no deny rule names push');
+    for (const tool of ['Bash', 'PowerShell']) {
+      for (const cmd of PUSH_SAMPLES) assert.ok(!denied(deny, tool, cmd), `${tool} must not deny by rule: ${cmd}`);
+    }
+  });
+
+  test('the settings merge takes the retired git push deny rules out and leaves every other rule', () => {
+    const own = ['Bash(rm -rf *)', 'Read(//d/secret/**)', 'Bash(git push --mirror *)'];
+    const current = { model: 'x', permissions: { allow: ['Bash(git push *)'], deny: [own[0], ...RETIRED_CLAUDE_DENY, own[1], 'Bash(npm publish *)', own[2]] } };
+    const merged = mergeClaudeSettings(current, { permissions: { deny: deny.slice() } });
+    assert.deepEqual(merged.permissions.deny.filter((r) => RETIRED_CLAUDE_DENY.includes(r)), []);
+    for (const r of [...own, ...deny]) assert.ok(merged.permissions.deny.includes(r), `kept or added: ${r}`);
+    assert.deepEqual(merged.permissions.deny.slice(0, 4), [own[0], own[1], 'Bash(npm publish *)', own[2]], 'the order of what stays is kept');
+    assert.deepEqual(merged.permissions.allow, ['Bash(git push *)'], 'allow rules are not the kit\'s to touch');
+    assert.equal(merged.model, 'x');
+    assert.deepEqual(current.permissions.deny.length, 14, 'the input is not changed');
+    assert.deepEqual(mergeClaudeSettings(merged, { permissions: { deny: deny.slice() } }), merged, 'a second merge changes nothing');
+    assert.deepEqual(mergeClaudeSettings(null, { permissions: { deny: deny.slice() } }).permissions.deny, deny);
+    assert.deepEqual(mergeClaudeSettings({ permissions: {} }, {}), { permissions: {} });
+  });
+
   test('the PowerShell rules match case-insensitively, as PowerShell does', () => {
-    assert.ok(denied(deny, 'PowerShell', 'Git Push origin main'));
     assert.ok(denied(deny, 'PowerShell', 'NPM publish'));
+    assert.ok(denied(deny, 'PowerShell', 'GH PR create --fill'));
   });
 
   test('outbound MCP tools are denied by their exact names', () => {

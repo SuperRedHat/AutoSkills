@@ -60,8 +60,9 @@
 //      cannot load makes it fail closed on every run (exit 2 on Claude, the deny JSON with exit 0 under
 //      --platform codex, AS3-126), so every matched call is blocked. And the guard command lines registered
 //      in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run them, once with a
-//      synthetic allow input (git status: exit 0, no output) and once with a synthetic deny input (git push:
-//      the deny JSON of rule 1). Claude's command and args start directly; Codex's string runs in each shell
+//      synthetic allow input (git status: exit 0, no output), once with a synthetic deny input (npm publish:
+//      the deny JSON of rule 1) and once with a push (git push origin main: the ask JSON on Claude, where the
+//      owner decides in the confirmation dialog, and the deny JSON on Codex). Claude's command and args start directly; Codex's string runs in each shell
 //      it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell -Command and bash -c
 //      when bash is on PATH (sh -c off Windows). A guard error shows as exit 2 or as a deny JSON whose reason
 //      starts with the guard's ERROR_DENY_MARK. A guard that does not start prints no JSON and exits with
@@ -126,7 +127,11 @@ const SELFTEST_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 60_000;
 // The synthetic inputs of the live run: a harmless shell command the guard allows and a push it denies.
 // The guard only reads them; neither command is ever run.
-export const PROBE_COMMANDS = { allow: 'git status', deny: 'git push origin main' };
+// allow and deny are run on both platforms. push is the one command the platforms answer differently since
+// AS3-379: Claude's guard asks (the owner decides in the dialog), Codex's denies (its hooks cannot ask).
+export const PROBE_COMMANDS = { allow: 'git status', deny: 'npm publish', push: 'git push origin main' };
+/** What the guard must answer to the push probe on a platform. */
+export const pushAnswer = (platform) => (platform === 'claude' ? 'ask' : 'deny');
 // The keys deploy-kit writes into <runtime>/hooks/hook-config.json (kit-targets desiredFiles).
 export const HOOK_CONFIG_KEYS = ['runtime', 'readonly_dirs', 'kit_repo'];
 // A heartbeat older than this is reported (WARN), never a FAIL: the hook did run once.
@@ -1132,7 +1137,7 @@ function firstLine(text) {
  * did not finish, or a shell passed its exit 2 on as another code; Windows PowerShell -Command turns a
  * native exit 2 into 1); error (the guard ran and failed closed: exit 2, or under --platform codex exit 0
  * with a deny JSON whose reason starts with ERROR_DENY_MARK, AS3-126); wrong (it ran and decided wrong).
- * @param {'allow'|'deny'} expect
+ * @param {'allow'|'deny'|'ask'} expect ask: the JSON with permissionDecision ask (a push on Claude)
  * @param {{status: number|null, stdout: string, stderr: string, error?: string}} r
  * @returns {{kind: 'ok'|'start'|'error'|'wrong', detail: string}}
  */
@@ -1155,8 +1160,13 @@ export function judgeProbe(expect, r) {
   // A guard error on Codex: blocked like a rule deny, but the guard could not decide.
   if (denied && reason.startsWith(ERROR_DENY_MARK)) return { kind: 'error', detail: `exit 0, deny JSON for a guard error: ${firstLine(reason)}` };
   if (expect === 'allow') return out ? { kind: 'wrong', detail: `exit 0 with output (expected none): ${out.slice(0, 120)}` } : { kind: 'ok', detail: 'allowed' };
+  if (expect === 'ask') {
+    if (o?.hookEventName === 'PreToolUse' && o?.permissionDecision === 'ask') return { kind: 'ok', detail: 'asked' };
+    if (denied) return { kind: 'wrong', detail: 'denied, not asked (a guard from before AS3-379 denies every push)' };
+    return { kind: 'wrong', detail: out ? `exit 0 without the ask JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the push was neither asked nor denied)' };
+  }
   if (denied) return { kind: 'ok', detail: 'denied' };
-  return { kind: 'wrong', detail: out ? `exit 0 without the deny JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the push was not denied)' };
+  return { kind: 'wrong', detail: out ? `exit 0 without the deny JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the command was not denied)' };
 }
 
 /** The hook-config.json row. */
@@ -1197,7 +1207,7 @@ export function hookConfigChecks(ctx, sec) {
  */
 export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env } = {}) {
   const s = (p) => shown(p, ctx.roots);
-  const item = 'guard command line, live run (synthetic allow and deny)';
+  const item = 'guard command line, live run (synthetic allow, deny and push)';
   const entries = guardCommandLines(ctx);
   if (!entries.length) {
     sec.warn('hooks.live.guard', item, `not deployed (未部署): no guard registered in ${s(ctx.t.claudeSettings)} or ${s(ctx.t.codexHooks)}; nothing run`);
@@ -1209,11 +1219,12 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
     const forms = e.args ? [{ via: 'command + args', file: e.command, args: e.args }] : shellForms(String(e.command ?? ''), env);
     const timeout = Math.min(PROBE_TIMEOUT_MS, typeof e.timeout === 'number' && e.timeout > 0 ? e.timeout * 1000 : PROBE_TIMEOUT_MS);
     for (const form of forms) {
-      for (const expect of ['allow', 'deny']) {
-        const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[expect]), timeout);
+      for (const what of ['allow', 'deny', 'push']) {
+        const expect = what === 'push' ? pushAnswer(e.platform) : what;
+        const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[what]), timeout);
         // A shell that is not on this machine says nothing about the hook.
         if (!e.args && r.error === 'ENOENT') { if (!skipped.includes(form.via)) skipped.push(form.via); continue; }
-        runs.push({ e, via: form.via, expect, ...judgeProbe(expect, r) });
+        runs.push({ e, via: form.via, what, expect, ...judgeProbe(expect, r) });
       }
     }
   }
@@ -1224,7 +1235,7 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   const bad = runs.filter((r) => r.kind !== 'ok');
   const skip = skipped.length ? `; skipped (not on this machine): ${skipped.join(', ')}` : '';
   if (!bad.length) {
-    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied (${per})${skip}`);
+    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied, ${PROBE_COMMANDS.push} asked on Claude and denied on Codex (${per})${skip}`);
     return;
   }
   // What each kind of wrong run means on its platform (ADR-006 §4).
@@ -1243,7 +1254,7 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   if (any((r) => r.kind === 'error')) fixes.push('the guard\'s reason is in the lines below; a hook-config.json problem also shows in the row above');
   if (any((r) => r.kind === 'wrong')) fixes.push(`the deployed guard.mjs does not decide like the repo's: ${deployFix(ctx)}`);
   sec.fail('hooks.live.guard', item, `${bad.length} of ${runs.length} run(s) wrong: ${effects.join('; ')} (${per})${skip}`, fixes.join('; '),
-    bad.map((r) => `${r.e.platform}, ${r.via}, ${r.expect} (${PROBE_COMMANDS[r.expect]}): ${r.detail}`));
+    bad.map((r) => `${r.e.platform}, ${r.via}, ${r.expect} (${PROBE_COMMANDS[r.what]}): ${r.detail}`));
 }
 
 // ---------- check 5: pushurl ----------

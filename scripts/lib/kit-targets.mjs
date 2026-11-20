@@ -429,8 +429,19 @@ function mergeHooks(cur, kitHooks) {
 }
 
 /**
+ * Deny rules the kit wrote into ~/.claude/settings.json up to 2026-11 and no longer wants there: the ten
+ * git push rules. A deny rule in the settings wins over the guard's "ask" (docs/push-consent-probe.md), so
+ * with them in place the owner would never get the confirmation dialog for a push (AS3-379). The guard
+ * still sees every push; gh writes and npm publish keep their deny rules.
+ */
+export const RETIRED_CLAUDE_DENY = Object.freeze(['Bash', 'PowerShell'].flatMap((tool) => [
+  'git push *', 'git -C * push', 'git -C * push *', 'git -c * push', 'git -c * push *',
+].map((rule) => `${tool}(${rule})`)));
+
+/**
  * ~/.claude/settings.json after the merge: the kit keys of the filled fragment are set (env and worktree
- * key by key), its deny rules added where missing, its hook groups merged (mergeHookGroups). Every other
+ * key by key), its deny rules added where missing, the retired kit deny rules (RETIRED_CLAUDE_DENY) taken
+ * out, its hook groups merged (mergeHookGroups). Every other
  * key, permission rule, hook and plugin stays, in its order. Applying it to its own output changes nothing.
  * @param {object|null} current parsed settings, or null when the file does not exist
  * @param {object} fragment filled fragment, deny rules for the local folders included
@@ -442,6 +453,7 @@ export function mergeClaudeSettings(current, fragment) {
   if (!isObject(out)) throw new MergeError('the file does not hold a JSON object');
   const { hooks, ...rest } = fragment;
   mergeValue(out, rest, '');
+  if (Array.isArray(out.permissions?.deny)) out.permissions.deny = out.permissions.deny.filter((rule) => !RETIRED_CLAUDE_DENY.includes(rule));
   if (hooks) out.hooks = mergeHooks(out.hooks, hooks);
   return out;
 }
