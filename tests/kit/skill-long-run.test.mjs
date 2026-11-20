@@ -220,9 +220,11 @@ describe('the skill text', () => {
       assert.ok(check.includes(`- ${verdict}`), `the page says what ${verdict} means`);
     }
     assert.ok(/`driver alive Unknown`[^\n]*当成在跑/.test(check));
-    assert.ok(check.includes('会话不删锁文件，用户说删才删'));
+    // Not even on the user's word without a fresh look: only a lock the check calls False once more is deleted.
+    assert.ok(/会话不自己删锁文件。用户说删，也先再核对一次：还是 `driver alive False` 才删；`True` 或 `Unknown` 时不删/.test(check));
+    const deletes = /Remove-Item|\bdel\s|\brm\s|\berase\s|\bri\s|unlink|rmSync|\.Delete\(/i;
     for (const [name, text] of [['the page', PAGE], ['project-resume', RESUME], ['project-feedback', FEEDBACK], ['project-next', NEXT]]) {
-      assert.ok(!text.includes('Remove-Item'), `${name} gives no command that deletes`);
+      assert.ok(!deletes.test(text), `${name} gives no command that deletes`);
     }
     const first = section(PAGE, '## 1.');
     assert.ok(/`driver alive True` 或 `Unknown`[^\n]*不起第二个/.test(first));

@@ -97,6 +97,13 @@
 
 project-next 的 `SKILL.md` 三次之间没有改。
 
+**第三次之后。** 独立校验第 3 轮判通过，提了 6 条小问题。其中两处改了文字，都不在探查走过的路上，没有再探查；这两句第一次有真实会话读到，是 AS3-375 部署后的那一次：
+
+- “用户说删才删”补成：用户说删，也先再核对一次，还是 `driver alive False` 才删；`True` 或 `Unknown` 时不删。原来只有起驱动那一步这样要求。
+- 锁没有变、核对是 `False` 时，原因从“是旧锁挡住了”改成“多半是”，因为还可能是驱动起得慢，原因以窗口里的报错为准。
+
+专门挑错的那一遍读是另派的一个只读代理（不算校验轮次），它前后读了三遍，结果和三轮校验的全文都在“证据在哪”里列的目录下。
+
 ## 没有探到的
 
 - **自然触发。** 只说一句“起长跑”、不指文件时，部署后的技能会不会被用上，这三次探不了，放在 AS3-375。
@@ -120,4 +127,4 @@ project-next 的 `SKILL.md` 三次之间没有改。
 | 账本文件变化的记录和核对 | 三个目录下的 `state-watch.jsonl`、`probe-check.log`。第三次的 `probe-check.log` 末尾是两个会话从页面上那两段拿到的输出 |
 | 驱动的运行目录：报告、记录、会话的输出、复验日志 | `_private/eval/run-from-session-probe/` 下 `p1/repo/.autoskills/runs/2026-11-20T00-48-37Z/`、`p2/repo/.autoskills/runs/2026-11-20T01-14-39Z/`、`p3/repo/.autoskills/runs/2026-11-20T01-56-24Z/` |
 | 探查用的小脚本和提示词 | `_private/eval/run-from-session-probe/tools/` |
-| 两轮独立校验的全文 | `.autoskills/runs/as3-373/review/` 下的 `r1-report.md`、`r2-report.md` |
+| 三轮独立校验的全文，和专门挑错的那三遍读的结果 | `.autoskills/runs/as3-373/review/` 下的 `verifier-round-1.md` 到 `-3.md`、`fault-finding-1.md` 到 `-3.md` |

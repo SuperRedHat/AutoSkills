@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath $lockFile)) { 'no lock' } else {
 - `driver alive False`：驱动已经不在了，这把锁是它被强行结束时留下的。进程活着、是 node、启动得不比 `started_at` 晚才算驱动，因为进程号会被别的进程再用上。
 - `no lock`：没有驱动。
 
-会话不删锁文件，用户说删才删。
+会话不自己删锁文件。用户说删，也先再核对一次：还是 `driver alive False` 才删；`True` 或 `Unknown` 时不删，告诉用户这把锁可能是活驱动的，删了会有两个驱动同时写账本。
 
 ## 1. 先收尾
 - 项目契约不许在这个项目里起会话的，不起，照实告诉用户。
@@ -81,7 +81,7 @@ if (-not $now) { 'no lock' } elseif ($now -eq $before) { 'the lock did not chang
 - `no lock`，也没有新的运行目录：驱动没起来，报错在新窗口里，请用户看一眼。不换别的办法再起。
 - `the lock did not change`：起之前就有锁，这次起的驱动没有拿到它；它为什么没起来，以新窗口里那行报错为准。再核对一次锁：
   - `driver alive True` 或 `Unknown`：是另一个驱动在跑。照实告诉用户，什么都不删。
-  - `driver alive False`：是旧锁挡住了。锁里的进程号被别的进程占着时，驱动自己只看那个号还在不在，会当成另一个驱动在跑而拒绝起。告诉用户；用户说删，就再核对一次，还是 `False` 才删掉这一个文件，然后重起一次。
+  - `driver alive False`：多半是旧锁挡住了。锁里的进程号被别的进程占着时，驱动自己只看那个号还在不在，会当成另一个驱动在跑而拒绝起。告诉用户；用户说删，就再核对一次，还是 `False` 才删掉这一个文件，然后重起一次。
 
 ## 6. 告诉用户，结束回合
 - 运行名（锁里的 `run`）和报告的位置（`.autoskills/runs/<运行名>/report.md`，驱动停下时写好）。
