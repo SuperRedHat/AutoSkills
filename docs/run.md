@@ -6,7 +6,7 @@
 
 ## 怎么敲
 
-在普通的 PowerShell 窗口里敲，不要在 Claude Code 会话里敲：
+在普通的 PowerShell 窗口里敲。也可以在会话里说一句，让主控替你在新窗口里起（见下一节）。不要让会话把这条命令直接放在自己里面跑：前台会占住会话，后台起的进程会话一关就没了。
 
 ```powershell
 node <AutoSkills 仓库>\scripts\autoskills.mjs run <项目目录>
@@ -23,6 +23,36 @@ node <仓库>\scripts\autoskills.mjs run <项目目录> --until 07:00
 # 先试两个任务
 node <仓库>\scripts\autoskills.mjs run <项目目录> --max-tasks 2 --model claude-opus-5-5 --effort high
 ```
+
+## 在会话里说一句来起
+
+不想敲命令，就在这个项目的 Claude Code 会话里跟主控说一句，比如：
+
+- “起长跑”
+- “起长跑，到早上 7 点”
+- “挂着跑，只做 5 个任务”
+
+主控照 project-next 技能目录里的 `long-run.md` 做：
+
+1. 把自己手上的活提交、记账，确认工作目录干净、有能做的任务、没有另一个驱动在跑。
+2. 找到驱动脚本。套件仓库的位置记在 SessionStart 钩子旁边的 `hook-config.json` 里，是部署时写的。
+3. 只按你说的加选项：时间变成 `--until`，个数变成 `--max-tasks`，模型和档位你说了才加。
+4. 在账本里记一条，然后开一个新的 PowerShell 窗口跑驱动。窗口留着，能看到驱动每做完一个任务打印的那几行。
+5. 核对驱动的锁，告诉你运行名、报告在哪、怎么停，然后结束回合。
+
+驱动跑着的时候：
+
+- 起它的那个会话只读，不记账、不做任务。问进度可以；说“停下长跑”，它替你跑 `stop`。
+- 另开一个会话说“继续”，project-resume 先查锁，驱动还在跑就只读汇报。
+- 驱动停了以后说“继续”，主控读一遍驱动的报告，照常对账、接着做。
+
+限制：
+
+- 只在 Claude Code 上有。
+- 驱动跑在自己的窗口里，不靠起它的会话活着。不要直接关那个窗口：那等于强行结束驱动，改了一半的东西留在工作目录里；手上那个会话在它自己的控制台里，可能还会接着跑一阵，这一点没有测过。要停就按 Ctrl+C，或者用 `stop`。
+- 查锁的只有 project-resume、project-feedback 和起驱动的那个会话。驱动跑着的时候在别的会话里直接说“做下一个任务”，没有东西拦着，不要这样做。
+- 项目契约不许会话在项目里起 claude 子进程的，主控不会起。AutoSkills 这个仓库自己就是这样：它只许在 `_private/eval` 的测试仓库里起。
+- 部署前做过一次真实探查，记录在 [run-from-session-probe.md](run-from-session-probe.md)。
 
 ## 选项
 
