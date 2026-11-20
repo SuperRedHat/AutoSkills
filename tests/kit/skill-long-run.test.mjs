@@ -3,15 +3,17 @@
 // but these checks:
 //   - the sentence by which a session knows that the driver started it is the one every driver prompt carries;
 //   - the options the page names are options of `run`, and the lock it reads is the driver's lock file;
-//   - the PowerShell on the page works: the script finder on a deployed layout, the launch line with spaces in paths.
-// The PowerShell tests run Windows PowerShell 5.1 with a temp folder as the user directory. They start a stand-in,
+//   - the page keeps its rules: one ledger entry before the start and none after, read-only while the driver runs;
+//   - the PowerShell on the page works: the script finder on a deployed layout, the launch line with spaces in
+//     paths, the lock check on a live driver, a stale lock and no lock.
+// The PowerShell tests run Windows PowerShell 5.1 with a temp folder as the user directory. They start stand-ins,
 // never the driver, and are skipped off Windows.
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskPrompt, multiPrompt, reworkPrompt, giveUpPrompt, resumePrompt } from '../../scripts/lib/run/prompts.mjs';
 import { RUN_USAGE } from '../../scripts/lib/run/cli.mjs';
@@ -26,8 +28,11 @@ const RUN_DOC = read('docs', 'run.md');
 /** The sentence of a driver prompt that the skill text names. */
 const MARK = '这是无人值守的运行';
 const PHRASES = ['起长跑', '挂着跑', '跑到几点'];
+/** project-manager tools that change the ledger and could be named in a step. */
+const LEDGER_WRITES = ['add_log', 'update_task_status', 'update_tasks', 'edit_task', 'create_tasks', 'set_current_focus'];
 const WIN = process.platform === 'win32';
 const slash = (p) => p.split(path.sep).join('/');
+const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /** The part of a Markdown text from the first line that starts with `heading` up to the next `## ` heading. */
 function section(text, heading) {
@@ -107,8 +112,9 @@ describe('the skill text', () => {
     for (const tool of ['get_project_context', 'add_log']) {
       assert.ok(part.indexOf(tool) > lock, `the lock comes before ${tool}`);
     }
-    assert.ok(part.slice(lock, part.indexOf('get_project_context')).includes('只读'));
-    assert.ok(part.includes('`long-run.md`'));
+    const first = part.slice(lock, part.indexOf('get_project_context'));
+    assert.ok(first.includes('只读') && first.includes('不写账本'));
+    assert.ok(first.includes('`long-run.md`') && first.includes('第 6 步'), 'it uses the check of the page');
   });
 
   test('every option the page names is an option of run', () => {
@@ -123,13 +129,22 @@ describe('the skill text', () => {
     assert.ok(section(PAGE, '## 驱动还在跑的时候').includes("node '<脚本>' stop '<主检出>'"));
   });
 
-  test('the lock the page reads is the lock file of the driver, with its three fields', () => {
-    assert.ok(PAGE.includes('<主检出>/.autoskills/run.lock'));
-    assert.equal(lockFile('P'), path.join('P', '.autoskills', 'run.lock'));
+  test('the page reads the lock file of the driver, with its three fields', () => {
+    assert.ok(PAGE.includes(slash(lockFile('<主检出>'))), 'the prose names the path the driver uses');
+    assert.ok(powershellBlocks(section(PAGE, '## 6.')).every((b) => b.includes(lockFile('<主检出>').split('/').join('\\'))), 'so does the PowerShell');
     assert.ok(PAGE.includes('{pid, run, started_at}'));
-    const project = tempDir();
-    write(lockFile(project), { pid: process.pid, run: '2026-11-20T00-00-00Z', started_at: '2026-11-20T00:00:00.000Z' });
-    assert.deepEqual(readLock(project), { pid: process.pid, run: '2026-11-20T00-00-00Z', started_at: '2026-11-20T00:00:00.000Z', alive: true });
+  });
+
+  test('one ledger entry before the start and none after; read-only while the driver runs', () => {
+    const before = section(PAGE, '## 4.');
+    assert.ok(before.includes('add_log') && before.includes('最后一次写账本'));
+    for (const heading of ['## 5.', '## 6.', '## 7.']) {
+      const part = section(PAGE, heading);
+      for (const tool of LEDGER_WRITES) assert.ok(!part.includes(tool), `${heading} names no ledger write (${tool})`);
+    }
+    const running = section(PAGE, '## 驱动还在跑的时候');
+    for (const rule of ['只读', '不写账本', '不改工作目录', '不提交', '不做任务', '不凭印象']) assert.ok(running.includes(rule), rule);
+    for (const tool of LEDGER_WRITES) assert.ok(!running.includes(tool), `the section names no ledger write (${tool})`);
   });
 
   test('the run guide tells how to start it from a session and points to the probe record', () => {
@@ -144,14 +159,16 @@ describe('the skill text', () => {
 describe('the PowerShell on the page', { skip: WIN ? false : 'Windows PowerShell only' }, () => {
   test('the finder reads the kit repo from the hook config next to the SessionStart hook of a deployed layout', () => {
     const dir = tempDir();
-    const home = path.join(dir, 'home dir');
+    // A user directory with a space and with characters outside ASCII in its name.
+    const home = path.join(dir, 'home 目录');
     const runtime = path.join(dir, 'rt');
     // The settings file as deploy-kit writes it: the kit fragment with its placeholders filled.
     const filled = read('config', 'claude', 'settings.fragment.json')
       .replaceAll('<node>', 'node').replaceAll('<runtime>', slash(runtime)).replaceAll('<home>', slash(home));
     const settings = JSON.parse(filled);
-    // A hook of someone else's in front of the kit's, without args: the finder must pass over it.
-    settings.hooks.SessionStart.unshift({ matcher: 'startup', hooks: [{ type: 'command', command: 'echo other' }] });
+    // A hook of someone else's in front of the kit's, without args and with text outside ASCII: the finder must
+    // pass over it, and must read the file as UTF-8.
+    settings.hooks.SessionStart.unshift({ matcher: 'startup', hooks: [{ type: 'command', command: 'echo 别的钩子“带引号”' }] });
     write(path.join(home, '.claude', 'settings.json'), settings);
     write(path.join(runtime, 'hooks', 'hook-config.json'), { runtime: slash(runtime), readonly_dirs: [], kit_repo: slash(REPO) });
 
@@ -188,13 +205,52 @@ describe('the PowerShell on the page', { skip: WIN ? false : 'Windows PowerShell
     const r = powershell(dir, 'launch.ps1', script);
     assert.equal(r.status, 0, r.stderr);
 
-    for (let i = 0; i < 150 && !fs.existsSync(out); i += 1) await new Promise((resolve) => { setTimeout(resolve, 200); });
+    for (let i = 0; i < 150 && !fs.existsSync(out); i += 1) await pause(200);
     assert.ok(fs.existsSync(out), 'the stand-in started');
     // The file is written in one call, but the read can still come first: one short wait, then parse.
-    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    await pause(200);
     const started = JSON.parse(fs.readFileSync(out, 'utf8'));
     assert.deepEqual(started.argv, ['run', project, '--until', '07:00', '--max-tasks', '2']);
     const real = (p) => fs.realpathSync.native(p).toLowerCase();
     assert.equal(real(started.cwd), real(project));
+  });
+
+  test('the lock check tells a live driver from a lock whose process number was used again, a dead one and no lock', async () => {
+    const dir = tempDir();
+    const project = path.join(dir, 'a project');
+    fs.mkdirSync(project);
+    const blocks = powershellBlocks(section(PAGE, '## 6.')).map((b) => b.replaceAll('<主检出>', project));
+    assert.equal(blocks.length, 2, 'the wait and the check');
+    const check = (name, script = blocks[1]) => {
+      const r = powershell(dir, name, script);
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+
+    assert.equal(check('no-lock.ps1'), 'no lock');
+
+    // A live node process stands in for the driver. The lock is written after it started, as the driver's is.
+    const standIn = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      await pause(500);
+      write(lockFile(project), { pid: standIn.pid, run: 'R1', started_at: new Date().toISOString() });
+      assert.equal(readLock(project).alive, true, 'the driver reads the same file as alive');
+      const began = Date.now();
+      // With the lock there, the wait in front of the check ends at once.
+      assert.match(check('alive.ps1', `${blocks[0]}\r\n${blocks[1]}`), /^run R1 started_at \S+ pid \d+: driver alive True$/);
+      assert.ok(Date.now() - began < 15000, 'no 20 second wait when the lock is there');
+      // A lock written well after the process started is still the normal case.
+      write(lockFile(project), { pid: standIn.pid, run: 'R0', started_at: new Date(Date.now() + 3600000).toISOString() });
+      assert.match(check('later-lock.ps1'), /driver alive True$/);
+      // The same process under a lock from before it started: the driver of that lock is gone and its process
+      // number went to another process.
+      write(lockFile(project), { pid: standIn.pid, run: 'R0', started_at: '2020-01-01T00:00:00.000Z' });
+      assert.match(check('reused.ps1'), /^run R0 .*: driver alive False$/);
+    } finally {
+      standIn.kill();
+    }
+    for (let i = 0; i < 50 && standIn.exitCode === null && standIn.signalCode === null; i += 1) await pause(100);
+    write(lockFile(project), { pid: standIn.pid, run: 'R2', started_at: new Date().toISOString() });
+    assert.match(check('gone.ps1'), /^run R2 .*: driver alive False$/);
   });
 });

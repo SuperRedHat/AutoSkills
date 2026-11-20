@@ -6,8 +6,8 @@
 
 ## 1. 先收尾
 - 项目契约不许在这个项目里起会话的，不起，照实告诉用户。
-- 已经有驱动在跑（查法见第 6 步）就不起第二个，告诉用户运行名和开始时间。
-- 手上做了一半的任务，提交到能接着做的地方，在 notes 里写清做到哪：驱动会先接着做 in_progress 的任务。
+- 已经有驱动在跑就不起第二个，告诉用户运行名和开始时间。查法：锁文件 `<主检出>/.autoskills/run.lock` 不在，就是没有；在的话用第 6 步的第二段核对。
+- 手上做了一半的任务，提交到能接着做的地方，在 notes 里写清做到哪：驱动会先接着做 in_progress 的任务。驱动在主检出当前检出的分支上干活，这些提交要在这个分支上。
 - 工作目录要干净：`git status --short` 里除了账本目录（`.claude/state/`）和 `.autoskills/` 下的，不能有别的。驱动复验时要求这样。
 - 没有能做的任务（没有 in_progress 的，也没有就绪的）就不起，照 project-next 的停点汇报。
 
@@ -15,9 +15,9 @@
 脚本是套件仓库里的 `scripts/autoskills.mjs`，没有部署到用户级。套件仓库的位置记在 SessionStart 钩子旁边的 `hook-config.json` 里（`kit_repo`）。用 PowerShell 工具读出来：
 
 ```powershell
-$s = Get-Content -Raw "$env:USERPROFILE\.claude\settings.json" | ConvertFrom-Json
+$s = Get-Content -Raw -Encoding UTF8 "$env:USERPROFILE\.claude\settings.json" | ConvertFrom-Json
 $h = $s.hooks.SessionStart.hooks.args | Where-Object { $_ -like '*session-start.mjs' } | Select-Object -First 1
-$kit = (Get-Content -Raw (Join-Path (Split-Path $h) 'hook-config.json') | ConvertFrom-Json).kit_repo
+$kit = (Get-Content -Raw -Encoding UTF8 (Join-Path (Split-Path $h) 'hook-config.json') | ConvertFrom-Json).kit_repo
 $script = Join-Path $kit 'scripts\autoskills.mjs'
 "$script exists: $(Test-Path $script)"
 ```
@@ -41,19 +41,34 @@ $script = Join-Path $kit 'scripts\autoskills.mjs'
 Start-Process powershell.exe -WorkingDirectory '<主检出>' -ArgumentList '-NoProfile','-NoExit','-Command',"node '<脚本>' run '<主检出>' <选项>"
 ```
 
-`<主检出>` 和 `<脚本>` 填绝对路径，外面的单引号留着。不要把 `run` 直接放在本会话里跑：前台会占住会话，后台起的进程会话一关就没了。
+`<主检出>` 和 `<脚本>` 填绝对路径，外面的单引号留着；路径里本身有单引号的，把那个单引号写两遍。不要把 `run` 直接放在本会话里跑：前台会占住会话，后台起的进程会话一关就没了。
 
 ## 6. 核对起来了
-等 5 秒，读锁文件 `<主检出>/.autoskills/run.lock`（里面是 `{pid, run, started_at}`），再看这个 pid 是不是还活着、是不是 node：
+先等锁文件出现，最多 20 秒：
 
 ```powershell
-$lock = Get-Content -Raw '<主检出>\.autoskills\run.lock' | ConvertFrom-Json
-Get-Process -Id $lock.pid -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime
+$lockFile = '<主检出>\.autoskills\run.lock'
+foreach ($i in 1..20) { if (Test-Path $lockFile) { break }; Start-Sleep -Seconds 1 }
 ```
 
-- 锁在，进程活着：起来了。
-- 没有锁，`.autoskills/runs/` 下有刚建的运行目录：驱动起来又停了（比如没有能做的任务）。读那个目录里的 `report.md`，把原因告诉用户。
-- 没有锁，也没有新的运行目录：驱动没起来，报错在新窗口里，请用户看一眼。不换别的办法再起。
+再核对锁里的进程是不是驱动。第 1 步和 project-resume 用的也是这一段：
+
+```powershell
+$lockFile = '<主检出>\.autoskills\run.lock'
+if (Test-Path $lockFile) {
+  $lock = Get-Content -Raw -Encoding UTF8 $lockFile | ConvertFrom-Json
+  $p = Get-Process -Id $lock.pid -ErrorAction SilentlyContinue
+  $alive = $p -and $p.ProcessName -eq 'node' -and $p.StartTime.ToUniversalTime() -le ([datetime]$lock.started_at).ToUniversalTime()
+  "run $($lock.run) started_at $($lock.started_at) pid $($lock.pid): driver alive $([bool]$alive)"
+} else { 'no lock' }
+```
+
+锁里是 `{pid, run, started_at}`。进程活着、是 node、启动得不比 `started_at` 晚，才算驱动：进程号会被别的进程再用上。
+
+- `driver alive True`：驱动在跑。
+- `no lock`，而 `.autoskills/runs/` 下有刚建的运行目录：驱动起来又停了（比如没有能做的任务）。读那个目录里的 `report.md`，把原因告诉用户。
+- `no lock`，也没有新的运行目录：驱动没起来，报错在新窗口里，请用户看一眼。不换别的办法再起。
+- `driver alive False`：锁是一个已经不在了的驱动留下的（它被强行结束了）。照实告诉用户。这个锁不用删，下次起驱动时它会自己接手。
 
 ## 7. 告诉用户，结束回合
 - 运行名（锁里的 `run`）和报告的位置（`.autoskills/runs/<运行名>/report.md`，驱动停下时写好）。
@@ -61,7 +76,7 @@ Get-Process -Id $lock.pid -ErrorAction SilentlyContinue | Select-Object Id, Proc
 - 驱动停下以后说"继续"，主会话照 project-resume 接着做。
 
 ## 驱动还在跑的时候
-锁里的进程还活着，本会话只读：不写账本，不改工作目录，不提交，不做任务。
+第 6 步的第二段说 `driver alive True` 的时候，本会话只读：不写账本，不改工作目录，不提交，不做任务。本会话起过长跑的，之后每次要写账本或改文件之前，先用那一段核对驱动停了没有，不凭印象。
 - 用户问进度：读账本（project-status）和 `git log`，不写。
 - 用户说"停下长跑"：`node '<脚本>' stop '<主检出>'`。它只在 `.autoskills/` 下放一个停止文件，驱动做完手上的任务后停。
-- 用户要验收、改需求或快修：先停下驱动，等锁里的进程没了再做。
+- 用户要验收、改需求或快修：先停下驱动，等核对的结果不再是 `driver alive True` 再做。
