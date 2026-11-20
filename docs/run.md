@@ -55,7 +55,7 @@ node <仓库>\scripts\autoskills.mjs run <项目目录> --max-tasks 2 --model cl
 - 驱动被强行结束会留下锁。上面那样查不会把它当成还在跑，会话照常对账、记账，但不会自己删它。下次起驱动时，锁里的进程要是已经不在了，驱动会自己接手；那个进程号要是被别的进程用上了，驱动只看号还在不在，会当成另一个驱动在跑，拒绝起，并提示你删锁。这时主控会告诉你，你说删它才删；删之前它会再核对一次，核对出驱动还活着或者读不清楚就不删。验收包和 `stop` 命令也只看进程号：留着这样一把旧锁的时候，验收包页首会写有长跑在跑，`stop` 会说已经请它停下，其实没有驱动。主控说有旧锁的时候，跟它说一声删掉就行。
 - 核对锁的那段 PowerShell 只在 Windows PowerShell 5.1 上验过，没有在 PowerShell 7 上验过。
 - 项目契约不许会话在项目里起 claude 子进程的，主控不会起。AutoSkills 这个仓库自己就是这样：它只许在 `_private/eval` 的测试仓库里起。
-- 部署前做过三次真实探查，部署后又做了一次，记录在 [run-from-session-probe.md](run-from-session-probe.md)。
+- 部署前做过三次真实探查，部署后又做了一次，记录在 [run-from-session-probe.md](run-from-session-probe.md)。负责人本人验收时在 AutoSkills 仓库上说的那一次也记在那里：那是他明确要在本仓库试的一次，上一条的规矩没有变。
 
 ## 选项
 
