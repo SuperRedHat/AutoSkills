@@ -29,7 +29,7 @@
 
 ## 其他约定
 - `_private/` 不进 git（`.git/info/exclude`）。只改 `_private` 的任务，在账本写"未提交（_private 不进 git）"和改动文件的 sha256。
-- main 是已部署的状态。开发在分支上做，worktree 放在 `.autoskills/dev/<分支名>`，做完合回 main。收尾用过的分支 `finish`、`finish-a`、`finish-b`、`finish-t`，一句话起长跑用过的 `run-from-session`，都已合进 main；这些分支和它们的 worktree 删不删由负责人定。
+- main 是已部署的状态。开发在分支上做，worktree 放在 `.autoskills/dev/<分支名>`，做完合回 main。收尾用过的分支 `finish`、`finish-a`、`finish-b`、`finish-t` 和一句话起长跑用过的 `run-from-session` 都已合进 main，分支和 worktree 在 2026-11-20 按负责人的话删了。
 - 手动并行的做法在 `docs/manual-parallel.md`；收尾这一批的窗口说明和实测在 `docs/windows/finish/`。
 - 只有主控写账本，同一时间只有一个会话当主控。长跑驱动在本仓库上跑着的时候，别的会话不记账。
 - 部署只由负责人在普通终端、在主检出里执行。会话不跑 deploy-kit 的 --apply、--rollback、--neutral，不改用户级。
