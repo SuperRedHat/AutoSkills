@@ -9,7 +9,7 @@ description: 处理用户本人的验收和反馈，可以批量（如"T3.1–T3
 
 ## 1. 开始
 - 本会话还没调过时，用主检出的绝对路径调 `set_project_dir`，再用 `get_server_info` 核对 state_files。
-- 项目里有长跑在跑（`<项目>/.autoskills/run.lock` 里记的进程还活着）时，先请用户停下它再记账：两边同时写账本会丢更新。
+- 项目里有长跑在跑时，先请用户停下它再记账：两边同时写账本会丢更新。查法：`<项目>/.autoskills/run.lock` 不在，就没有；在的话，照 project-next 目录的 `long-run.md` 里“核对锁”一段核对，`driver alive True`（或者一直是 `Unknown`）算在跑，`driver alive False` 是没收尾的驱动留下的锁，不算。
 - 原话：用户这条消息的原文。
 - 时间：用命令读当前时间（PowerShell：`Get-Date -Format o`），不凭记忆写。
 - 会话 id：
