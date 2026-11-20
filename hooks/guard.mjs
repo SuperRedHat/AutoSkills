@@ -101,7 +101,7 @@
 //   the platform is claude, the input's permission_mode is one of ASK_MODES, every rule-1 hit of the
 //   command is a git push (no gh write, no npm publish beside it) and rule 4 does not hit. Everything else
 //   is denied as before: Codex (its hooks do not support ask and would run the call), an unknown platform,
-//   dontAsk, a missing or unknown permission_mode. In a headless session nobody can answer the dialog and
+//   auto (not watched yet, see ASK_MODES), dontAsk, a missing or unknown permission_mode. In a headless session nobody can answer the dialog and
 //   Claude refuses the asked call (measured in all six modes, docs/push-consent-probe.md), so an unattended
 //   run still cannot push.
 //
@@ -899,8 +899,9 @@ export function checkCommand(command, dialects) {
 
 /** The rule-1 deny reason: what was stopped and what to do instead (ADR-006 §2.5 and §4). */
 export function denyReason(hits) {
+  const push = hits.some(isPushHit);
   return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端。`
-    + '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（无人值守的会话、Codex、不支持的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。'
+    + (push ? '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（无人值守的会话、Codex、自动模式等不支持的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。' : '发布和 GitHub 的写操作代理不做。')
     + '用户本人可以在普通终端推送，例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作由用户本人做。'
     + '代理不要换写法重试：把要推送或发布的分支、提交写进汇报，接着做不受影响的工作。';
 }
@@ -957,9 +958,11 @@ const ask = (reason) => ({ decision: 'ask', reason });
  * Claude permission modes in which a push is answered with "ask" (owner decisions 2026-11-20 and 2026-11-21).
  * Measured: in a headless session an asked call does not run in any of the six modes; in an interactive
  * bypassPermissions session the dialog appears and the call runs after a yes (docs/push-consent-probe.md).
- * dontAsk, a missing field and any other value stay a deny.
+ * default, acceptEdits and plan are the modes in which a person answers every prompt; nobody has watched
+ * them yet. auto is left out until someone has: there a classifier answers prompts, and the docs only say
+ * a hook's ask "normally" reaches the dialog. auto, dontAsk, a missing field and any other value are a deny.
  */
-export const ASK_MODES = new Set(['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions']);
+export const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions']);
 
 /** True for a rule-1 hit that is a git push (checkGit names them "git ..."); gh and npm hits are not. */
 const isPushHit = (hit) => hit.startsWith('git ');
@@ -1114,7 +1117,8 @@ export const SELFTEST = [
   // A push is asked on Claude when the input carries a permission mode that can show the dialog.
   ['Bash', 'git push https://example.com/acme/demo.git main', 'ask', 'claude', { permission_mode: 'default' }],
   ['PowerShell', "& 'C:\\Program Files\\Git\\cmd\\git.exe' -C ../demo push", 'ask', 'claude', { permission_mode: 'bypassPermissions' }],
-  ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'auto' }],
+  ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'plan' }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'auto' }],
   ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'dontAsk' }],
   ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'somethingNew' }],
   ['Bash', 'git push origin main', 'deny', 'codex', { permission_mode: 'default' }],

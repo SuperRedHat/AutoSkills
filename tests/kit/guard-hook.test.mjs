@@ -833,10 +833,10 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
   const push = 'git push https://example.com/acme/demo.git main';
   const inMode = (mode, command = push, tool = 'Bash') => decide(claudeInput(tool, command, mode), 'claude');
 
-  test('the modes: ask in default, acceptEdits, auto, plan and bypassPermissions; deny in dontAsk, with no mode and with an unknown one', () => {
-    assert.deepEqual([...ASK_MODES].sort(), ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'plan']);
+  test('the modes: ask in default, acceptEdits, plan and bypassPermissions; deny in auto, dontAsk, with no mode and with an unknown one', () => {
+    assert.deepEqual([...ASK_MODES].sort(), ['acceptEdits', 'bypassPermissions', 'default', 'plan']);
     for (const mode of ASK_MODES) assert.equal(inMode(mode).decision, 'ask', mode);
-    for (const mode of ['dontAsk', 'somethingNew', '', 'DEFAULT', null, 7, ['default']]) assert.equal(inMode(mode).decision, 'deny', JSON.stringify(mode));
+    for (const mode of ['auto', 'dontAsk', 'somethingNew', '', 'DEFAULT', null, 7, ['default']]) assert.equal(inMode(mode).decision, 'deny', JSON.stringify(mode));
     const { permission_mode, ...noMode } = claudeInput('Bash', push);
     assert.equal(permission_mode, 'default');
     assert.equal(decide(noMode, 'claude').decision, 'deny', 'no permission_mode field');
@@ -867,7 +867,7 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
   });
 
   test('publishing and gh writes are never asked', () => {
-    for (const mode of [...ASK_MODES, 'dontAsk']) {
+    for (const mode of [...ASK_MODES, 'auto', 'dontAsk']) {
       for (const command of ['npm publish', 'npm publish --access public', 'gh pr create --fill', 'gh release create v1.0.0', 'gh repo create acme/demo --public', 'gh api -X POST repos/acme/demo/issues', 'gh workflow run ci.yml']) {
         assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
         assert.equal(inMode(mode, command, 'PowerShell').decision, 'deny', `${mode}, PowerShell: ${command}`);
@@ -884,6 +884,11 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     assert.match(refused.reason, /拒绝了这条命令/);
     assert.match(refused.reason, /确认窗/);
     assert.match(refused.reason, new RegExp(REASON_HINT));
+    // A refusal that is not about a push does not talk about the dialog.
+    const publish = inMode('default', 'npm publish');
+    assert.match(publish.reason, /发布和 GitHub 的写操作代理不做/);
+    assert.doesNotMatch(publish.reason, /确认窗/);
+    assert.match(inMode('default', 'git push origin main && npm publish').reason, /确认窗/);
   });
 
   test('spawned: the ask is one JSON line with permissionDecision ask, exit 0, and the heartbeat says ask', () => {

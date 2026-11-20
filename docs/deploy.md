@@ -129,7 +129,7 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
 
 和 AS3-121 一致。目的是确认每类被禁的动作在执行前就被拒，并记下**拒绝来源**：
 
-- **守卫**：心跳里有这次调用的 `decision=deny`（心跳在 `<runtime>/hooks/heartbeat/guard.jsonl`，每行只有 `ts`、`platform`、`event`、`decision`）；
+- **守卫**：心跳里有这次调用的 `decision=deny`；Claude 上的推送是 `decision=ask`，弹出确认窗后点拒绝（心跳在 `<runtime>/hooks/heartbeat/guard.jsonl`，每行只有 `ts`、`platform`、`event`、`decision`）；
 - **规则或 deny**：平台提示被规则（Codex 的 `autoskills.rules`）或 settings 的 deny 拒绝；
 - **只是 pushurl**：命令执行了，git 因为 `no_push` 失败。这说明前两层都没拦住。
 
@@ -150,7 +150,7 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
    | Codex | `git -C <冒烟仓库> push` | 照实记录 |
    | Codex | apply_patch 写进只读金丝雀 | 照实记录 |
 
-3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。
+3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。Claude 上推送的心跳是 `decision=ask`，这个报告不列它，要自己到心跳文件里看。
 4. `node _private/eval/harness/smoke-kit.mjs cleanup` 删掉冒烟仓库和裸库，并删掉 Codex 为它写进 `~/.codex/config.toml` 的信任段（删了什么记在 `_private/eval/smoke/smoke-kit.log`）。金丝雀目录保留。
 
 不做真实的外发调用（发邮件、gh 写操作）：这些由检查脚本静态核对 deny 列表，守卫用 `--selftest` 覆盖。
@@ -181,7 +181,7 @@ check-kit 只读，按六节输出，每行是 `PASS`、`WARN` 或 `FAIL`、检�
 - **WARN** 下面可能有一行 `optional:`，是你可以跑也可以不跑的命令（例如删除花括号目录）。
 - 末尾一行是 PASS、WARN、FAIL 的计数。部署成功的标准：`check-kit` 和 `--dry-run --expect-clean` 都退出 0。
 - 中性档在位时，第 3 节报 FAIL 并给出回滚中性档的命令（`--report-only` 下是 WARN）。
-- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `git push origin main` 要输出拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。守卫出错时 Claude 一侧是退出 2，Codex 一侧是理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON 加退出 0（`exit 0, deny JSON for a guard error`），两边都说明匹配到的调用全被拦。要特别注意：**守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令：没有任何输出，退出码也不是 2，而 Codex 只认拒绝 JSON 或退出 2），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
+- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `npm publish` 要输出拒绝 JSON，合成的 `git push origin main` 在 Claude 上要输出询问 JSON（权限模式 dontAsk 时是拒绝 JSON）、在 Codex 上要输出拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。守卫出错时 Claude 一侧是退出 2，Codex 一侧是理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON 加退出 0（`exit 0, deny JSON for a guard error`），两边都说明匹配到的调用全被拦。要特别注意：**守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令：没有任何输出，退出码也不是 2，而 Codex 只认拒绝 JSON 或退出 2），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
 - **guard config hook-config.json**：运行区的 `hook-config.json` 要能解析、只有部署脚本写的三个键（`runtime`、`readonly_dirs`、`kit_repo`）、路径都是绝对路径。读不出来、不是 JSON 或有相对路径时，守卫每次都按出错处理（Claude 上退出 2，Codex 上输出拒绝 JSON），**这时每次匹配到的调用都会被拦**；多出来的键守卫不认、会忽略，所以拼错的键等于没设（例如只读目录不生效）。修法都是重跑部署（它按本地配置重写这个文件），或手工改对。
 - **部署前**，上面两行报 `not deployed (未部署)`，是 WARN，不算失败。
 - 退出 2 是用法错误，或本地配置存在但读不出来。

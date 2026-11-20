@@ -27,8 +27,9 @@
 //
 // Targets of AS3-112b (desiredFiles with the local config; ADR-006 §2.5/§2.6):
 //   ~/.claude/settings.json   merged with config/claude/settings.fragment.json (mergeClaudeSettings): kit
-//                             keys are set, kit deny rules added, kit hook entries replaced; every other key,
-//                             rule, hook and plugin stays. Generated from the local config: Edit(//<dir>/**)
+//                             keys are set, kit deny rules added, the retired kit deny rules for git push
+//                             taken out (RETIRED_CLAUDE_DENY, named in the plan's reason), kit hook entries
+//                             replaced; every other key, rule, hook and plugin stays. Generated from the local config: Edit(//<dir>/**)
 //                             for each read-only folder (an Edit rule covers every built-in file-writing tool,
 //                             Write included) and Read(//<dir>/**) for each customer-data folder.
 //   ~/.codex/config.toml      only the keys of config/codex/config.fragment.toml are set (scripts/lib/
@@ -605,9 +606,13 @@ export function desiredFiles(roots, { claudeContract = DEFAULT_OPTIONS.claude_co
   if (curSettings.error) conflict(t.claudeSettings, 'settings', curSettings.error);
   else {
     try {
+      // The plan names the deny rules the merge takes out, so a dry run shows them before anything is written.
+      const curDeny = curSettings.value?.permissions?.deny;
+      const retired = Array.isArray(curDeny) ? curDeny.filter((rule) => RETIRED_CLAUDE_DENY.includes(rule)) : [];
       mergedJson(t.claudeSettings, curSettings, mergeClaudeSettings(curSettings.value, settings), {
         group: 'settings', mode: 'merge', source: settingsSrc,
-        reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys stay',
+        reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys and rules stay'
+          + (retired.length ? `; takes out ${retired.length} retired git push deny rule(s), the guard asks the owner instead: ${retired.join(', ')}` : ''),
       });
     } catch (e) {
       if (!(e instanceof MergeError)) throw e;

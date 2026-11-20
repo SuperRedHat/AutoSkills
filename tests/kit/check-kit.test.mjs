@@ -198,7 +198,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'hooks.config').detail, /^<runtime>\/hooks\/hook-config\.json: loads, absolute paths, keys runtime, readonly_dirs \(1\), kit_repo$/);
   // Claude's command + args once (its two guard groups share the line), Codex's string in every shell.
   const live = row(json.rows, 'hooks.live.guard').detail;
-  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
+  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex, and denied on both in mode dontAsk \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -228,6 +228,10 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.match(row(json.rows, 'claude.hook.paths').detail, /old\/hooks\/guard\.mjs/);
   assert.equal(row(json.rows, 'claude.hook.PreToolUse.guard.mjs.project-manager').status, 'PASS');
   assert.match(row(json.rows, 'claude.deny.bash').detail, /^44 of 45 missing/);
+  // This home still holds the kit's old deny rule for git push: the dialog could not appear.
+  assert.equal(row(json.rows, 'claude.rules.push').status, 'WARN');
+  assert.match(row(json.rows, 'claude.rules.push').detail, /^1 deny rule\(s\): Bash\(git push \*\): a deny rule wins over the guard's ask/);
+  assert.match(row(json.rows, 'claude.rules.push').fix, /re-run deploy-kit/);
   assert.match(row(json.rows, 'claude.deny.powershell').detail, /^45 of 45 missing/);
   // An env value in settings is not printed, only that it differs.
   assert.doesNotMatch(row(json.rows, 'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS').detail, /"2"/);
@@ -678,6 +682,7 @@ test('the live run: a guard that denies everything, or nothing, decided wrong; t
     /, deny \(npm publish\): exit 0 without output \(the command was not denied\)$/,
     /^codex, .*, deny \(git push origin main\): exit 0 without output \(the command was not denied\)$/,
     /^claude, .*, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)$/,
+    /, deny \(git push origin main, mode dontAsk\): exit 0 without output \(the command was not denied\)$/,
   ];
   for (const re of kinds) assert.ok(live.lines.some((l) => re.test(l)), `${re}\n${live.lines.join('\n')}`);
   assert.ok(live.lines.every((l) => kinds.some((re) => re.test(l))), live.lines.join('\n'));
@@ -714,7 +719,7 @@ test('hook-config.json: bad JSON and a relative path are a FAIL that says every 
     assert.equal(claude.length + codex.length, live.lines.length, live.lines.join('\n'));
     assert.ok(claude.length > 0 && claude.every((l) => /: exit 2: AutoSkills 守卫出错，已按失败处理/.test(l)), live.lines.join('\n'));
     assert.ok(codex.length > 0 && codex.every((l) => /: exit 0, deny JSON for a guard error: AutoSkills 守卫出错，按负责人定的出错即拦截处理/.test(l)), live.lines.join('\n'));
-    if (WIN) assert.equal(codex.filter((l) => l.startsWith('codex, powershell -Command,')).length, 3, live.lines.join('\n'));
+    if (WIN) assert.equal(codex.filter((l) => l.startsWith('codex, powershell -Command,')).length, 4, live.lines.join('\n'));
   }
 });
 

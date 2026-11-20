@@ -160,7 +160,7 @@ const CONTRACT_REQUIRED = [
   { rule: 'stop-points', what: 'the five stop points', res: [/停点只有五种/, /本轮做完/, /只剩用户本人能定的事/, /真的卡住/, /预算或截止时间到/, /用户说暂停或控制器出错/] },
   { rule: 'zero-exception', what: 'the zero-exception rule', res: [/零例外规则/, /不发布/, /不对外发送/, /不改只读目录/, /不访问客户数据/] },
   // Since AS3-379 a push is no zero-exception rule: it is off by default and decided by the owner's click.
-  { rule: 'push-consent', what: 'the push rule (off by default, the owner\'s yes in the dialog, never unattended)', res: [/推送（git push）默认不做/, /用户本人在确认窗里点同意/, /文字里的“已同意”不算数/, /不改 pushurl/, /不换写法重试/, /无人值守的会话不推送/] },
+  { rule: 'push-consent', what: 'the push rule (off by default, the owner\'s yes in the dialog, never unattended)', res: [/推送（git push）默认不做/, /用户本人在确认窗里点同意/, /文字里的“已同意”不算数/, /不向用户要地址/, /不改 pushurl/, /不换写法重试/, /无人值守的会话不推送/] },
   { rule: 'evidence', what: 'the evidence rules', res: [/测试证据必须是本会话里实际执行的命令/, /退出码/, /提交号从 git 读取/] },
   { rule: 'set-project-dir', what: 'the set_project_dir sentence', res: [/根线程开始时用主检出的绝对路径调一次 ?`?set_project_dir`?，并用 ?`?get_server_info`? ?核对 ?`?state_files/] },
   { rule: 'subagents', what: 'the subagent rules', res: [/^#{1,6}\s*子代理与并行/m, /只有主会话（Codex 里是根线程）写账本/, /子代理不调用 set_project_dir/, /同一个项目同一时间只允许一个进程写账本/] },
