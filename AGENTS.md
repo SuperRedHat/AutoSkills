@@ -5,7 +5,7 @@
 
 ## 项目
 - 主检出：本仓库根目录（主检出，不是 worktree）
-- 目标：维护 AutoSkills 3.0。3.0 在 2026-11-19 收尾：第 1 批的串行套件（2026-11-01 部署）加上长跑驱动（`scripts/autoskills.mjs run`）、验收包（`scripts/autoskills.mjs accept`）和手动并行的技能文字，本地标签 `v3.0`。设计决定在 ADR-006 和 ADR-009；完工标准 5 条和原来 8 条最终效果的状态在账本的 PRD 里。3.0 剩下的只有负责人的完工验收（AS3-372）。之后要做新的事，先用 project-plan 立项，再改这一节。
+- 目标：维护 AutoSkills 3.0。3.0 在 2026-11-19 收尾，2026-11-20 负责人验收通过（AS3-372）：第 1 批的串行套件（2026-11-01 部署）加上长跑驱动（`scripts/autoskills.mjs run`）、验收包（`scripts/autoskills.mjs accept`）和手动并行的技能文字，本地标签 `v3.0`。设计决定在 ADR-006 和 ADR-009；完工标准 5 条和原来 8 条最终效果的状态在账本的 PRD 里。当前的小项（负责人 2026-11-20 确认）：一句话起长跑，AS3-373 到 AS3-375。负责人在会话里说一句“起长跑”，主控在新窗口里起长跑驱动，驱动还在跑的时候自己只读；只改技能文字，范围和假设在 PRD 最后一节。之后要做新的事，先用 project-plan 立项，再改这一节。
 - 已存档：P0 和第 2 批（账本 2.0、runner、自动并行）在分支 `p0` 和 `as3-359`，本地标签 `p0-archive-2026-11-19`、`as3-359-archive-2026-11-19`。worktree `.autoskills/dev/p0` 留着，不在上面开发。
 - 非目标（没有新的项目级设计确认之前）：自动并行、账本 2.0、runner 的任何后续；账本迁移和发布窗口；Codex 上的长跑驱动；把命令部署到用户级；守卫钩子的新规则；账本 1.5.1 的修改；换别的工作流层；改别的项目的说明文件；系统 Node、PATH 和用户的持久环境变量。
 
@@ -18,12 +18,13 @@
 - 默认验证命令：任务里的 verification_commands，在干活的那个检出的根目录跑。脚本和测试按自身文件位置找仓库里的文件，不按当前目录。
 - 不用匹配不到文件也退出 0 的通配（`node --test` 的通配就是这样）；测试文件一律写全名。
 - 验证的轻重由每次规划定。3.0 收尾这一批定的是从轻（负责人 2026-11-19；ADR-009 §2.15）。
+- 跑 `tests/kit/check-kit.test.mjs` 之前把 Codex 彻底退出：它的后台进程开着时，这个文件一加载就读真实的 `~/.codex/tmp`，碰到被占用的锁文件就退出 1。
 - kit 测试（`tests/kit`）用 Bash 工具（Git Bash）跑，PATH 上第一个 bash 不能是 WSL 启动器。`deploy-kit.test.mjs` 只在主检出、并且没有别的会话或窗口在调工具时跑：它要用 `_private` 里的恢复工具（worktree 里没有）；别的会话一调工具，它里面 “the real user directory targets, the real runtime and the .git/config of the real repos are unchanged” 那一条就会失败。
 - worktree 里没有私有词表，那里的 lint 只用内置的 privacy 规则。从 `_private` 搬进仓库的文件和新写的文档，在主检出里跑 `node scripts/lint-kit.mjs --check privacy --path <文件>`（路径可以指到 worktree 里的文件），这样才带词表。
 - 真实会话（探查、试跑）只在 `_private/eval` 的一次性测试仓库里起，用的是用户级现在的套件。起真实 claude 会话的脚本从 PowerShell 启动，不从 Git Bash 启动。
 
 ## 验收
-- 用户本人验收点：一个，AS3-372 完工验收（3.0 的最后一个）。
+- 用户本人验收点：一个，AS3-375（负责人部署以后自己说一次“起长跑”）。3.0 的完工验收 AS3-372 已在 2026-11-20 通过。
 - 待验收不挡下游：否。
 
 ## 其他约定
