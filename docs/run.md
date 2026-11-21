@@ -72,7 +72,7 @@ node <仓库>\scripts\autoskills.mjs run <项目目录> --max-tasks 2 --model cl
 | `--cli <文件>` | claude 可执行文件 | 环境变量 `CLAUDE_EXE`，没有就用 PATH 上的 claude |
 | `--help` | 打印用法 | — |
 
-权限模式默认用自动模式，是在测试仓库里探过的：自动模式下无头会话能把一个任务做完；被守卫钩子或拒绝规则拦下的命令，会话照常收场，不会卡住等人点。探查记录在 `docs/windows/finish/a-probes.md`。
+权限模式默认用自动模式，是在测试仓库里探过的：自动模式下无头会话能把一个任务做完；被守卫钩子或拒绝规则拦下的命令，会话照常收场，不会卡住等人点。驱动给它起的每个会话设环境变量 `AUTOSKILLS_UNATTENDED=1`：守卫见到它，推送在任何权限模式下都直接拒绝，不弹确认窗。探查记录在 `docs/windows/finish/a-probes.md`。
 
 ## 一轮怎么走
 

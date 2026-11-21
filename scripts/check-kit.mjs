@@ -63,7 +63,7 @@
 //      synthetic allow input (git status: exit 0, no output), once with a synthetic deny input (npm publish:
 //      the deny JSON of rule 1) and once with a push (git push origin main: the ask JSON on Claude, where the
 //      owner decides in the confirmation dialog, and the deny JSON on Codex), and once more with that push in
-//      permission mode dontAsk (the deny JSON on both). Claude's command and args start directly; Codex's string runs in each shell
+//      a session marked unattended, as the long-run driver marks its own (the deny JSON on both). Claude's command and args start directly; Codex's string runs in each shell
 //      it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell -Command and bash -c
 //      when bash is on PATH (sh -c off Windows). A guard error shows as exit 2 or as a deny JSON whose reason
 //      starts with the guard's ERROR_DENY_MARK. A guard that does not start prints no JSON and exits with
@@ -105,7 +105,7 @@ import {
   slash, pathKey, within,
 } from './lib/kit-targets.mjs';
 import { keyValues, getValue, TomlEditError } from './lib/toml-edit.mjs';
-import { PROBE_ENV, ERROR_DENY_MARK } from '../hooks/guard.mjs';
+import { PROBE_ENV, UNATTENDED_ENV, ERROR_DENY_MARK } from '../hooks/guard.mjs';
 import { isNeutralText, neutralsInPlace, deployRootOf } from './deploy-kit.mjs';
 import { planRepos, scanRepos, DEFAULT_DEPTH, NO_PUSH } from './set-pushurl.mjs';
 
@@ -127,7 +127,7 @@ const SELFTEST_TIMEOUT_MS = 60_000;
 // The live run of a guard command line: the hook's own timeout (seconds) when set, at most this.
 const PROBE_TIMEOUT_MS = 60_000;
 // The synthetic inputs of the live run: a harmless shell command the guard allows, a publish it denies and
-// a push (run twice, in mode default and in mode dontAsk). The guard only reads them; no command is ever run.
+// a push (run twice, plain and in a session marked unattended). The guard only reads them; no command is ever run.
 // allow and deny are run on both platforms. push is the one command the platforms answer differently since
 // AS3-379: Claude's guard asks (the owner decides in the dialog), Codex's denies (its hooks cannot ask).
 export const PROBE_COMMANDS = { allow: 'git status', deny: 'npm publish', push: 'git push origin main' };
@@ -1127,13 +1127,15 @@ export function probeInput(platform, command, mode = 'default') {
 
 /**
  * One live run: the form started with the input on stdin, in the OS temp dir, with PROBE_ENV=1 (the guard
- * then writes no heartbeat).
+ * then writes no heartbeat). UNATTENDED_ENV is set to 1 or taken out, whatever the caller's own environment
+ * says: check-kit may itself run inside a session the long-run driver started.
  * @returns {{status: number|null, stdout: string, stderr: string, error?: string}}
  */
-export function runProbe(form, input, timeoutMs, env = process.env) {
+export function runProbe(form, input, timeoutMs, unattended = false, env = process.env) {
+  const base = Object.fromEntries(Object.entries(env).filter(([k]) => k.toUpperCase() !== UNATTENDED_ENV));
   const r = spawnSync(form.file, form.args, {
     input, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: !!form.verbatim, timeout: timeoutMs,
-    cwd: os.tmpdir(), env: { ...env, [PROBE_ENV]: '1' }, maxBuffer: 1024 * 1024,
+    cwd: os.tmpdir(), env: { ...base, [PROBE_ENV]: '1', ...(unattended ? { [UNATTENDED_ENV]: '1' } : {}) }, maxBuffer: 1024 * 1024,
   });
   return { status: r.status, stdout: `${r.stdout ?? ''}`, stderr: `${r.stderr ?? ''}`, ...(r.error ? { error: r.error.code || r.error.message } : {}) };
 }
@@ -1215,7 +1217,7 @@ export function hookConfigChecks(ctx, sec) {
  * and deny input.
  * @param {object} ctx makeContext
  * @param {object} sec section collector
- * @param {{probe?: Function, env?: object}} [deps] probe(form, input, timeoutMs) defaults to runProbe
+ * @param {{probe?: Function, env?: object}} [deps] probe(form, input, timeoutMs, unattended) defaults to runProbe
  */
 export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env } = {}) {
   const s = (p) => shown(p, ctx.roots);
@@ -1231,10 +1233,10 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
     const forms = e.args ? [{ via: 'command + args', file: e.command, args: e.args }] : shellForms(String(e.command ?? ''), env);
     const timeout = Math.min(PROBE_TIMEOUT_MS, typeof e.timeout === 'number' && e.timeout > 0 ? e.timeout * 1000 : PROBE_TIMEOUT_MS);
     for (const form of forms) {
-      // pushNoDialog: the same push in a mode that cannot show the dialog (dontAsk) is a deny on both platforms.
+      // pushNoDialog: the same push in a session marked unattended is a deny on both platforms.
       for (const what of ['allow', 'deny', 'push', 'pushNoDialog']) {
         const expect = what === 'push' ? pushAnswer(e.platform) : what === 'pushNoDialog' ? 'deny' : what;
-        const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[what === 'pushNoDialog' ? 'push' : what], what === 'pushNoDialog' ? 'dontAsk' : 'default'), timeout);
+        const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[what === 'pushNoDialog' ? 'push' : what], 'default'), timeout, what === 'pushNoDialog');
         // A shell that is not on this machine says nothing about the hook.
         if (!e.args && r.error === 'ENOENT') { if (!skipped.includes(form.via)) skipped.push(form.via); continue; }
         runs.push({ e, via: form.via, what, expect, ...judgeProbe(expect, r) });
@@ -1248,7 +1250,7 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   const bad = runs.filter((r) => r.kind !== 'ok');
   const skip = skipped.length ? `; skipped (not on this machine): ${skipped.join(', ')}` : '';
   if (!bad.length) {
-    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied, ${PROBE_COMMANDS.push} asked on Claude and denied on Codex, and denied on both in mode dontAsk (${per})${skip}`);
+    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied, ${PROBE_COMMANDS.push} asked on Claude and denied on Codex, and denied on both in a session marked unattended (${per})${skip}`);
     return;
   }
   // What each kind of wrong run means on its platform (ADR-006 §4).
@@ -1267,7 +1269,7 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   if (any((r) => r.kind === 'error')) fixes.push('the guard\'s reason is in the lines below; a hook-config.json problem also shows in the row above');
   if (any((r) => r.kind === 'wrong')) fixes.push(`the deployed guard.mjs does not decide like the repo's: ${deployFix(ctx)}`);
   sec.fail('hooks.live.guard', item, `${bad.length} of ${runs.length} run(s) wrong: ${effects.join('; ')} (${per})${skip}`, fixes.join('; '),
-    bad.map((r) => `${r.e.platform}, ${r.via}, ${r.expect} (${r.what === 'pushNoDialog' ? `${PROBE_COMMANDS.push}, mode dontAsk` : PROBE_COMMANDS[r.what]}): ${r.detail}`));
+    bad.map((r) => `${r.e.platform}, ${r.via}, ${r.expect} (${r.what === 'pushNoDialog' ? `${PROBE_COMMANDS.push}, marked unattended` : PROBE_COMMANDS[r.what]}): ${r.detail}`));
 }
 
 // ---------- check 5: pushurl ----------

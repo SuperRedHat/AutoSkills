@@ -29,7 +29,8 @@ export function childEnv(project, base = process.env, extra = {}) {
     }
     env[k] = v;
   }
-  Object.assign(env, { PROJECT_DIR: project, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', DISABLE_AUTOUPDATER: '1' }, extra);
+  // AUTOSKILLS_UNATTENDED: the guard hook then denies a git push in every permission mode (hooks/guard.mjs, UNATTENDED_ENV).
+  Object.assign(env, { PROJECT_DIR: project, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', DISABLE_AUTOUPDATER: '1', AUTOSKILLS_UNATTENDED: '1' }, extra);
   return { env, stripped };
 }
 

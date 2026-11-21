@@ -45,7 +45,7 @@ const prompt = argv[argv.indexOf('-p') + 1];
 const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
 const n = fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0;
 fs.appendFileSync(calls, JSON.stringify({ prompt, argv, cwd: process.cwd(), projectDir: process.env.PROJECT_DIR ?? null,
-  claudecode: process.env.CLAUDECODE ?? null, effortEnv: process.env.CLAUDE_EFFORT ?? null }) + '\n');
+  claudecode: process.env.CLAUDECODE ?? null, effortEnv: process.env.CLAUDE_EFFORT ?? null, unattended: process.env.AUTOSKILLS_UNATTENDED ?? null }) + '\n');
 const step = JSON.parse(fs.readFileSync(process.env.FAKE_SCRIPT, 'utf8'))[n] || {};
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 out({ type: 'system', subtype: 'init', session_id: 'fake-' + n, model: flag('--model') || 'stand-in', permissionMode: flag('--permission-mode'), tools: [], mcp_servers: [] });
@@ -247,8 +247,11 @@ describe('the commands and their options', () => {
     assert.equal(c.projectDir, p.proj);
     assert.equal(c.claudecode, null);
     assert.equal(c.effortEnv, null);
+    // The session the driver started carries the unattended mark: the guard hook denies a git push there in every mode.
+    assert.equal(c.unattended, '1');
     await drive(p, ['--model', 'claude-opus-5-5', '--effort', 'high', '--permission-mode', 'bypassPermissions']);
     c = p.calls()[1];
+    assert.equal(c.unattended, '1', 'whatever the permission mode');
     assert.deepEqual(c.argv.slice(2), ['--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions', '--model', 'claude-opus-5-5', '--effort', 'high']);
   });
 
@@ -772,6 +775,9 @@ describe('pieces', () => {
     const { env, stripped } = childEnv('X:/p', { CLAUDECODE: '1', CLAUDE_EFFORT: 'max', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 's', PROJECT_DIR: 'Y:/q', KEEP: 'k', CLAUDE_CODE_SUBAGENT_MODEL: 'm' });
     assert.equal(env.PROJECT_DIR, 'X:/p');
     assert.equal(env.KEEP, 'k');
+    // The guard hook reads this mark and denies a git push in every permission mode (hooks/guard.mjs).
+    assert.equal(env.AUTOSKILLS_UNATTENDED, '1');
+    assert.equal(childEnv('X:/p', { AUTOSKILLS_UNATTENDED: '0' }).env.AUTOSKILLS_UNATTENDED, '1', 'a value from outside does not take the mark away');
     assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, 'm', 'the owner\'s own settings stay');
     for (const k of ['CLAUDECODE', 'CLAUDE_EFFORT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID']) assert.equal(env[k], undefined, k);
     assert.deepEqual(stripped.sort(), ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_EFFORT']);
