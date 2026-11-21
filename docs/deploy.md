@@ -153,7 +153,7 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
 3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。Claude 上推送和 `npm publish` 的心跳是 `decision=ask`，这个报告不列它们，要自己到心跳文件里看。
 4. `node _private/eval/harness/smoke-kit.mjs cleanup` 删掉冒烟仓库和裸库，并删掉 Codex 为它写进 `~/.codex/config.toml` 的信任段（删了什么记在 `_private/eval/smoke/smoke-kit.log`）。金丝雀目录保留。
 
-不做真实的外发调用（发邮件、gh 写操作）：发邮件这类 MCP 工具由检查脚本静态核对 deny 列表；gh 的写操作已经没有 deny 规则，由守卫的 `--selftest` 和检查脚本的现场探查覆盖。
+不做真实的外发调用（发邮件、gh 写操作）：发邮件这类 MCP 工具由检查脚本静态核对 deny 列表；gh 的写操作已经没有 deny 规则，由守卫的 `--selftest` 和 `tests/kit/guard-hook.test.mjs` 覆盖（检查脚本的现场探查只跑 `git status`、`npm publish` 和 `git push`）。
 
 ---
 
@@ -276,7 +276,7 @@ node scripts/deploy-kit.mjs --drill _private/eval/restore-drill [--claude-contra
 
 让代理推（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”，代理从 origin 取地址、写完整地址推送，守卫弹出确认窗，你点同意才推。六种权限模式下守卫回的都是询问（自动模式和 dontAsk 是 2026-11-21 加的）。长跑驱动起的会话带着无人值守的标记，守卫直接拒绝；别的无头会话和 Codex 上推不了。量过什么、哪些模式没人看过，见 [push-consent-probe.md](push-consent-probe.md)。
 
-让代理发布（只在 Claude Code 上，2026-11-21 起）：gh 的写操作、带写方法的 gh api 和 npm publish 和推送一样，守卫回询问，你在确认窗里点同意才执行；带无人值守标记的会话、读不出权限模式和 Codex 上照旧拒绝。用户级设置里以前写进去的那 90 条 gh 和 npm publish 的 deny 规则，部署时连同 git push 的 10 条一起去掉，预演的理由里会逐条列出。对外发送类的 MCP 工具照旧有 deny 规则。
+让代理发布（只在 Claude Code 上，2026-11-21 起）：gh 对仓库、版本、PR、workflow 的写操作（别的 gh 写操作守卫不认，不弹窗也不拦），带写方法的 gh api 和 npm publish 和推送一样，守卫回询问，你在确认窗里点同意才执行；带无人值守标记的会话、读不出权限模式和 Codex 上照旧拒绝。用户级设置里以前写进去的那 90 条 gh 和 npm publish 的 deny 规则，部署时连同 git push 的 10 条一起去掉，预演的理由里会逐条列出。对外发送类的 MCP 工具照旧有 deny 规则。
 
 你自己推：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，按远端名推送会失败。在普通终端（不是代理的会话）里写完整地址：
 
