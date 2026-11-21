@@ -27,8 +27,9 @@
 //
 // Targets of AS3-112b (desiredFiles with the local config; ADR-006 §2.5/§2.6):
 //   ~/.claude/settings.json   merged with config/claude/settings.fragment.json (mergeClaudeSettings): kit
-//                             keys are set, kit deny rules added, kit hook entries replaced; every other key,
-//                             rule, hook and plugin stays. Generated from the local config: Edit(//<dir>/**)
+//                             keys are set, kit deny rules added, the retired kit deny rules for git push
+//                             taken out (RETIRED_CLAUDE_DENY, named in the plan's reason), kit hook entries
+//                             replaced; every other key, rule, hook and plugin stays. Generated from the local config: Edit(//<dir>/**)
 //                             for each read-only folder (an Edit rule covers every built-in file-writing tool,
 //                             Write included) and Read(//<dir>/**) for each customer-data folder.
 //   ~/.codex/config.toml      only the keys of config/codex/config.fragment.toml are set (scripts/lib/
@@ -429,8 +430,19 @@ function mergeHooks(cur, kitHooks) {
 }
 
 /**
+ * Deny rules the kit wrote into ~/.claude/settings.json up to 2026-11 and no longer wants there: the ten
+ * git push rules. A deny rule in the settings wins over the guard's "ask" (docs/push-consent-probe.md), so
+ * with them in place the owner would never get the confirmation dialog for a push (AS3-379). The guard
+ * still sees every push; gh writes and npm publish keep their deny rules.
+ */
+export const RETIRED_CLAUDE_DENY = Object.freeze(['Bash', 'PowerShell'].flatMap((tool) => [
+  'git push *', 'git -C * push', 'git -C * push *', 'git -c * push', 'git -c * push *',
+].map((rule) => `${tool}(${rule})`)));
+
+/**
  * ~/.claude/settings.json after the merge: the kit keys of the filled fragment are set (env and worktree
- * key by key), its deny rules added where missing, its hook groups merged (mergeHookGroups). Every other
+ * key by key), its deny rules added where missing, the retired kit deny rules (RETIRED_CLAUDE_DENY) taken
+ * out, its hook groups merged (mergeHookGroups). Every other
  * key, permission rule, hook and plugin stays, in its order. Applying it to its own output changes nothing.
  * @param {object|null} current parsed settings, or null when the file does not exist
  * @param {object} fragment filled fragment, deny rules for the local folders included
@@ -442,6 +454,7 @@ export function mergeClaudeSettings(current, fragment) {
   if (!isObject(out)) throw new MergeError('the file does not hold a JSON object');
   const { hooks, ...rest } = fragment;
   mergeValue(out, rest, '');
+  if (Array.isArray(out.permissions?.deny)) out.permissions.deny = out.permissions.deny.filter((rule) => !RETIRED_CLAUDE_DENY.includes(rule));
   if (hooks) out.hooks = mergeHooks(out.hooks, hooks);
   return out;
 }
@@ -593,9 +606,13 @@ export function desiredFiles(roots, { claudeContract = DEFAULT_OPTIONS.claude_co
   if (curSettings.error) conflict(t.claudeSettings, 'settings', curSettings.error);
   else {
     try {
+      // The plan names the deny rules the merge takes out, so a dry run shows them before anything is written.
+      const curDeny = curSettings.value?.permissions?.deny;
+      const retired = Array.isArray(curDeny) ? curDeny.filter((rule) => RETIRED_CLAUDE_DENY.includes(rule)) : [];
       mergedJson(t.claudeSettings, curSettings, mergeClaudeSettings(curSettings.value, settings), {
         group: 'settings', mode: 'merge', source: settingsSrc,
-        reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys stay',
+        reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys and rules stay'
+          + (retired.length ? `; takes out ${retired.length} retired git push deny rule(s), the guard asks the owner instead: ${retired.join(', ')}` : ''),
       });
     } catch (e) {
       if (!(e instanceof MergeError)) throw e;

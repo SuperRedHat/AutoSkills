@@ -37,6 +37,8 @@
 //   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
 //   Codex honoured this deny live in C0 in one case only (root thread, an MCP tool, the hook exit 0);
 //   child threads, Bash and apply_patch were not covered.
+//   On ask (a git push on Claude, see Rule 1), the same line with permissionDecision "ask", exit 0: Claude
+//   shows the reason in a confirmation dialog and runs the call only after the owner's yes.
 // Errors: unknown option, stdin is not a JSON object, a shell call has no command text or does not parse
 // (unterminated quote, $( ... ), block comment, here-string), a write tool has neither a target path nor a
 // readable patch while read-only folders are registered, the local config exists but cannot be read, or
@@ -63,7 +65,7 @@
 // A missing file means no heartbeat and no read-only folders; a file that exists but cannot be read or
 // parsed, or holds a relative path, is an error.
 // Heartbeat: every run except --selftest appends one line to <runtime>/hooks/heartbeat/guard.jsonl with
-// exactly {ts, platform, event, decision} (decision: allow, deny or error), never the command text, so
+// exactly {ts, platform, event, decision} (decision: allow, deny, ask or error), never the command text, so
 // the check script can tell the hook really ran. When the next line would take the file past 1 MiB, the
 // file is first cut to its newest 512 KiB of whole lines. A heartbeat that cannot be written is a stderr
 // note, never a block. With AUTOSKILLS_GUARD_PROBE=1 in the environment no heartbeat is written: check-kit
@@ -95,6 +97,13 @@
 //     --input without an explicit method (gh then sends POST). An explicit -X GET stays a read: gh sends
 //     the fields as query parameters.
 //   - npm publish.
+//   A git push is asked, not denied, when all of this holds (owner decisions 2026-11-20 and 2026-11-21):
+//   the platform is claude, the input's permission_mode is one of ASK_MODES, every rule-1 hit of the
+//   command is a git push (no gh write, no npm publish beside it) and rule 4 does not hit. Everything else
+//   is denied as before: Codex (its hooks do not support ask and would run the call), an unknown platform,
+//   auto (not watched yet, see ASK_MODES), dontAsk, a missing or unknown permission_mode. In a headless session nobody can answer the dialog and
+//   Claude refuses the asked call (measured in all six modes, docs/push-consent-probe.md), so an unattended
+//   run still cannot push.
 //
 // Rule 2, read-only folders: Edit, Write, MultiEdit, NotebookEdit and apply_patch (every Add, Update,
 //   Delete and Move to path of the patch; an Edit-like call without its path field is read as a patch)
@@ -890,9 +899,17 @@ export function checkCommand(command, dialects) {
 
 /** The rule-1 deny reason: what was stopped and what to do instead (ADR-006 §2.5 and §4). */
 export function denyReason(hits) {
-  return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端，代理不做这类操作。`
-    + '推送由你自己在普通终端做（“你”指用户本人），例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作也由用户本人做。'
+  const push = hits.some(isPushHit);
+  return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端。`
+    + (push ? '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（无人值守的会话、Codex、自动模式等不支持的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。' : '发布和 GitHub 的写操作代理不做。')
+    + '用户本人可以在普通终端推送，例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作由用户本人做。'
     + '代理不要换写法重试：把要推送或发布的分支、提交写进汇报，接着做不受影响的工作。';
+}
+
+/** The rule-1 ask reason, shown to the owner in the confirmation dialog. */
+export function askReason(hits) {
+  return `AutoSkills 守卫：这条命令里有 ${hits.join('、')}，会把提交推送到远端。`
+    + '请看清上面的命令推到哪个地址、哪个分支；点同意才推送，点拒绝就不推。';
 }
 
 /** The rule-2 deny reason. */
@@ -935,6 +952,20 @@ export function errorDenyReason(why, hint = KIT_FAULT_HINT) {
 
 const ALLOW = Object.freeze({ decision: 'allow' });
 const deny = (reason) => ({ decision: 'deny', reason });
+const ask = (reason) => ({ decision: 'ask', reason });
+
+/**
+ * Claude permission modes in which a push is answered with "ask" (owner decisions 2026-11-20 and 2026-11-21).
+ * Measured: in a headless session an asked call does not run in any of the six modes; in an interactive
+ * bypassPermissions session the dialog appears and the call runs after a yes (docs/push-consent-probe.md).
+ * default, acceptEdits and plan are the modes in which a person answers every prompt; nobody has watched
+ * them yet. auto is left out until someone has: there a classifier answers prompts, and the docs only say
+ * a hook's ask "normally" reaches the dialog. auto, dontAsk, a missing field and any other value are a deny.
+ */
+export const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions']);
+
+/** True for a rule-1 hit that is a git push (checkGit names them "git ..."); gh and npm hits are not. */
+const isPushHit = (hit) => hit.startsWith('git ');
 
 /**
  * Decide one PreToolUse input.
@@ -942,7 +973,8 @@ const deny = (reason) => ({ decision: 'deny', reason });
  * @param {string} platform claude, codex or unknown
  * @param {{readonlyDirs?: string[], kitRepos?: string[]}} [policy] registered read-only folders (rule 2)
  *   and AutoSkills checkouts (rule 4), from the local config
- * @returns {{decision: 'allow'|'deny', reason?: string}}
+ * @returns {{decision: 'allow'|'deny'|'ask', reason?: string}} ask only for a push on platform claude in
+ *   one of ASK_MODES
  * @throws {ParseError} when the input, the command or a write target cannot be read
  */
 export function decide(input, platform, policy = {}) {
@@ -979,9 +1011,14 @@ export function decide(input, platform, policy = {}) {
   const argv = Array.isArray(command) && command.length && command.every((x) => typeof x === 'string');
   if (typeof command !== 'string' && !argv) throw new ParseError(`${tool} 调用没有可读的命令文本`);
   const found = checkCommand(command, dialects);
+  const clean = found.cleans.length > 0 && cleanInKit(found, cwd, policy.kitRepos ?? []);
+  // A push and nothing else that is refused: the owner decides in the confirmation dialog (see Rule 1).
+  if (found.hits.length && !clean && found.hits.every(isPushHit) && platform === 'claude' && ASK_MODES.has(input.permission_mode)) {
+    return ask(askReason(found.hits));
+  }
   const reasons = [];
   if (found.hits.length) reasons.push(denyReason(found.hits));
-  if (found.cleans.length && cleanInKit(found, cwd, policy.kitRepos ?? [])) reasons.push(cleanReason());
+  if (clean) reasons.push(cleanReason());
   return reasons.length ? deny(reasons.join('\n')) : ALLOW;
 }
 
@@ -1077,6 +1114,20 @@ export const SELFTEST = [
   ['Bash', 'gh api repos/acme/demo/pulls', 'allow', 'claude'],
   ['Bash', 'gh api -X GET search/issues -f q=demo', 'allow', 'claude'],
   ['Bash', 'git push origin main', 'deny', 'claude'],
+  // A push is asked on Claude when the input carries a permission mode that can show the dialog.
+  ['Bash', 'git push https://example.com/acme/demo.git main', 'ask', 'claude', { permission_mode: 'default' }],
+  ['PowerShell', "& 'C:\\Program Files\\Git\\cmd\\git.exe' -C ../demo push", 'ask', 'claude', { permission_mode: 'bypassPermissions' }],
+  ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'plan' }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'auto' }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'dontAsk' }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'somethingNew' }],
+  ['Bash', 'git push origin main', 'deny', 'codex', { permission_mode: 'default' }],
+  ['Bash', 'git push origin main', 'deny', 'unknown', { permission_mode: 'default' }],
+  ['Bash', 'git push origin main && npm publish', 'deny', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'git push origin main; gh pr create --fill', 'deny', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'npm publish --access public', 'deny', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'gh release create v1.0.0', 'deny', 'claude', { permission_mode: 'bypassPermissions' }],
+  ['Bash', 'git clean -fdx && git push origin main', 'deny', 'claude', { permission_mode: 'default', cwd: ST_KIT }],
   ['Bash', 'git -C ../demo -c core.quotepath=off push', 'deny', 'claude'],
   ['Bash', 'cd demo && npm test; git.exe push https://example.com/acme/demo.git HEAD', 'deny', 'claude'],
   ['Bash', 'bash -lc "git --git-dir=.git push"', 'deny', 'claude'],
@@ -1131,7 +1182,10 @@ function selftest() {
 }
 
 /** The deny JSON line (one line of text, newline included) for a reason. */
-const denyLine = (reason) => `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })}\n`;
+const decisionLine = (permissionDecision, reason) => `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason: reason } })}\n`;
+const denyLine = (reason) => decisionLine('deny', reason);
+/** The ask JSON line: Claude shows the reason in its confirmation dialog and runs the call only after a yes. */
+const askLine = (reason) => decisionLine('ask', reason);
 
 /** True when argv asks for --platform codex (the last one wins, as in parseArgs); read even when parseArgs fails. */
 function codexArgv(argv) {
@@ -1192,6 +1246,9 @@ function main(argv) {
     decision = r.decision;
     code = 0;
     if (r.decision === 'deny') out = denyLine(r.reason);
+    // Never under --platform codex: decide() asks on platform claude only, and Codex would run an asked call.
+    else if (r.decision === 'ask' && codex) { decision = 'deny'; out = denyLine(denyReason(['git push'])); }
+    else if (r.decision === 'ask') out = askLine(r.reason);
   } catch (e) {
     const parse = e instanceof ParseError;
     const why = parse ? e.message : `内部错误（${e.message}）`;

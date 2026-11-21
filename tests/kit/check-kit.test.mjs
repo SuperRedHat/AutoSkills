@@ -23,7 +23,7 @@ import {
   makeContext, runChecks, countRows, versionChecks, judgeCodexOnPath, findOnPath, npmPackageVersion, runVersion,
   windowsFacts, compareVersions, commandTokens, tomlStrings, hookParts, EFFORT_VAR, HEARTBEAT_STALE_DAYS,
   oldReferences, codexHookTrust, registeredHooks, lastHeartbeats, removeCommand, runSelftest,
-  hookConfigProblems, judgeProbe, shellForms, probeInput, runProbe, PROBE_COMMANDS,
+  hookConfigProblems, judgeProbe, shellForms, probeInput, runProbe, PROBE_COMMANDS, pushAnswer,
 } from '../../scripts/check-kit.mjs';
 import { claudePathRule, desiredFiles, KIT_HOOK_SCRIPTS } from '../../scripts/lib/kit-targets.mjs';
 import { errorDenyReason } from '../../hooks/guard.mjs';
@@ -198,7 +198,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'hooks.config').detail, /^<runtime>\/hooks\/hook-config\.json: loads, absolute paths, keys runtime, readonly_dirs \(1\), kit_repo$/);
   // Claude's command + args once (its two guard groups share the line), Codex's string in every shell.
   const live = row(json.rows, 'hooks.live.guard').detail;
-  assert.match(live, /run\(s\): git status allowed without output, git push origin main denied \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
+  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex, and denied on both in mode dontAsk \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -227,8 +227,12 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.match(row(json.rows, 'claude.hook.PreToolUse.guard.mjs').detail, /onFailure/);
   assert.match(row(json.rows, 'claude.hook.paths').detail, /old\/hooks\/guard\.mjs/);
   assert.equal(row(json.rows, 'claude.hook.PreToolUse.guard.mjs.project-manager').status, 'PASS');
-  assert.match(row(json.rows, 'claude.deny.bash').detail, /^48 of 50 missing/);
-  assert.match(row(json.rows, 'claude.deny.powershell').detail, /^50 of 50 missing/);
+  assert.match(row(json.rows, 'claude.deny.bash').detail, /^44 of 45 missing/);
+  // This home still holds the kit's old deny rule for git push: the dialog could not appear.
+  assert.equal(row(json.rows, 'claude.rules.push').status, 'WARN');
+  assert.match(row(json.rows, 'claude.rules.push').detail, /^1 deny rule\(s\): Bash\(git push \*\): a deny rule wins over the guard's ask/);
+  assert.match(row(json.rows, 'claude.rules.push').fix, /re-run deploy-kit/);
+  assert.match(row(json.rows, 'claude.deny.powershell').detail, /^45 of 45 missing/);
   // An env value in settings is not printed, only that it differs.
   assert.doesNotMatch(row(json.rows, 'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS').detail, /"2"/);
   assert.match(row(json.rows, 'codex.agents.default_subagent_reasoning_effort').fix, /delete default_subagent_reasoning_effort/);
@@ -240,7 +244,8 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   // The stub guard allows git status but denies nothing; the old/ path does not start, and that group blocks.
   const live = row(json.rows, 'hooks.live.guard');
   assert.match(live.detail, /Claude blocks every matched call \(onFailure: "block"\).*the guard ran but decided wrong/);
-  assert.ok(live.lines.some((l) => /^claude, command \+ args, deny \(git push origin main\): exit 0 without output/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, deny \(npm publish\): exit 0 without output/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)/.test(l)), live.lines.join('\n'));
   assert.ok(live.lines.some((l) => /^claude, command \+ args, allow \(git status\): exit 1/.test(l)), live.lines.join('\n'));
   assert.match(live.fix, /missing: <runtime>\/old\/hooks\/guard\.mjs/);
   assert.match(row(json.rows, 'hooks.config').detail, /hook-config\.json does not exist: the guard runs without the read-only folders/);
@@ -663,12 +668,24 @@ test('the live run: a guard that denies everything, or nothing, decided wrong; t
   let live = row(hookRows(sb), 'hooks.live.guard');
   assert.equal(live.status, 'FAIL');
   assert.match(live.detail, /the guard ran but decided wrong/);
-  assert.ok(live.lines.length > 0 && live.lines.every((l) => /, allow \(git status\): exit 0 with output \(expected none\)/.test(l)), live.lines.join('\n'));
+  // Denying everything is wrong twice: git status must be allowed, and on Claude the push must be asked.
+  const notAllowed = live.lines.filter((l) => /, allow \(git status\): exit 0 with output \(expected none\)/.test(l));
+  const notAsked = live.lines.filter((l) => /^claude, .*, ask \(git push origin main\): denied, not asked/.test(l));
+  assert.ok(notAllowed.length > 0 && notAsked.length > 0, live.lines.join('\n'));
+  assert.equal(notAllowed.length + notAsked.length, live.lines.length, live.lines.join('\n'));
+  assert.ok(notAllowed.some((l) => l.startsWith('codex, ')) && !live.lines.some((l) => /^codex, .*\(git push origin main\)/.test(l)), 'on Codex a denied push is right');
   assert.match(live.fix, /does not decide like the repo's: re-run deploy-kit/);
   fs.writeFileSync(guard, '// allows everything\n');
   live = row(hookRows(sb), 'hooks.live.guard');
   assert.equal(live.status, 'FAIL');
-  assert.ok(live.lines.length > 0 && live.lines.every((l) => /, deny \(git push origin main\): exit 0 without output \(the push was not denied\)$/.test(l)), live.lines.join('\n'));
+  const kinds = [
+    /, deny \(npm publish\): exit 0 without output \(the command was not denied\)$/,
+    /^codex, .*, deny \(git push origin main\): exit 0 without output \(the command was not denied\)$/,
+    /^claude, .*, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)$/,
+    /, deny \(git push origin main, mode dontAsk\): exit 0 without output \(the command was not denied\)$/,
+  ];
+  for (const re of kinds) assert.ok(live.lines.some((l) => re.test(l)), `${re}\n${live.lines.join('\n')}`);
+  assert.ok(live.lines.every((l) => kinds.some((re) => re.test(l))), live.lines.join('\n'));
   fs.writeFileSync(guard, real);
   assert.equal(row(hookRows(sb), 'hooks.live.guard').status, 'PASS');
 });
@@ -702,7 +719,7 @@ test('hook-config.json: bad JSON and a relative path are a FAIL that says every 
     assert.equal(claude.length + codex.length, live.lines.length, live.lines.join('\n'));
     assert.ok(claude.length > 0 && claude.every((l) => /: exit 2: AutoSkills 守卫出错，已按失败处理/.test(l)), live.lines.join('\n'));
     assert.ok(codex.length > 0 && codex.every((l) => /: exit 0, deny JSON for a guard error: AutoSkills 守卫出错，按负责人定的出错即拦截处理/.test(l)), live.lines.join('\n'));
-    if (WIN) assert.equal(codex.filter((l) => l.startsWith('codex, powershell -Command,')).length, 2, live.lines.join('\n'));
+    if (WIN) assert.equal(codex.filter((l) => l.startsWith('codex, powershell -Command,')).length, 4, live.lines.join('\n'));
   }
 });
 
@@ -773,6 +790,12 @@ test('the live run writes no heartbeat; the same run without AUTOSKILLS_GUARD_PR
   const heartbeat = path.join(runtime, 'hooks', 'heartbeat', 'guard.jsonl');
   const deny = runProbe(form, probeInput('claude', PROBE_COMMANDS.deny), 30_000);
   assert.deepEqual(judgeProbe('deny', deny), { kind: 'ok', detail: 'denied' });
+  // The push: the Claude line asks; the same guard under --platform codex denies.
+  assert.equal(pushAnswer('claude'), 'ask');
+  assert.equal(pushAnswer('codex'), 'deny');
+  assert.deepEqual(judgeProbe('ask', runProbe(form, probeInput('claude', PROBE_COMMANDS.push), 30_000)), { kind: 'ok', detail: 'asked' });
+  const asCodex = { ...form, args: [...form.args, '--platform', 'codex'] };
+  assert.deepEqual(judgeProbe('deny', runProbe(asCodex, probeInput('codex', PROBE_COMMANDS.push), 30_000)), { kind: 'ok', detail: 'denied' });
   assert.deepEqual(judgeProbe('allow', runProbe(form, probeInput('claude', PROBE_COMMANDS.allow), 30_000)), { kind: 'ok', detail: 'allowed' });
   assert.ok(!fs.existsSync(heartbeat), 'the live run wrote a heartbeat');
   const plain = spawnSync(process.execPath, form.args, { input: probeInput('claude', PROBE_COMMANDS.allow), encoding: 'utf8', env: cleanEnv() });
@@ -792,6 +815,14 @@ test('judgeProbe and shellForms: exit codes, output and the shells a Codex line 
   assert.equal(judgeProbe('deny', { ...ok, stdout: denyJson }).kind, 'ok');
   assert.equal(judgeProbe('allow', { ...ok, stdout: denyJson }).kind, 'wrong');
   assert.equal(judgeProbe('deny', { ...ok, stdout: '{"hookSpecificOutput":{"permissionDecision":"allow"}}' }).kind, 'wrong');
+  const askJson = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"synthetic"}}';
+  assert.deepEqual(judgeProbe('ask', { ...ok, stdout: askJson }), { kind: 'ok', detail: 'asked' });
+  assert.equal(judgeProbe('deny', { ...ok, stdout: askJson }).kind, 'wrong', 'an ask where a deny is due (Codex would run the call)');
+  assert.equal(judgeProbe('allow', { ...ok, stdout: askJson }).kind, 'wrong');
+  assert.match(judgeProbe('ask', { ...ok, stdout: denyJson }).detail, /^denied, not asked/);
+  assert.equal(judgeProbe('ask', { ...ok, stdout: denyJson }).kind, 'wrong');
+  assert.equal(judgeProbe('ask', ok).kind, 'wrong');
+  assert.equal(judgeProbe('ask', { ...ok, stdout: '{"hookSpecificOutput":{"permissionDecision":"ask"}}' }).kind, 'wrong', 'the event name is part of the answer');
   // A guard error on Codex (AS3-126): the deny JSON with ERROR_DENY_MARK is an error on both inputs, not a pass.
   const errorJson = `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: errorDenyReason('synthetic') } })}\n`;
   for (const expect of ['allow', 'deny']) {

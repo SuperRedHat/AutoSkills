@@ -376,6 +376,10 @@ describe('contract', () => {
     const cases = [
       ['stop-points', without(CONTRACT, /停点只有五种/)],
       ['zero-exception', CONTRACT.replace('不访问客户数据', '')],
+      ['zero-exception', CONTRACT.replace('不发布', '')],
+      ['push-consent', CONTRACT.replace('无人值守的会话不推送', '')],
+      ['push-consent', CONTRACT.replace('用户本人在确认窗里点同意', '用户同意')],
+      ['push-consent', CONTRACT.replace('推送（git push）默认不做', '可以推送')],
       ['evidence', without(CONTRACT, /测试证据必须是本会话里实际执行的命令/)],
       ['set-project-dir', without(CONTRACT, /get_server_info/)],
       ['subagents', without(CONTRACT, /^#+\s*子代理与并行/)],
