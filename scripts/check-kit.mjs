@@ -62,7 +62,8 @@
 //      in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run them, once with a
 //      synthetic allow input (git status: exit 0, no output), once with a synthetic deny input (npm publish:
 //      the deny JSON of rule 1) and once with a push (git push origin main: the ask JSON on Claude, where the
-//      owner decides in the confirmation dialog, and the deny JSON on Codex). Claude's command and args start directly; Codex's string runs in each shell
+//      owner decides in the confirmation dialog, and the deny JSON on Codex), and once more with that push in
+//      permission mode dontAsk (the deny JSON on both). Claude's command and args start directly; Codex's string runs in each shell
 //      it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell -Command and bash -c
 //      when bash is on PATH (sh -c off Windows). A guard error shows as exit 2 or as a deny JSON whose reason
 //      starts with the guard's ERROR_DENY_MARK. A guard that does not start prints no JSON and exits with
@@ -125,8 +126,8 @@ const VERSION_TIMEOUT_MS = 30_000;
 const SELFTEST_TIMEOUT_MS = 60_000;
 // The live run of a guard command line: the hook's own timeout (seconds) when set, at most this.
 const PROBE_TIMEOUT_MS = 60_000;
-// The synthetic inputs of the live run: a harmless shell command the guard allows and a push it denies.
-// The guard only reads them; neither command is ever run.
+// The synthetic inputs of the live run: a harmless shell command the guard allows, a publish it denies and
+// a push (run twice, in mode default and in mode dontAsk). The guard only reads them; no command is ever run.
 // allow and deny are run on both platforms. push is the one command the platforms answer differently since
 // AS3-379: Claude's guard asks (the owner decides in the dialog), Codex's denies (its hooks cannot ask).
 export const PROBE_COMMANDS = { allow: 'git status', deny: 'npm publish', push: 'git push origin main' };
