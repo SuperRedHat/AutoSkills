@@ -794,6 +794,12 @@ test('the live run writes no heartbeat; the same run without AUTOSKILLS_GUARD_PR
   assert.equal(pushAnswer('claude'), 'ask');
   assert.equal(pushAnswer('codex'), 'deny');
   assert.deepEqual(judgeProbe('ask', runProbe(form, probeInput('claude', PROBE_COMMANDS.push), 30_000)), { kind: 'ok', detail: 'asked' });
+  // The unattended mark: set by the probe's own argument only. A mark inherited from the caller's environment
+  // (check-kit run inside a session of the long-run driver) is taken out, so the plain push is still asked.
+  const marked = { ...process.env, AUTOSKILLS_UNATTENDED: '1' };
+  assert.deepEqual(judgeProbe('ask', runProbe(form, probeInput('claude', PROBE_COMMANDS.push), 30_000, false, marked)), { kind: 'ok', detail: 'asked' });
+  assert.deepEqual(judgeProbe('deny', runProbe(form, probeInput('claude', PROBE_COMMANDS.push), 30_000, true)), { kind: 'ok', detail: 'denied' });
+  assert.deepEqual(judgeProbe('deny', runProbe(form, probeInput('claude', PROBE_COMMANDS.push, 'auto'), 30_000, true, marked)), { kind: 'ok', detail: 'denied' });
   const asCodex = { ...form, args: [...form.args, '--platform', 'codex'] };
   assert.deepEqual(judgeProbe('deny', runProbe(asCodex, probeInput('codex', PROBE_COMMANDS.push), 30_000)), { kind: 'ok', detail: 'denied' });
   assert.deepEqual(judgeProbe('allow', runProbe(form, probeInput('claude', PROBE_COMMANDS.allow), 30_000)), { kind: 'ok', detail: 'allowed' });

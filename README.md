@@ -80,7 +80,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 同一个 Windows 账户下，护栏只防误操作，不承诺隔离（见[残余风险](#残余风险)）。
 
 - **守卫钩子** `hooks/guard.mjs`（PreToolUse，两个平台共用）：
-  1. git push 的各种写法：Claude 上六种权限模式（default、acceptEdits、plan、跳过权限 bypassPermissions、自动模式 auto、dontAsk）都弹出确认窗，你点同意才执行；读不出模式时、长跑驱动起的会话里、Codex 上，照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
+  1. git push 的各种写法：Claude 上六种权限模式（default、acceptEdits、plan、跳过权限 bypassPermissions、自动模式 auto、dontAsk）守卫都回“询问”，由 Claude Code 弹出确认窗，你点同意才执行（开着窗口时只有跳过权限的模式有人看过弹窗；dontAsk 按它的设计多半会把要问的调用直接拒掉）；读不出模式时、长跑驱动起的会话里、Codex 上，照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较；
   3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
   4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
