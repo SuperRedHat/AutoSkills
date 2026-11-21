@@ -97,14 +97,15 @@
 //     --input without an explicit method (gh then sends POST). An explicit -X GET stays a read: gh sends
 //     the fields as query parameters.
 //   - npm publish.
-//   A git push is asked, not denied, when all of this holds (owner decisions 2026-11-20 and 2026-11-21):
-//   the platform is claude, the session is not marked unattended (UNATTENDED_ENV), the input's
-//   permission_mode is one of ASK_MODES (all six modes Claude Code names), every rule-1 hit of the
-//   command is a git push (no gh write, no npm publish beside it) and rule 4 does not hit. Everything else
-//   is denied as before: Codex (its hooks do not support ask and would run the call), an unknown platform,
-//   a missing or unknown permission_mode. The long-run driver marks its sessions unattended, so a push
-//   there is a plain deny in every mode. In any other headless session nobody can answer the dialog and
-//   Claude refuses the asked call (measured in all six modes, docs/push-consent-probe.md).
+//   A rule-1 hit is asked, not denied, when all of this holds (owner decisions 2026-11-20 and 2026-11-21;
+//   on 2026-11-21 the owner widened it from git push to every rule-1 hit: gh writes, gh api writes and
+//   npm publish too): the platform is claude, the session is not marked unattended (UNATTENDED_ENV), the
+//   input's permission_mode is one of ASK_MODES (all six modes Claude Code names) and rule 4 does not hit.
+//   Everything else is denied as before: Codex (its hooks do not support ask and would run the call), an
+//   unknown platform, a missing or unknown permission_mode. The long-run driver marks its sessions
+//   unattended, so a push or a publish there is a plain deny in every mode. In any other headless session
+//   nobody can answer the dialog and Claude refuses the asked call (measured in all six modes,
+//   docs/push-consent-probe.md).
 //
 // Rule 2, read-only folders: Edit, Write, MultiEdit, NotebookEdit and apply_patch (every Add, Update,
 //   Delete and Move to path of the patch; an Edit-like call without its path field is read as a patch)
@@ -900,17 +901,20 @@ export function checkCommand(command, dialects) {
 
 /** The rule-1 deny reason: what was stopped and what to do instead (ADR-006 §2.5 and §4). */
 export function denyReason(hits) {
-  const push = hits.some(isPushHit);
   return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端。`
-    + (push ? '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（长跑驱动起的无人值守会话、Codex、读不出的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。' : '发布和 GitHub 的写操作代理不做。')
-    + '用户本人可以在普通终端推送，例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作由用户本人做。'
-    + '代理不要换写法重试：把要推送或发布的分支、提交写进汇报，接着做不受影响的工作。';
+    + '推送、发布和 GitHub 的写操作要用户本人在确认窗里点同意；这次调用弹不了确认窗（长跑驱动起的无人值守会话、Codex、读不出的权限模式），所以直接拒绝。'
+    + '用户本人可以在普通终端推送或发布，例如 git push <完整地址> <分支>。'
+    + '代理不要换写法重试：把要推送或发布的东西写进汇报，接着做不受影响的工作。';
 }
 
 /** The rule-1 ask reason, shown to the owner in the confirmation dialog. */
 export function askReason(hits) {
-  return `AutoSkills 守卫：这条命令里有 ${hits.join('、')}，会把提交推送到远端。`
-    + '请看清上面的命令推到哪个地址、哪个分支；点同意才推送，点拒绝就不推。';
+  const push = hits.some(isPushHit);
+  const other = hits.some((hit) => !isPushHit(hit));
+  return `AutoSkills 守卫：这条命令里有 ${hits.join('、')}，`
+    + (other ? '会发布到远端或改动 GitHub 上的东西（发版本、开或合并 PR、改或删仓库这一类），有的撤不回来。' : '会把提交推送到远端。')
+    + (push ? '请看清上面的命令推到哪个地址、哪个分支；' : '请看清上面的命令对哪个仓库、哪个包做什么；')
+    + '点同意才执行，点拒绝就不做。';
 }
 
 /** The rule-2 deny reason. */
@@ -956,7 +960,8 @@ const deny = (reason) => ({ decision: 'deny', reason });
 const ask = (reason) => ({ decision: 'ask', reason });
 
 /**
- * Claude permission modes in which a push is answered with "ask" (owner decisions 2026-11-20 and 2026-11-21).
+ * Claude permission modes in which a rule-1 hit (a push, a gh write, npm publish) is answered with "ask"
+ * (owner decisions 2026-11-20 and 2026-11-21).
  * Measured: in a headless session an asked call does not run in any of the six modes; in an interactive
  * bypassPermissions session the dialog appears and the call runs after a yes (docs/push-consent-probe.md).
  * default, acceptEdits and plan are the modes in which a person answers every prompt; nobody has watched
@@ -968,7 +973,7 @@ export const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermi
 
 /**
  * Set to 1 by the long-run driver for the sessions it starts (scripts/lib/run/session.mjs). Nobody is there
- * to answer a dialog, so main() passes it on as policy.unattended and a push is a deny in every mode.
+ * to answer a dialog, so main() passes it on as policy.unattended and a rule-1 hit is a deny in every mode.
  */
 export const UNATTENDED_ENV = 'AUTOSKILLS_UNATTENDED';
 
@@ -981,9 +986,9 @@ const isPushHit = (hit) => hit.startsWith('git ');
  * @param {string} platform claude, codex or unknown
  * @param {{readonlyDirs?: string[], kitRepos?: string[], unattended?: boolean}} [policy] registered
  *   read-only folders (rule 2) and AutoSkills checkouts (rule 4), from the local config; unattended: the
- *   session is marked as one nobody watches (UNATTENDED_ENV), a push is then never asked
- * @returns {{decision: 'allow'|'deny'|'ask', reason?: string}} ask only for a push on platform claude in
- *   one of ASK_MODES, in a session that is not marked unattended
+ *   session is marked as one nobody watches (UNATTENDED_ENV), a rule-1 hit is then never asked
+ * @returns {{decision: 'allow'|'deny'|'ask', reason?: string}} ask only for a rule-1 hit on platform
+ *   claude in one of ASK_MODES, in a session that is not marked unattended
  * @throws {ParseError} when the input, the command or a write target cannot be read
  */
 export function decide(input, platform, policy = {}) {
@@ -1021,8 +1026,8 @@ export function decide(input, platform, policy = {}) {
   if (typeof command !== 'string' && !argv) throw new ParseError(`${tool} 调用没有可读的命令文本`);
   const found = checkCommand(command, dialects);
   const clean = found.cleans.length > 0 && cleanInKit(found, cwd, policy.kitRepos ?? []);
-  // A push and nothing else that is refused: the owner decides in the confirmation dialog (see Rule 1).
-  if (found.hits.length && !clean && found.hits.every(isPushHit) && platform === 'claude' && policy.unattended !== true && ASK_MODES.has(input.permission_mode)) {
+  // A push or a publish, and no rule-4 hit beside it: the owner decides in the confirmation dialog (see Rule 1).
+  if (found.hits.length && !clean && platform === 'claude' && policy.unattended !== true && ASK_MODES.has(input.permission_mode)) {
     return ask(askReason(found.hits));
   }
   const reasons = [];
@@ -1123,7 +1128,7 @@ export const SELFTEST = [
   ['Bash', 'gh api repos/acme/demo/pulls', 'allow', 'claude'],
   ['Bash', 'gh api -X GET search/issues -f q=demo', 'allow', 'claude'],
   ['Bash', 'git push origin main', 'deny', 'claude'],
-  // A push is asked on Claude when the input carries a permission mode that can show the dialog.
+  // A push or a publish is asked on Claude when the input carries a permission mode that can show the dialog.
   ['Bash', 'git push https://example.com/acme/demo.git main', 'ask', 'claude', { permission_mode: 'default' }],
   ['PowerShell', "& 'C:\\Program Files\\Git\\cmd\\git.exe' -C ../demo push", 'ask', 'claude', { permission_mode: 'bypassPermissions' }],
   ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'plan' }],
@@ -1135,10 +1140,17 @@ export const SELFTEST = [
   ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'somethingNew' }],
   ['Bash', 'git push origin main', 'deny', 'codex', { permission_mode: 'default' }],
   ['Bash', 'git push origin main', 'deny', 'unknown', { permission_mode: 'default' }],
-  ['Bash', 'git push origin main && npm publish', 'deny', 'claude', { permission_mode: 'default' }],
-  ['Bash', 'git push origin main; gh pr create --fill', 'deny', 'claude', { permission_mode: 'default' }],
-  ['Bash', 'npm publish --access public', 'deny', 'claude', { permission_mode: 'default' }],
-  ['Bash', 'gh release create v1.0.0', 'deny', 'claude', { permission_mode: 'bypassPermissions' }],
+  ['Bash', 'git push origin main && npm publish', 'ask', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'git push origin main; gh pr create --fill', 'ask', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'npm publish --access public', 'ask', 'claude', { permission_mode: 'default' }],
+  ['Bash', 'gh release create v1.0.0', 'ask', 'claude', { permission_mode: 'bypassPermissions' }],
+  ['PowerShell', 'gh api --method DELETE repos/acme/demo', 'ask', 'claude', { permission_mode: 'auto' }],
+  ['Bash', 'gh repo delete acme/demo --yes', 'ask', 'claude', { permission_mode: 'dontAsk' }],
+  ['Bash', 'gh release create v1.0.0', 'deny', 'claude', { permission_mode: 'default' }, { unattended: true }],
+  ['Bash', 'npm publish', 'deny', 'claude', { permission_mode: 'somethingNew' }],
+  ['Bash', 'gh release create v1.0.0', 'deny', 'codex', { permission_mode: 'default' }],
+  ['Bash', 'npm publish', 'deny', 'unknown', { permission_mode: 'default' }],
+  ['Bash', 'git clean -fdx && npm publish', 'deny', 'claude', { permission_mode: 'default', cwd: ST_KIT }],
   ['Bash', 'git clean -fdx && git push origin main', 'deny', 'claude', { permission_mode: 'default', cwd: ST_KIT }],
   ['Bash', 'git -C ../demo -c core.quotepath=off push', 'deny', 'claude'],
   ['Bash', 'cd demo && npm test; git.exe push https://example.com/acme/demo.git HEAD', 'deny', 'claude'],
@@ -1259,7 +1271,7 @@ function main(argv) {
     code = 0;
     if (r.decision === 'deny') out = denyLine(r.reason);
     // Never under --platform codex: decide() asks on platform claude only, and Codex would run an asked call.
-    else if (r.decision === 'ask' && codex) { decision = 'deny'; out = denyLine(denyReason(['git push'])); }
+    else if (r.decision === 'ask' && codex) { decision = 'deny'; out = denyLine(denyReason(['推送或发布'])); }
     else if (r.decision === 'ask') out = askLine(r.reason);
   } catch (e) {
     const parse = e instanceof ParseError;

@@ -30,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK, ASK_MODES, UNATTENDED_ENV } from '../../hooks/guard.mjs';
 import { shellForms } from '../../scripts/check-kit.mjs';
+import { RETIRED_PUSH_DENY, RETIRED_PUBLISH_DENY } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'hooks', 'guard.mjs');
@@ -89,11 +90,12 @@ const codexInput = (command, tool = 'shell', field = 'command') => ({
 });
 
 const decision = (tool, command) => decide(claudeInput(tool, command), 'claude').decision;
-/** A Claude input in a permission mode the guard does not know, where a push is still a plain deny. */
+/** A Claude input in a permission mode the guard does not know, where a push or a publish is still a plain deny. */
 const claudeNoDialog = (tool, command) => claudeInput(tool, command, 'modeNobodyKnows');
 /**
- * A push on Claude, both ways: asked where the dialog can appear (mode default) and denied where it cannot
- * (a mode the guard does not know). PUSH is the one good answer; anything else shows both decisions.
+ * A push or a publish (every rule-1 hit since AS3-385) on Claude, both ways: asked where the dialog can
+ * appear (mode default) and denied where it cannot (a mode the guard does not know). PUSH is the one good
+ * answer; anything else shows both decisions.
  */
 const PUSH = 'ask, and deny without a dialog';
 const pushDecision = (tool, command) => {
@@ -188,8 +190,8 @@ describe('rule 1, Bash form', () => {
     ], PUSH);
   });
 
-  test('deny: gh repo, release, pr and workflow writes', () => {
-    expectAll((c) => decision('Bash', c), [
+  test('gh repo, release, pr and workflow writes: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('Bash', c), [
       'gh repo create acme/demo --public',
       'gh repo delete acme/demo --yes',
       'gh repo edit --visibility public',
@@ -215,11 +217,11 @@ describe('rule 1, Bash form', () => {
       'gh workflow enable ci.yml',
       'gh workflow disable ci.yml',
       'gh.exe pr merge 12',
-    ], 'deny');
+    ], PUSH);
   });
 
-  test('deny: gh api with a write method or a body', () => {
-    expectAll((c) => decision('Bash', c), [
+  test('gh api with a write method or a body: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('Bash', c), [
       'gh api -X POST repos/acme/demo/issues',
       'gh api -XPOST repos/acme/demo/issues',
       'gh api --method PUT repos/acme/demo/topics',
@@ -232,17 +234,17 @@ describe('rule 1, Bash form', () => {
       'gh api repos/acme/demo/issues --raw-field title=x',
       'gh api repos/acme/demo/issues --input body.json',
       "gh api graphql -f query='mutation { addStar(input: {}) { clientMutationId } }'",
-    ], 'deny');
+    ], PUSH);
   });
 
-  test('deny: npm publish', () => {
-    expectAll((c) => decision('Bash', c), [
+  test('npm publish: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('Bash', c), [
       'npm publish',
       'npm publish --access public',
       'npm --registry https://registry.example.com publish',
       'npm.cmd publish --tag next',
       'npm run build && npm publish',
-    ], 'deny');
+    ], PUSH);
   });
 
   test('allow: reads, local git and text that only mentions a push', () => {
@@ -368,8 +370,8 @@ describe('rule 1, PowerShell form', () => {
     ], PUSH);
   });
 
-  test('deny: gh writes, gh api writes and npm publish', () => {
-    expectAll((c) => decision('PowerShell', c), [
+  test('gh writes, gh api writes and npm publish: asked, and denied without a dialog', () => {
+    expectAll((c) => pushDecision('PowerShell', c), [
       'gh repo create acme/demo --private',
       'gh release create v1.0.0',
       'gh pr create --fill',
@@ -382,7 +384,7 @@ describe('rule 1, PowerShell form', () => {
       'npm publish',
       '& npm.cmd publish --tag next',
       'npm run build; npm publish',
-    ], 'deny');
+    ], PUSH);
   });
 
   test('allow: reads, local git, here-strings and text that only mentions a push', () => {
@@ -852,7 +854,7 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     }
   });
 
-  test('a push beside anything else that is refused stays a deny', () => {
+  test('a push beside a publish or a gh write is asked as one; beside a rule-4 hit it stays a deny', () => {
     const kit = tempDir();
     for (const command of [
       'git push origin main && npm publish',
@@ -861,36 +863,87 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
       'gh release create v1.0.0 && git push --tags',
       'git push origin main | gh api -X POST repos/acme/demo/issues',
     ]) {
-      for (const mode of ASK_MODES) assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
+      for (const mode of ASK_MODES) assert.equal(inMode(mode, command).decision, 'ask', `${mode}: ${command}`);
+      assert.equal(inMode('somethingNew', command).decision, 'deny', `unknown mode: ${command}`);
+      assert.equal(decide(claudeInput('Bash', command), 'claude', { unattended: true }).decision, 'deny', `unattended: ${command}`);
+      assert.equal(decide(claudeInput('Bash', command), 'codex').decision, 'deny', `codex: ${command}`);
     }
-    const withClean = { ...claudeInput('Bash', 'git clean -fdx && git push origin main'), cwd: kit };
-    assert.equal(decide(withClean, 'claude', { kitRepos: [kit] }).decision, 'deny', 'git clean -x in the kit repo beside a push');
-    assert.equal(decide({ ...withClean, tool_input: { command: 'git clean -fd && git push origin main' } }, 'claude', { kitRepos: [kit] }).decision, 'ask', 'a clean without -x is no reason to refuse');
+    for (const dirty of ['git clean -fdx && git push origin main', 'git clean -fdx && npm publish', 'gh release create v1.0.0; git clean -fX']) {
+      const withClean = { ...claudeInput('Bash', dirty), cwd: kit };
+      for (const mode of ASK_MODES) assert.equal(decide({ ...withClean, permission_mode: mode }, 'claude', { kitRepos: [kit] }).decision, 'deny', `${mode}: ${dirty}`);
+    }
+    const withClean = { ...claudeInput('Bash', 'git clean -fd && git push origin main'), cwd: kit };
+    assert.equal(decide(withClean, 'claude', { kitRepos: [kit] }).decision, 'ask', 'a clean without -x is no reason to refuse');
   });
 
-  test('publishing and gh writes are never asked', () => {
-    for (const mode of [...ASK_MODES, 'somethingNew']) {
-      for (const command of ['npm publish', 'npm publish --access public', 'gh pr create --fill', 'gh release create v1.0.0', 'gh repo create acme/demo --public', 'gh api -X POST repos/acme/demo/issues', 'gh workflow run ci.yml']) {
-        assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
-        assert.equal(inMode(mode, command, 'PowerShell').decision, 'deny', `${mode}, PowerShell: ${command}`);
+  test('every deny rule deploy takes out of the settings covered commands the guard still sees (AS3-385)', () => {
+    // Each retired rule body with its wildcards filled in: the guard must ask where the dialog can appear
+    // and deny where it cannot. A body the guard did not see would be let through once its rule is gone.
+    const fill = (body) => body.replace(/ \*$/, ' demo').replace(/^gh api \*/, 'gh api repos/acme/demo ').replace(/\*$/, '').replace(/\*/g, 'x');
+    assert.equal(RETIRED_PUSH_DENY.length + RETIRED_PUBLISH_DENY.length, 50);
+    for (const body of [...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY]) {
+      const command = fill(body);
+      assert.ok(!command.includes('*'), command);
+      for (const tool of ['Bash', 'PowerShell']) {
+        assert.equal(pushDecision(tool, command), PUSH, `${tool}: ${command} (rule body: ${body})`);
+        assert.equal(decide(claudeInput(tool, command), 'codex').decision, 'deny', `codex, ${tool}: ${command}`);
+        assert.equal(decide(claudeInput(tool, command), 'claude', { unattended: true }).decision, 'deny', `unattended, ${tool}: ${command}`);
       }
     }
+  });
+
+  test('gh groups the guard does not know are neither asked nor denied, as before AS3-385 (a known gap)', () => {
+    for (const command of ['gh issue create --title x', 'gh secret set TOKEN', 'gh gist create notes.md --public', 'gh run cancel 12', 'gh label delete bug']) {
+      assert.equal(inMode('default', command).decision, 'allow', command);
+      assert.equal(decide(claudeInput('Bash', command), 'codex').decision, 'allow', `codex: ${command}`);
+    }
+  });
+
+  test('publishing and gh writes are asked where a push is, and denied where a push is (AS3-385)', () => {
+    const commands = ['npm publish', 'npm publish --access public', 'gh pr create --fill', 'gh release create v1.0.0', 'gh repo create acme/demo --public',
+      'gh repo delete acme/demo --yes', 'gh repo edit --visibility public', 'gh api -X POST repos/acme/demo/issues', 'gh api -X DELETE repos/acme/demo', 'gh workflow run ci.yml'];
+    for (const command of commands) {
+      for (const tool of ['Bash', 'PowerShell']) {
+        for (const mode of ASK_MODES) {
+          assert.equal(inMode(mode, command, tool).decision, 'ask', `${mode}, ${tool}: ${command}`);
+          assert.equal(decide(claudeInput(tool, command, mode), 'claude', { unattended: true }).decision, 'deny', `unattended, ${mode}, ${tool}: ${command}`);
+          assert.equal(decide(claudeInput(tool, command, mode), 'codex').decision, 'deny', `codex, ${mode}, ${tool}: ${command}`);
+          assert.equal(decide(claudeInput(tool, command, mode), 'unknown').decision, 'deny', `unknown platform, ${mode}, ${tool}: ${command}`);
+        }
+        for (const mode of ['somethingNew', 'manual', '', null]) assert.equal(inMode(mode, command, tool).decision, 'deny', `${JSON.stringify(mode)}, ${tool}: ${command}`);
+        const { permission_mode, ...noMode } = claudeInput(tool, command);
+        assert.equal(permission_mode, 'default');
+        assert.equal(decide(noMode, 'claude').decision, 'deny', `no mode, ${tool}: ${command}`);
+      }
+      assert.equal(decide({ ...codexInput(command), permission_mode: 'default' }, 'codex').decision, 'deny', `codex input: ${command}`);
+    }
+    // Reads stay allowed, asked for nothing.
+    for (const read of ['gh pr view 12', 'gh release list', 'gh api repos/acme/demo/pulls', 'npm view demo version', 'npm pack']) assert.equal(inMode('default', read).decision, 'allow', read);
   });
 
   test('the ask reason is for the owner: it names the push and says a yes is needed; the deny reason says why there was no dialog', () => {
     const asked = inMode('bypassPermissions');
     assert.match(asked.reason, /git push/);
-    assert.match(asked.reason, /点同意才推送/);
+    assert.match(asked.reason, /点同意才执行/);
     assert.doesNotMatch(asked.reason, /拒绝了这条命令/);
     const refused = decide(claudeInput('Bash', push, 'auto'), 'claude', { unattended: true });
     assert.match(refused.reason, /拒绝了这条命令/);
     assert.match(refused.reason, /确认窗/);
     assert.match(refused.reason, new RegExp(REASON_HINT));
-    // A refusal that is not about a push does not talk about the dialog.
+    // A publish is asked in the owner's words too: it names the command, says it may not be undone, and that a yes is needed.
     const publish = inMode('default', 'npm publish');
-    assert.match(publish.reason, /发布和 GitHub 的写操作代理不做/);
-    assert.doesNotMatch(publish.reason, /确认窗/);
-    assert.match(inMode('default', 'git push origin main && npm publish').reason, /确认窗/);
+    assert.equal(publish.decision, 'ask');
+    assert.match(publish.reason, /npm publish/);
+    assert.match(publish.reason, /撤不回来/);
+    assert.match(publish.reason, /点同意才执行/);
+    assert.doesNotMatch(publish.reason, /哪个分支/);
+    const mixed = inMode('default', 'git push origin main && gh release create v1.0.0');
+    assert.match(mixed.reason, /git push、gh release create/);
+    assert.match(mixed.reason, /哪个分支/);
+    assert.match(mixed.reason, /撤不回来/);
+    const refusedPublish = decide(claudeInput('Bash', 'gh release create v1.0.0', 'auto'), 'claude', { unattended: true });
+    assert.match(refusedPublish.reason, /拒绝了这条命令：gh release create/);
+    assert.match(refusedPublish.reason, /确认窗/);
   });
 
   test('spawned: the ask is one JSON line with permissionDecision ask, exit 0, and the heartbeat says ask', () => {
@@ -902,7 +955,7 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     const o = JSON.parse(lines[0]).hookSpecificOutput;
     assert.equal(o.hookEventName, 'PreToolUse');
     assert.equal(o.permissionDecision, 'ask');
-    assert.match(o.permissionDecisionReason, /点同意才推送/);
+    assert.match(o.permissionDecisionReason, /点同意才执行/);
     // Without --platform the Claude input is detected as claude and asks too.
     assert.equal(JSON.parse(runGuard(claudeInput('PowerShell', '& git.exe push'), ['--config', rt.config]).out).hookSpecificOutput.permissionDecision, 'ask');
     const entries = fs.readFileSync(rt.heartbeat, 'utf8').trim().split('\n').map((l) => JSON.parse(l));

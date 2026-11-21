@@ -60,10 +60,10 @@
 //      cannot load makes it fail closed on every run (exit 2 on Claude, the deny JSON with exit 0 under
 //      --platform codex, AS3-126), so every matched call is blocked. And the guard command lines registered
 //      in ~/.claude/settings.json and ~/.codex/hooks.json run as the platform would run them, once with a
-//      synthetic allow input (git status: exit 0, no output), once with a synthetic deny input (npm publish:
-//      the deny JSON of rule 1) and once with a push (git push origin main: the ask JSON on Claude, where the
-//      owner decides in the confirmation dialog, and the deny JSON on Codex), and once more with that push in
-//      a session marked unattended, as the long-run driver marks its own (the deny JSON on both). Claude's command and args start directly; Codex's string runs in each shell
+//      synthetic allow input (git status: exit 0, no output), once with a publish (npm publish) and once
+//      with a push (git push origin main): for both the ask JSON on Claude, where the owner decides in the
+//      confirmation dialog, and the deny JSON on Codex; and once more with that push in a session marked
+//      unattended, as the long-run driver marks its own (the deny JSON on both). Claude's command and args start directly; Codex's string runs in each shell
 //      it may use (C0 could not tell which): cmd /d /s /c, cmd /c, Windows PowerShell -Command and bash -c
 //      when bash is on PATH (sh -c off Windows). A guard error shows as exit 2 or as a deny JSON whose reason
 //      starts with the guard's ERROR_DENY_MARK. A guard that does not start prints no JSON and exits with
@@ -126,12 +126,13 @@ const VERSION_TIMEOUT_MS = 30_000;
 const SELFTEST_TIMEOUT_MS = 60_000;
 // The live run of a guard command line: the hook's own timeout (seconds) when set, at most this.
 const PROBE_TIMEOUT_MS = 60_000;
-// The synthetic inputs of the live run: a harmless shell command the guard allows, a publish it denies and
-// a push (run twice, plain and in a session marked unattended). The guard only reads them; no command is ever run.
-// allow and deny are run on both platforms. push is the one command the platforms answer differently since
-// AS3-379: Claude's guard asks (the owner decides in the dialog), Codex's denies (its hooks cannot ask).
-export const PROBE_COMMANDS = { allow: 'git status', deny: 'npm publish', push: 'git push origin main' };
-/** What the guard must answer to the push probe on a platform. */
+// The synthetic inputs of the live run: a harmless shell command the guard allows, a publish and a push
+// (the push run twice, plain and in a session marked unattended). The guard only reads them; no command is
+// ever run. The platforms answer a push (since AS3-379) and a publish (since AS3-385) differently: Claude's
+// guard asks (the owner decides in the dialog), Codex's denies (its hooks cannot ask). The marked push is
+// the run that shows the deny JSON on Claude.
+export const PROBE_COMMANDS = { allow: 'git status', publish: 'npm publish', push: 'git push origin main' };
+/** What the guard must answer to the push probe and to the publish probe on a platform. */
 export const pushAnswer = (platform) => (platform === 'claude' ? 'ask' : 'deny');
 // The keys deploy-kit writes into <runtime>/hooks/hook-config.json (kit-targets desiredFiles).
 export const HOOK_CONFIG_KEYS = ['runtime', 'readonly_dirs', 'kit_repo'];
@@ -409,9 +410,8 @@ function claudeChecks(ctx, sec, { managed }) {
   // Deny rules by kind: the fragment's, plus the folder rules deploy-kit generates from the local config.
   const have = new Set(Array.isArray(settings.permissions?.deny) ? settings.permissions.deny : []);
   const kitDeny = fragment.permissions?.deny ?? [];
+  // The fragment holds no Bash or PowerShell deny rule since AS3-385 (the guard asks the owner instead).
   const kinds = [
-    ['bash', 'Claude deny: Bash forms', kitDeny.filter((r) => r.startsWith('Bash('))],
-    ['powershell', 'Claude deny: PowerShell forms', kitDeny.filter((r) => r.startsWith('PowerShell('))],
     ['mcp', 'Claude deny: outbound MCP tools', kitDeny.filter((r) => r.startsWith('mcp__'))],
   ];
   for (const [kind, item, want] of kinds) {
@@ -419,16 +419,17 @@ function claudeChecks(ctx, sec, { managed }) {
     if (!missing.length) sec.pass(`claude.deny.${kind}`, item, `${want.length} rule(s) present`);
     else sec.fail(`claude.deny.${kind}`, item, `${missing.length} of ${want.length} missing: ${listSome(missing)}`, deployFix(ctx));
   }
-  // Rules that name git push decide before the guard can ask (AS3-379): a deny rule means the dialog never
-  // appears (the push is refused, which is safe but not what the owner asked for); what an allow rule does
-  // to the guard's ask has not been measured, so it is reported too.
-  const namesPush = (rule) => typeof rule === 'string' && /^(?:Bash|PowerShell)\(.*\bpush\b/i.test(rule) && /\bgit\b/i.test(rule);
+  // Rules that name git push (AS3-379), gh or npm publish (AS3-385) decide before the guard can ask: a deny
+  // rule means the dialog never appears (the call is refused, which is safe but not what the owner asked
+  // for); what an allow rule does to the guard's ask has not been measured, so it is reported too.
+  const namesPush = (rule) => typeof rule === 'string' && /^(?:Bash|PowerShell)\(/.test(rule)
+    && ((/\bpush\b/i.test(rule) && /\bgit\b/i.test(rule)) || /\((?:gh|gh\.exe)\b/i.test(rule) || /\bnpm\b.*\bpublish\b/i.test(rule));
   const denyPush = [...have].filter(namesPush);
   const allowPush = (Array.isArray(settings.permissions?.allow) ? settings.permissions.allow : []).filter(namesPush);
-  const pushItem = 'Claude rules that name git push';
-  if (denyPush.length) sec.warn('claude.rules.push', pushItem, `${denyPush.length} deny rule(s): ${listSome(denyPush)}: a deny rule wins over the guard's ask, so the confirmation dialog for a push never appears (弹不了确认窗，推送直接被拒)`, `${deployFix(ctx)} (it takes out the kit's old git push deny rules); delete others by hand if the dialog is wanted`);
-  else if (allowPush.length) sec.warn('claude.rules.push', pushItem, `${allowPush.length} allow rule(s): ${listSome(allowPush)}: whether an allow rule skips the guard's confirmation dialog has not been measured (没有量过 allow 规则会不会跳过确认窗)`, 'delete the allow rule(s), or try a push and see that the dialog still appears');
-  else sec.pass('claude.rules.push', pushItem, 'none: the guard decides a push (asks the owner on Claude); only rules that name git and push are looked for, a wide rule such as Bash(git *) is not');
+  const pushItem = 'Claude rules that name git push, gh or npm publish';
+  if (denyPush.length) sec.warn('claude.rules.push', pushItem, `${denyPush.length} deny rule(s): ${listSome(denyPush)}: a deny rule wins over the guard's ask, so the confirmation dialog never appears (弹不了确认窗，推送或发布直接被拒)`, `${deployFix(ctx)} (it takes out the kit's old push and publish deny rules); delete others by hand if the dialog is wanted`);
+  else if (allowPush.length) sec.warn('claude.rules.push', pushItem, `${allowPush.length} allow rule(s): ${listSome(allowPush)}: whether an allow rule skips the guard's confirmation dialog has not been measured (没有量过 allow 规则会不会跳过确认窗)`, 'delete the allow rule(s), or try the command and see that the dialog still appears');
+  else sec.pass('claude.rules.push', pushItem, 'none: the guard decides a push and a publish (asks the owner on Claude); only rules that name git and push, gh, or npm and publish are looked for, a wide rule such as Bash(git *) is not');
   const folders = [
     ['readonly', 'Claude deny: read-only folders', 'Edit', 'readonly_dirs'],
     ['customer', 'Claude deny: customer-data folders', 'Read', 'customer_data_dirs'],
@@ -1151,7 +1152,7 @@ function firstLine(text) {
  * did not finish, or a shell passed its exit 2 on as another code; Windows PowerShell -Command turns a
  * native exit 2 into 1); error (the guard ran and failed closed: exit 2, or under --platform codex exit 0
  * with a deny JSON whose reason starts with ERROR_DENY_MARK, AS3-126); wrong (it ran and decided wrong).
- * @param {'allow'|'deny'|'ask'} expect ask: the JSON with permissionDecision ask (a push on Claude)
+ * @param {'allow'|'deny'|'ask'} expect ask: the JSON with permissionDecision ask (a push or a publish on Claude)
  * @param {{status: number|null, stdout: string, stderr: string, error?: string}} r
  * @returns {{kind: 'ok'|'start'|'error'|'wrong', detail: string}}
  */
@@ -1176,8 +1177,8 @@ export function judgeProbe(expect, r) {
   if (expect === 'allow') return out ? { kind: 'wrong', detail: `exit 0 with output (expected none): ${out.slice(0, 120)}` } : { kind: 'ok', detail: 'allowed' };
   if (expect === 'ask') {
     if (o?.hookEventName === 'PreToolUse' && o?.permissionDecision === 'ask') return { kind: 'ok', detail: 'asked' };
-    if (denied) return { kind: 'wrong', detail: 'denied, not asked (a guard from before AS3-379 denies every push)' };
-    return { kind: 'wrong', detail: out ? `exit 0 without the ask JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the push was neither asked nor denied)' };
+    if (denied) return { kind: 'wrong', detail: 'denied, not asked (a guard from before AS3-379 denies every push, one from before AS3-385 every publish)' };
+    return { kind: 'wrong', detail: out ? `exit 0 without the ask JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the command was neither asked nor denied)' };
   }
   if (denied) return { kind: 'ok', detail: 'denied' };
   return { kind: 'wrong', detail: out ? `exit 0 without the deny JSON: ${out.slice(0, 120)}` : 'exit 0 without output (the command was not denied)' };
@@ -1234,8 +1235,8 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
     const timeout = Math.min(PROBE_TIMEOUT_MS, typeof e.timeout === 'number' && e.timeout > 0 ? e.timeout * 1000 : PROBE_TIMEOUT_MS);
     for (const form of forms) {
       // pushNoDialog: the same push in a session marked unattended is a deny on both platforms.
-      for (const what of ['allow', 'deny', 'push', 'pushNoDialog']) {
-        const expect = what === 'push' ? pushAnswer(e.platform) : what === 'pushNoDialog' ? 'deny' : what;
+      for (const what of ['allow', 'publish', 'push', 'pushNoDialog']) {
+        const expect = what === 'push' || what === 'publish' ? pushAnswer(e.platform) : what === 'pushNoDialog' ? 'deny' : what;
         const r = probe(form, probeInput(e.platform, PROBE_COMMANDS[what === 'pushNoDialog' ? 'push' : what], 'default'), timeout, what === 'pushNoDialog');
         // A shell that is not on this machine says nothing about the hook.
         if (!e.args && r.error === 'ENOENT') { if (!skipped.includes(form.via)) skipped.push(form.via); continue; }
@@ -1250,7 +1251,7 @@ export function liveGuardChecks(ctx, sec, { probe = runProbe, env = process.env 
   const bad = runs.filter((r) => r.kind !== 'ok');
   const skip = skipped.length ? `; skipped (not on this machine): ${skipped.join(', ')}` : '';
   if (!bad.length) {
-    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.deny} denied, ${PROBE_COMMANDS.push} asked on Claude and denied on Codex, and denied on both in a session marked unattended (${per})${skip}`);
+    sec.pass('hooks.live.guard', item, `${runs.length} run(s): ${PROBE_COMMANDS.allow} allowed without output, ${PROBE_COMMANDS.publish} and ${PROBE_COMMANDS.push} asked on Claude and denied on Codex, the push denied on both in a session marked unattended (${per})${skip}`);
     return;
   }
   // What each kind of wrong run means on its platform (ADR-006 §4).
