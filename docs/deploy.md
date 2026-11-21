@@ -143,7 +143,7 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
    | Claude | Bash 工具执行 `git push` | 弹出确认窗；点拒绝，没有执行（无头会话里直接被拒） |
    | Claude | PowerShell 工具执行 `git push` | 弹出确认窗；点拒绝，没有执行 |
    | Claude | `git -C <冒烟仓库> push` | 弹出确认窗；点拒绝，没有执行 |
-   | Claude | `npm publish --dry-run` | 执行前被拒 |
+   | Claude | `npm publish --dry-run` | 弹出确认窗；点拒绝，没有执行（无头会话里直接被拒） |
    | Claude | Write 写进 `_private/eval/smoke/readonly-canary/` | 执行前被拒 |
    | Claude | Read `_private/eval/smoke/customer-canary/` 里的文件 | 执行前被拒 |
    | Codex | `git push` | 被规则或钩子拦下，不能只靠 pushurl 失败 |
@@ -181,7 +181,7 @@ check-kit 只读，按六节输出，每行是 `PASS`、`WARN` 或 `FAIL`、检�
 - **WARN** 下面可能有一行 `optional:`，是你可以跑也可以不跑的命令（例如删除花括号目录）。
 - 末尾一行是 PASS、WARN、FAIL 的计数。部署成功的标准：`check-kit` 和 `--dry-run --expect-clean` 都退出 0。
 - 中性档在位时，第 3 节报 FAIL 并给出回滚中性档的命令（`--report-only` 下是 WARN）。
-- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `npm publish` 要输出拒绝 JSON，合成的 `git push origin main` 在 Claude 上要输出询问 JSON（带着无人值守的标记 `AUTOSKILLS_UNATTENDED=1` 再跑一次，是拒绝 JSON）、在 Codex 上要输出拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。守卫出错时 Claude 一侧是退出 2，Codex 一侧是理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON 加退出 0（`exit 0, deny JSON for a guard error`），两边都说明匹配到的调用全被拦。要特别注意：**守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令：没有任何输出，退出码也不是 2，而 Codex 只认拒绝 JSON 或退出 2），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
+- **守卫命令行实测**：按 `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里登记的守卫命令行原样运行，Claude 的直接启动，Codex 的在 cmd /d /s /c、cmd /c、Windows PowerShell -Command（PATH 上有 bash 时再加 bash -c）里各跑一次；合成的 `git status` 要放行且没有输出，合成的 `npm publish` 和 `git push origin main` 在 Claude 上要输出询问 JSON、在 Codex 上要输出拒绝 JSON；那条推送带着无人值守的标记 `AUTOSKILLS_UNATTENDED=1` 再跑一次，两边都是拒绝 JSON。守卫只判断、不执行命令，也不写心跳。FAIL 时下面逐行列出每次不对的运行（平台、shell、放行或拒绝、退出码和原因）。守卫出错时 Claude 一侧是退出 2，Codex 一侧是理由以“AutoSkills 守卫出错，按负责人定的出错即拦截处理”开头的拒绝 JSON 加退出 0（`exit 0, deny JSON for a guard error`），两边都说明匹配到的调用全被拦。要特别注意：**守卫起不来时 Codex 会放行**（便携 Node 不见、`guard.mjs` 加载出错时 Node 退出 1、shell 找不到命令：没有任何输出，退出码也不是 2，而 Codex 只认拒绝 JSON 或退出 2），Claude 则照样拦（`onFailure: "block"`）。这种情况代理在会话里看不出来，只有这一行和守卫心跳（7 天没有新心跳是 FAIL）能发现，见 ADR-006 §4。
 - **guard config hook-config.json**：运行区的 `hook-config.json` 要能解析、只有部署脚本写的三个键（`runtime`、`readonly_dirs`、`kit_repo`）、路径都是绝对路径。读不出来、不是 JSON 或有相对路径时，守卫每次都按出错处理（Claude 上退出 2，Codex 上输出拒绝 JSON），**这时每次匹配到的调用都会被拦**；多出来的键守卫不认、会忽略，所以拼错的键等于没设（例如只读目录不生效）。修法都是重跑部署（它按本地配置重写这个文件），或手工改对。
 - **部署前**，上面两行报 `not deployed (未部署)`，是 WARN，不算失败。
 - 退出 2 是用法错误，或本地配置存在但读不出来。
@@ -275,6 +275,8 @@ node scripts/deploy-kit.mjs --drill _private/eval/restore-drill [--claude-contra
 ## 怎么推送
 
 让代理推（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”，代理从 origin 取地址、写完整地址推送，守卫弹出确认窗，你点同意才推。六种权限模式下守卫回的都是询问（自动模式和 dontAsk 是 2026-11-21 加的）。长跑驱动起的会话带着无人值守的标记，守卫直接拒绝；别的无头会话和 Codex 上推不了。量过什么、哪些模式没人看过，见 [push-consent-probe.md](push-consent-probe.md)。
+
+让代理发布（只在 Claude Code 上，2026-11-21 起）：gh 的写操作、带写方法的 gh api 和 npm publish 和推送一样，守卫回询问，你在确认窗里点同意才执行；带无人值守标记的会话、读不出权限模式和 Codex 上照旧拒绝。用户级设置里以前写进去的那 90 条 gh 和 npm publish 的 deny 规则，部署时连同 git push 的 10 条一起去掉，预演的理由里会逐条列出。对外发送类的 MCP 工具照旧有 deny 规则。
 
 你自己推：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，按远端名推送会失败。在普通终端（不是代理的会话）里写完整地址：
 

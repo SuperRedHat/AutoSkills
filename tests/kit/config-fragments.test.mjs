@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_CLAUDE_DENY, mergeClaudeSettings } from '../../scripts/lib/kit-targets.mjs';
+import { RETIRED_CLAUDE_DENY, RETIRED_PUSH_DENY, RETIRED_PUBLISH_DENY, mergeClaudeSettings } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CONFIG = path.join(REPO, 'config');
@@ -24,7 +24,12 @@ const KIT_LOCAL = path.join(CONFIG, 'kit-local.example.json');
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
-/** The deny categories of ADR-006 §2.5 with commands each must stop and nearby reads it must not. */
+/**
+ * The publish categories of ADR-006 §2.5 with commands of each and nearby reads. Since AS3-385 the fragment
+ * holds no deny rule for them (the owner decides in the confirmation dialog, as for a push); the samples
+ * now pin two things: no rule of the fragment matches them, and the retired rules deploy takes out of the
+ * user's settings are the ones that did.
+ */
 /**
  * git push is not in this list since AS3-379: a deny rule in the settings wins over the guard's "ask", and the
  * owner decides a push in the confirmation dialog. The guard still sees every push (guard-hook.test.mjs).
@@ -137,30 +142,38 @@ describe('Claude settings fragment', () => {
     assert.ok(!Object.hasOwn(settings, 'effortLevel'));
   });
 
-  test('deny rules are strings and every Bash rule has the same PowerShell rule and back', () => {
+  test('deny rules are strings, none twice, and none is a Bash or PowerShell rule (AS3-385)', () => {
     assert.ok(deny.length > 0);
     for (const r of deny) assert.equal(typeof r, 'string');
-    const specs = (tool) => new Set(deny.map(parseRule).filter((r) => r.tool === tool).map((r) => r.spec));
-    const bash = specs('Bash');
-    const ps = specs('PowerShell');
-    assert.ok(bash.size > 0);
-    assert.deepEqual([...bash].filter((s) => !ps.has(s)), [], 'Bash rules without a PowerShell twin');
-    assert.deepEqual([...ps].filter((s) => !bash.has(s)), [], 'PowerShell rules without a Bash twin');
-    assert.ok(!bash.has(null) && !ps.has(null), 'a bare Bash or PowerShell deny would remove the whole tool');
     assert.equal(new Set(deny).size, deny.length, 'duplicate deny rules');
+    // A shell deny rule decides before the guard can ask; a bare Bash or PowerShell deny would remove the whole tool.
+    assert.deepEqual(deny.filter((r) => /^(?:Bash|PowerShell)\b/.test(r)), [], 'no shell deny rule in the fragment');
+  });
+
+  test('the retired rules: ten for git push and ninety for publishing, each body once for Bash and once for PowerShell', () => {
+    assert.equal(RETIRED_PUSH_DENY.length, 5);
+    assert.equal(RETIRED_PUBLISH_DENY.length, 45);
+    assert.equal(RETIRED_CLAUDE_DENY.length, 100);
+    assert.equal(new Set(RETIRED_CLAUDE_DENY).size, 100, 'no rule twice');
+    for (const body of [...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY]) {
+      for (const tool of ['Bash', 'PowerShell']) assert.ok(RETIRED_CLAUDE_DENY.includes(`${tool}(${body})`), `${tool}(${body})`);
+    }
+    for (const body of RETIRED_PUBLISH_DENY) assert.match(body, /^(?:gh (?:repo|release|pr|workflow|api) |npm publish )/, body);
+    // Nothing the kit still wants is in the retired list.
+    assert.deepEqual(RETIRED_CLAUDE_DENY.filter((r) => r.startsWith('mcp__') || /^(?:Read|Edit|Write|NotebookEdit)\(/.test(r)), []);
   });
 
   for (const [category, { denied: bad, allowed: good }] of Object.entries(DENY_SAMPLES)) {
-    test(`${category}: denied in both Bash and PowerShell form, reads stay allowed`, () => {
+    test(`${category}: no rule of the fragment matches; the retired rules are the ones that did, and they left the reads alone`, () => {
       for (const tool of ['Bash', 'PowerShell']) {
-        for (const cmd of bad) assert.ok(denied(deny, tool, cmd), `${tool} should deny: ${cmd}`);
-        for (const cmd of good) assert.ok(!denied(deny, tool, cmd), `${tool} should not deny: ${cmd}`);
+        for (const cmd of [...bad, ...good]) assert.ok(!denied(deny, tool, cmd), `${tool} must not deny by rule: ${cmd}`);
+        for (const cmd of bad) assert.ok(denied(RETIRED_CLAUDE_DENY, tool, cmd), `a retired ${tool} rule matched: ${cmd}`);
+        for (const cmd of good) assert.ok(!denied(RETIRED_CLAUDE_DENY, tool, cmd), `no retired ${tool} rule matched: ${cmd}`);
       }
     });
   }
 
   test('git push has no deny rule: none of the retired ones is in the fragment and no rule matches a push', () => {
-    assert.equal(RETIRED_CLAUDE_DENY.length, 10);
     assert.deepEqual(deny.filter((r) => RETIRED_CLAUDE_DENY.includes(r)), []);
     assert.deepEqual(deny.filter((r) => /\bpush\b/i.test(r)), [], 'no deny rule names push');
     for (const tool of ['Bash', 'PowerShell']) {
@@ -170,24 +183,28 @@ describe('Claude settings fragment', () => {
     }
   });
 
-  test('the settings merge takes the retired git push deny rules out and leaves every other rule', () => {
+  test('the settings merge takes the retired push and publish deny rules out and leaves every other rule', () => {
     const own = ['Bash(rm -rf *)', 'Read(//d/secret/**)', 'Bash(git push --mirror *)'];
-    const current = { model: 'x', permissions: { allow: ['Bash(git push *)'], deny: [own[0], ...RETIRED_CLAUDE_DENY, own[1], 'Bash(npm publish *)', own[2]] } };
+    // The owner's own rules stay, also one that names gh or npm in a spelling the kit never wrote.
+    const mine = 'Bash(npm publish --tag danger *)';
+    const current = { model: 'x', permissions: { allow: ['Bash(git push *)'], deny: [own[0], ...RETIRED_CLAUDE_DENY, own[1], mine, own[2]] } };
     const merged = mergeClaudeSettings(current, { permissions: { deny: deny.slice() } });
     assert.deepEqual(merged.permissions.deny.filter((r) => RETIRED_CLAUDE_DENY.includes(r)), []);
     for (const r of [...own, ...deny]) assert.ok(merged.permissions.deny.includes(r), `kept or added: ${r}`);
-    assert.deepEqual(merged.permissions.deny.slice(0, 4), [own[0], own[1], 'Bash(npm publish *)', own[2]], 'the order of what stays is kept');
+    assert.deepEqual(merged.permissions.deny.slice(0, 4), [own[0], own[1], mine, own[2]], 'the order of what stays is kept');
+    assert.equal(merged.permissions.deny.length, 4 + deny.length, 'nothing but the retired rules is gone');
     assert.deepEqual(merged.permissions.allow, ['Bash(git push *)'], 'allow rules are not the kit\'s to touch');
     assert.equal(merged.model, 'x');
-    assert.deepEqual(current.permissions.deny.length, 14, 'the input is not changed');
+    assert.deepEqual(current.permissions.deny.length, 104, 'the input is not changed');
     assert.deepEqual(mergeClaudeSettings(merged, { permissions: { deny: deny.slice() } }), merged, 'a second merge changes nothing');
     assert.deepEqual(mergeClaudeSettings(null, { permissions: { deny: deny.slice() } }).permissions.deny, deny);
     assert.deepEqual(mergeClaudeSettings({ permissions: {} }, {}), { permissions: {} });
   });
 
-  test('the PowerShell rules match case-insensitively, as PowerShell does', () => {
-    assert.ok(denied(deny, 'PowerShell', 'NPM publish'));
-    assert.ok(denied(deny, 'PowerShell', 'GH PR create --fill'));
+  test('the sample matcher reads PowerShell rules case-insensitively, as PowerShell does', () => {
+    assert.ok(denied(RETIRED_CLAUDE_DENY, 'PowerShell', 'NPM publish'));
+    assert.ok(denied(RETIRED_CLAUDE_DENY, 'PowerShell', 'GH PR create --fill'));
+    assert.ok(!denied(RETIRED_CLAUDE_DENY, 'Bash', 'GH PR create --fill'));
   });
 
   test('outbound MCP tools are denied by their exact names', () => {

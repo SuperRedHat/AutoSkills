@@ -430,13 +430,30 @@ function mergeHooks(cur, kitHooks) {
 }
 
 /**
- * Deny rules the kit wrote into ~/.claude/settings.json up to 2026-11 and no longer wants there: the ten
- * git push rules. A deny rule in the settings wins over the guard's "ask" (docs/push-consent-probe.md), so
- * with them in place the owner would never get the confirmation dialog for a push (AS3-379). The guard
- * still sees every push; gh writes and npm publish keep their deny rules.
+ * Deny rules the kit wrote into ~/.claude/settings.json up to 2026-11 and no longer wants there. A deny
+ * rule in the settings wins over the guard's "ask" (docs/push-consent-probe.md), so with them in place the
+ * owner would never get the confirmation dialog. First the ten git push rules (AS3-379), then the rules
+ * for gh writes, gh api write methods and npm publish (AS3-385, owner decision 2026-11-21). The guard
+ * still sees every one of these commands. Each list holds the rule bodies; every body was written once for
+ * Bash and once for PowerShell.
  */
+export const RETIRED_PUSH_DENY = Object.freeze(['git push *', 'git -C * push', 'git -C * push *', 'git -c * push', 'git -c * push *']);
+export const RETIRED_PUBLISH_DENY = Object.freeze([
+  'gh repo create *', 'gh repo delete *', 'gh repo edit *', 'gh repo fork *',
+  'gh repo rename *', 'gh repo archive *', 'gh repo unarchive *', 'gh repo sync *',
+  'gh repo deploy-key add *', 'gh repo deploy-key delete *', 'gh repo autolink create *', 'gh repo autolink delete *',
+  'gh release create *', 'gh release delete *', 'gh release edit *', 'gh release upload *',
+  'gh release delete-asset *', 'gh pr create *', 'gh pr merge *', 'gh pr close *',
+  'gh pr reopen *', 'gh pr edit *', 'gh pr comment *', 'gh pr review *',
+  'gh pr ready *', 'gh pr lock *', 'gh pr unlock *', 'gh pr revert *',
+  'gh pr update-branch *', 'gh workflow run *', 'gh workflow enable *', 'gh workflow disable *',
+  'gh api *-X POST*', 'gh api *--method POST*', 'gh api *--method=POST*', 'gh api *-X PUT*',
+  'gh api *--method PUT*', 'gh api *--method=PUT*', 'gh api *-X PATCH*', 'gh api *--method PATCH*',
+  'gh api *--method=PATCH*', 'gh api *-X DELETE*', 'gh api *--method DELETE*', 'gh api *--method=DELETE*',
+  'npm publish *',
+]);
 export const RETIRED_CLAUDE_DENY = Object.freeze(['Bash', 'PowerShell'].flatMap((tool) => [
-  'git push *', 'git -C * push', 'git -C * push *', 'git -c * push', 'git -c * push *',
+  ...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY,
 ].map((rule) => `${tool}(${rule})`)));
 
 /**
@@ -612,7 +629,7 @@ export function desiredFiles(roots, { claudeContract = DEFAULT_OPTIONS.claude_co
       mergedJson(t.claudeSettings, curSettings, mergeClaudeSettings(curSettings.value, settings), {
         group: 'settings', mode: 'merge', source: settingsSrc,
         reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys and rules stay'
-          + (retired.length ? `; takes out ${retired.length} retired git push deny rule(s), the guard asks the owner instead: ${retired.join(', ')}` : ''),
+          + (retired.length ? `; takes out ${retired.length} retired push and publish deny rule(s), the guard asks the owner instead: ${retired.join(', ')}` : ''),
       });
     } catch (e) {
       if (!(e instanceof MergeError)) throw e;

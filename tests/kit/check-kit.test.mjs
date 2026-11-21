@@ -198,7 +198,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'hooks.config').detail, /^<runtime>\/hooks\/hook-config\.json: loads, absolute paths, keys runtime, readonly_dirs \(1\), kit_repo$/);
   // Claude's command + args once (its two guard groups share the line), Codex's string in every shell.
   const live = row(json.rows, 'hooks.live.guard').detail;
-  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex, and denied on both in a session marked unattended \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
+  assert.match(live, /run\(s\): git status allowed without output, npm publish and git push origin main asked on Claude and denied on Codex, the push denied on both in a session marked unattended \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -213,7 +213,7 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   const before = treeHash(sb.root);
   const { json } = report(sb, { status: 1 });
   assert.deepEqual(failIds(json.rows), [
-    'claude.deny.bash', 'claude.deny.customer', 'claude.deny.mcp', 'claude.deny.powershell', 'claude.deny.readonly',
+    'claude.deny.customer', 'claude.deny.mcp', 'claude.deny.readonly',
     'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS', 'claude.hook.PreToolUse.guard.mjs', 'claude.hook.SessionStart.session-start.mjs',
     'claude.hook.paths', 'claude.subagentPromptCacheTtl', 'claude.worktree.baseRef',
     'codex.agents.default_subagent_reasoning_effort', 'codex.desktop.followUpQueueMode', 'codex.hooks', 'codex.model_reasoning_effort',
@@ -227,12 +227,12 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.match(row(json.rows, 'claude.hook.PreToolUse.guard.mjs').detail, /onFailure/);
   assert.match(row(json.rows, 'claude.hook.paths').detail, /old\/hooks\/guard\.mjs/);
   assert.equal(row(json.rows, 'claude.hook.PreToolUse.guard.mjs.project-manager').status, 'PASS');
-  assert.match(row(json.rows, 'claude.deny.bash').detail, /^44 of 45 missing/);
-  // This home still holds the kit's old deny rule for git push: the dialog could not appear.
+  // No rows for Bash and PowerShell deny rules any more: the fragment holds none (AS3-385).
+  assert.deepEqual(json.rows.filter((r) => r.id === 'claude.deny.bash' || r.id === 'claude.deny.powershell'), []);
+  // This home still holds the kit's old deny rules for git push and npm publish: the dialog could not appear.
   assert.equal(row(json.rows, 'claude.rules.push').status, 'WARN');
-  assert.match(row(json.rows, 'claude.rules.push').detail, /^1 deny rule\(s\): Bash\(git push \*\): a deny rule wins over the guard's ask/);
+  assert.match(row(json.rows, 'claude.rules.push').detail, /^2 deny rule\(s\): Bash\(git push \*\), Bash\(npm publish \*\): a deny rule wins over the guard's ask/);
   assert.match(row(json.rows, 'claude.rules.push').fix, /re-run deploy-kit/);
-  assert.match(row(json.rows, 'claude.deny.powershell').detail, /^45 of 45 missing/);
   // An env value in settings is not printed, only that it differs.
   assert.doesNotMatch(row(json.rows, 'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS').detail, /"2"/);
   assert.match(row(json.rows, 'codex.agents.default_subagent_reasoning_effort').fix, /delete default_subagent_reasoning_effort/);
@@ -244,8 +244,9 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   // The stub guard allows git status but denies nothing; the old/ path does not start, and that group blocks.
   const live = row(json.rows, 'hooks.live.guard');
   assert.match(live.detail, /Claude blocks every matched call \(onFailure: "block"\).*the guard ran but decided wrong/);
-  assert.ok(live.lines.some((l) => /^claude, command \+ args, deny \(npm publish\): exit 0 without output/.test(l)), live.lines.join('\n'));
-  assert.ok(live.lines.some((l) => /^claude, command \+ args, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, ask \(npm publish\): exit 0 without output \(the command was neither asked nor denied\)/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, ask \(git push origin main\): exit 0 without output \(the command was neither asked nor denied\)/.test(l)), live.lines.join('\n'));
+  assert.ok(live.lines.some((l) => /^claude, command \+ args, deny \(git push origin main, marked unattended\): exit 0 without output \(the command was not denied\)/.test(l)), live.lines.join('\n'));
   assert.ok(live.lines.some((l) => /^claude, command \+ args, allow \(git status\): exit 1/.test(l)), live.lines.join('\n'));
   assert.match(live.fix, /missing: <runtime>\/old\/hooks\/guard\.mjs/);
   assert.match(row(json.rows, 'hooks.config').detail, /hook-config\.json does not exist: the guard runs without the read-only folders/);
@@ -668,20 +669,21 @@ test('the live run: a guard that denies everything, or nothing, decided wrong; t
   let live = row(hookRows(sb), 'hooks.live.guard');
   assert.equal(live.status, 'FAIL');
   assert.match(live.detail, /the guard ran but decided wrong/);
-  // Denying everything is wrong twice: git status must be allowed, and on Claude the push must be asked.
+  // Denying everything is wrong three times: git status must be allowed, and on Claude the push and the publish must be asked.
   const notAllowed = live.lines.filter((l) => /, allow \(git status\): exit 0 with output \(expected none\)/.test(l));
-  const notAsked = live.lines.filter((l) => /^claude, .*, ask \(git push origin main\): denied, not asked/.test(l));
-  assert.ok(notAllowed.length > 0 && notAsked.length > 0, live.lines.join('\n'));
+  const notAsked = live.lines.filter((l) => /^claude, .*, ask \((?:git push origin main|npm publish)\): denied, not asked/.test(l));
+  assert.ok(notAllowed.length > 0 && notAsked.length === 2, live.lines.join('\n'));
   assert.equal(notAllowed.length + notAsked.length, live.lines.length, live.lines.join('\n'));
-  assert.ok(notAllowed.some((l) => l.startsWith('codex, ')) && !live.lines.some((l) => /^codex, .*\(git push origin main\)/.test(l)), 'on Codex a denied push is right');
+  assert.ok(notAllowed.some((l) => l.startsWith('codex, ')) && !live.lines.some((l) => /^codex, .*\((?:git push origin main|npm publish)\)/.test(l)), 'on Codex a denied push or publish is right');
   assert.match(live.fix, /does not decide like the repo's: re-run deploy-kit/);
   fs.writeFileSync(guard, '// allows everything\n');
   live = row(hookRows(sb), 'hooks.live.guard');
   assert.equal(live.status, 'FAIL');
   const kinds = [
-    /, deny \(npm publish\): exit 0 without output \(the command was not denied\)$/,
+    /^codex, .*, deny \(npm publish\): exit 0 without output \(the command was not denied\)$/,
+    /^claude, .*, ask \(npm publish\): exit 0 without output \(the command was neither asked nor denied\)$/,
     /^codex, .*, deny \(git push origin main\): exit 0 without output \(the command was not denied\)$/,
-    /^claude, .*, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)$/,
+    /^claude, .*, ask \(git push origin main\): exit 0 without output \(the command was neither asked nor denied\)$/,
     /, deny \(git push origin main, marked unattended\): exit 0 without output \(the command was not denied\)$/,
   ];
   for (const re of kinds) assert.ok(live.lines.some((l) => re.test(l)), `${re}\n${live.lines.join('\n')}`);
@@ -788,8 +790,11 @@ test('the live run writes no heartbeat; the same run without AUTOSKILLS_GUARD_PR
   fs.writeFileSync(path.join(runtime, 'hooks', 'hook-config.json'), JSON.stringify({ runtime: fwd(runtime) }));
   const form = { via: 'command + args', file: process.execPath, args: [path.join(runtime, 'hooks', 'guard.mjs'), '--platform', 'claude'] };
   const heartbeat = path.join(runtime, 'hooks', 'heartbeat', 'guard.jsonl');
-  const deny = runProbe(form, probeInput('claude', PROBE_COMMANDS.deny), 30_000);
-  assert.deepEqual(judgeProbe('deny', deny), { kind: 'ok', detail: 'denied' });
+  // The publish: asked on Claude like the push, denied under --platform codex and in a marked session.
+  assert.deepEqual(Object.keys(PROBE_COMMANDS), ['allow', 'publish', 'push']);
+  assert.deepEqual(judgeProbe('ask', runProbe(form, probeInput('claude', PROBE_COMMANDS.publish), 30_000)), { kind: 'ok', detail: 'asked' });
+  assert.deepEqual(judgeProbe('deny', runProbe(form, probeInput('claude', PROBE_COMMANDS.publish), 30_000, true)), { kind: 'ok', detail: 'denied' });
+  assert.deepEqual(judgeProbe('deny', runProbe({ ...form, args: [form.args[0], '--platform', 'codex'] }, probeInput('codex', PROBE_COMMANDS.publish), 30_000)), { kind: 'ok', detail: 'denied' });
   // The push: the Claude line asks; the same guard under --platform codex denies.
   assert.equal(pushAnswer('claude'), 'ask');
   assert.equal(pushAnswer('codex'), 'deny');
