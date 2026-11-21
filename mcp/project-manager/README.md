@@ -1,32 +1,42 @@
 # MCP Project Manager
 
-Claude Code 的项目状态管理 MCP Server。提供 PRD、架构文档、任务列表、日志的持久化存储和跨会话恢复。
+Claude Code 和 Codex 共用的项目状态管理 MCP Server，AutoSkills 套件的账本。提供 PRD、架构文档、任务列表、日志的持久化存储和跨会话恢复。当前版本 1.5.1，版本记录见 [CHANGELOG](CHANGELOG.md)；AutoSkills 3.0 没有改它。
 
-## 安装
+## 安装和注册
+
+在 AutoSkills 仓库根目录跑一次 bootstrap，它会构建这个服务端，并按仓库根目录的 `mcp-manifest.json` 向 Claude Code（用户级）和 Codex 注册：
 
 ```powershell
-cd ~\.claude\mcp-project-manager
+powershell -NoProfile -File scripts/bootstrap.ps1
+```
+
+只想手动构建：
+
+```powershell
+cd mcp\project-manager
 npm install
-npm run build
+npm run build      # 产物在 dist/index.js
+npm test           # vitest
 ```
 
-## 配置
+手动注册时，命令是 `node <仓库>/mcp/project-manager/dist/index.js`，不需要环境变量。服务端用系统的 Node 运行。
 
-在项目目录的 `.claude/.mcp.json` 中添加（或在全局 `~/.claude/.mcp.json`）：
+## 状态存在哪
 
-```json
-{
-  "mcpServers": {
-    "project-manager": {
-      "command": "node",
-      "args": ["C:/Users/你的用户名/.claude/mcp-project-manager/dist/index.js"],
-      "env": {
-        "PROJECT_DIR": "."
-      }
-    }
-  }
-}
-```
+每个项目的状态在项目根目录的 `.claude/state/` 下：`project.json`、`tasks.json`、`logs.json`、`focus.json`、`prd.md`、`architecture.md`。写入走“临时文件加改名”，是原子的；但文件没有锁，**同一时间只能有一个进程写**。
+
+服务端启动时这样定活动项目：环境变量 `PROJECT_DIR`；没有就从当前目录往上找带 `.claude/state/` 的目录；再没有就用当前目录。会话里不要靠这个猜测，开始时显式设一次：
+
+- `set_project_dir` — 把活动项目切到给定的绝对路径（参数 `dir`）。写工具只动活动项目
+- `get_server_info` — 回显活动项目的目录和状态目录里有哪些文件，用来核对设对了没有
+- `get_verification_profiles` — 读共享的验证档定义（`~/.workflow-core/policies/verification-profiles.json`）
+
+## 用的时候要知道的
+
+- 任务很多的账本上，不带 `status` 的 `get_all_tasks` 可能超出客户端对工具返回的长度上限。查任务优先用 `get_task_by_id`、`get_next_task`，或带 `status` 筛选。
+- `update_task_status` 和 `update_tasks` 带 `notes` 时会**整段替换**任务原有的 notes。要保留原文，用 `edit_task` 写全文，改状态时不带 notes。
+- 从“进行中”到“待验收”或“完成”要先经过 `auto_verified`，不能跳。
+- `save_prd`、`save_architecture` 是整篇覆盖。
 
 ## 提供的 Tools
 

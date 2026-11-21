@@ -1,5 +1,7 @@
 # 收尾这一批的手动并行：约定和收法
 
+> 这是 2026-11-19 那一批的历史记录，留着当手动并行的例子看。里面的分支和 worktree（`finish`、`finish-a`、`finish-b`、`finish-t`）已经合进 main 并删掉；现在的做法见 [docs/manual-parallel.md](../../manual-parallel.md)，这一趟的实测结果见 [result.md](result.md)。
+
 这一批（AS3-364 到 AS3-372）用三个手动窗口并行做。这一页是三块共用的约定，和主控收窗口的步骤。
 
 设计页在主检出的 `_private/redesign-2026-10/b3/finish-line-design-2026-11-19.md`。从窗口的 worktree 看，主检出在往上三级，也就是 `../../../_private/redesign-2026-10/b3/finish-line-design-2026-11-19.md`。

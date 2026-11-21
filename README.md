@@ -7,12 +7,20 @@
 - **第 1 批**（2026-11-01 部署）：串行的契约、技能、钩子和部署脚本。一个主循环按顺序做，子代理只做只读的活。设计决定见 [ADR-006](docs/adr-006-autoskills-3-batch1-serial-kit.md)。
 - **收尾**（2026-11-19）：在上面加了三样。长跑驱动让任务一个接一个做下去，不用守着（[docs/run.md](docs/run.md)）；验收包把等你验收的任务排成一页（[docs/accept.md](docs/accept.md)）；手动并行是一套开几个窗口同时做的做法，只有文字（[docs/manual-parallel.md](docs/manual-parallel.md)）。设计决定见 [ADR-009](docs/adr-009-autoskills-3-finish.md)。
 
+3.0 之后又加了三个小项，合起来是 **3.1.0**（版本记录见 [CHANGELOG.md](CHANGELOG.md)）：
+
+- **一句话起长跑**：在 Claude Code 会话里说一句“起长跑”，主控替你在新窗口里起驱动（[docs/run.md](docs/run.md)）。
+- **推送要你点同意**：代理发起的 `git push` 不再一律被拒，守卫弹出确认窗，你点了才推（[怎么推送](#怎么推送)）。
+- **所有权限模式都弹窗**：Claude Code 的六种权限模式下推送都走确认窗；长跑驱动起的会话带无人值守标记，直接拒绝。
+
 默认仍然串行。自动并行和账本改造做到试点为止，已存档，不接着做。部署和回滚见 [docs/deploy.md](docs/deploy.md)。
 
 ---
 
 ## 目录
 
+- [前提](#前提)
+- [五分钟上手](#五分钟上手)
 - [共用契约](#共用契约)
 - [7 个技能](#7-个技能)
 - [三条命令](#三条命令)
@@ -22,6 +30,30 @@
 - [怎么推送](#怎么推送)
 - [残余风险](#残余风险)
 - [目录说明](#目录说明)
+- [文档索引](#文档索引)
+
+---
+
+## 前提
+
+- **系统**：原生 Windows。套件只在 Windows 上部署和测过；钩子的命令行和便携 Node 都按 Windows 写。macOS 和 Linux 上只有 `scripts/bootstrap.sh`（构建和注册 project-manager），套件的其余部分没有在那里跑过。
+- **平台**：Claude Code，或 Codex，或两个都装。长跑驱动、验收包和推送的确认窗只在 Claude Code 上有。
+- **工具**：git、系统 Node（跑 project-manager 和仓库里的脚本）、Git for Windows 带的 Git Bash（跑 `tests/kit`）。钩子用的是放在运行区里的便携 Node 24.22.2，和系统 Node 分开：bootstrap 发现它不在时会打印下载和校验的做法（[docs/deploy.md](docs/deploy.md)）。
+- **一个 Windows 账户**：护栏只防误操作，不做隔离（见[残余风险](#残余风险)）。
+
+---
+
+## 五分钟上手
+
+1. **装**：照[部署和检查](#部署和检查)里“新机器的顺序”跑一遍。新机器上 bootstrap 第一次以退出 3 结束是正常的，照它打印的做法补上本地配置和便携 Node 再跑。部署前关掉所有 Claude Code 和 Codex 会话。
+2. **立项**：在你的项目目录里开一个会话，说“规划”。project-plan 起草一页设计（目标、非目标、验收标准、任务拆分），你确认一次；之后它写账本和项目契约。
+3. **做**：说“把剩下的做完”。project-next 按顺序取任务、实现、验证、提交、记录，一直做到停点，不用每个任务说一次“继续”。
+4. **验收**：到了要你看的地方它会停下，列出等你验收的任务。你点名回一句，比如“T3.1–T3.5 通过，T3.3 按钮错位”。
+5. **断了接着做**：新开会话说“继续”。
+6. **不想守着**：说“起长跑”，或者在普通终端里敲[三条命令](#三条命令)里的 `run`。跑完看报告，用 `accept` 出一页验收包。
+7. **推送**：说“把 main 推上去”，在弹出的确认窗里点同意（[怎么推送](#怎么推送)）。
+
+想随时看进度，说“进度”（只读，不改任何东西）。
 
 ---
 
@@ -128,7 +160,7 @@ node scripts/deploy-kit.mjs --apply                  # 先关掉所有 Claude Co
 node scripts/check-kit.mjs                           # 重开两个平台、在 Codex /hooks 信任钩子之后
 ```
 
-套件自己的测试：`tests/kit/` 下每个测试文件用 `node --test tests/kit/<文件全名>` 逐个跑，再跑 `node scripts/lint-kit.mjs --check all`。不用通配：`node --test` 的通配匹配不到文件也退出 0。`deploy-kit.test.mjs` 要在没有别的会话调工具时跑，并且只能在主检出跑（它要用不进 git 的恢复工具）。
+套件自己的测试：`tests/kit/` 下每个测试文件用 `node --test tests/kit/<文件全名>` 逐个跑，再跑 `node scripts/lint-kit.mjs --check all`。不用通配：`node --test` 的通配匹配不到文件也退出 0。`deploy-kit.test.mjs` 要在没有别的会话调工具时跑，并且只能在主检出跑（它要用不进 git 的恢复工具）。`check-kit.test.mjs` 跑之前把 Codex 彻底退出，跑的时候也不要有别的 Claude Code 会话或窗口开着：它核对真实的 `~/.claude/settings.json` 前后没有变，别的会话一写这个文件它就失败。
 
 ---
 
@@ -195,3 +227,20 @@ git push (git remote get-url origin) <分支>
 | `docs/adr-009-*.md` | 收尾的设计决定、不做的事和残余风险 |
 | `docs/adr-001..005-*.md` 和各份报告 | project-manager 1.1–1.5 和旧套件时期的历史记录，按当时的状态理解 |
 | `_private/`（不进 git） | 本机的运行区（便携 Node、已部署的钩子、心跳）、部署记录和备份、本地配置、测量数据 |
+
+---
+
+## 文档索引
+
+| 想知道 | 看哪 |
+|---|---|
+| 怎么装、怎么回滚、钩子坏了怎么恢复 | [docs/deploy.md](docs/deploy.md)、[docs/bootstrap.md](docs/bootstrap.md) |
+| 长跑驱动怎么起、怎么停、报告怎么看 | [docs/run.md](docs/run.md) |
+| 验收包长什么样 | [docs/accept.md](docs/accept.md) |
+| 几个窗口同时做 | [docs/manual-parallel.md](docs/manual-parallel.md)，例子在 [docs/windows/finish/](docs/windows/finish/README.md) |
+| 推送的确认窗量过什么、哪些没人看过 | [docs/push-consent-probe.md](docs/push-consent-probe.md) |
+| “起长跑”这句话在真实会话里的表现 | [docs/run-from-session-probe.md](docs/run-from-session-probe.md) |
+| 长跑驱动花多少 token 和钱 | [docs/finish-trial.md](docs/finish-trial.md) |
+| 为什么这么设计、哪些不做 | [ADR-006](docs/adr-006-autoskills-3-batch1-serial-kit.md)、[ADR-009](docs/adr-009-autoskills-3-finish.md) |
+| 账本有哪些工具 | [mcp/project-manager/README.md](mcp/project-manager/README.md) |
+| 每个版本改了什么 | [CHANGELOG.md](CHANGELOG.md) |

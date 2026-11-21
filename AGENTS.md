@@ -18,7 +18,7 @@
 - 默认验证命令：任务里的 verification_commands，在干活的那个检出的根目录跑。脚本和测试按自身文件位置找仓库里的文件，不按当前目录。
 - 不用匹配不到文件也退出 0 的通配（`node --test` 的通配就是这样）；测试文件一律写全名。
 - 验证的轻重由每次规划定。3.0 收尾这一批定的是从轻（负责人 2026-11-19；ADR-009 §2.15）。
-- 跑 `tests/kit/check-kit.test.mjs` 之前把 Codex 彻底退出：它的后台进程开着时，这个文件一加载就读真实的 `~/.codex/tmp`，碰到被占用的锁文件就退出 1。
+- 跑 `tests/kit/check-kit.test.mjs` 之前把 Codex 彻底退出：它的后台进程开着时，这个文件一加载就读真实的 `~/.codex/tmp`，碰到被占用的锁文件就退出 1。跑它的时候也不能有别的 Claude Code 会话或窗口开着（负责人 2026-11-21 定）：它里面 “the fixtures, the real Codex temp folder and the real settings files are unchanged” 那一条核对真实的 `~/.claude/settings.json`，别的进程一写这个文件就失败。
 - kit 测试（`tests/kit`）用 Bash 工具（Git Bash）跑，PATH 上第一个 bash 不能是 WSL 启动器。`deploy-kit.test.mjs` 只在主检出、并且没有别的会话或窗口在调工具时跑：它要用 `_private` 里的恢复工具（worktree 里没有）；别的会话一调工具，它里面 “the real user directory targets, the real runtime and the .git/config of the real repos are unchanged” 那一条就会失败。
 - worktree 里没有私有词表，那里的 lint 只用内置的 privacy 规则。从 `_private` 搬进仓库的文件和新写的文档，在主检出里跑 `node scripts/lint-kit.mjs --check privacy --path <文件>`（路径可以指到 worktree 里的文件），这样才带词表。
 - 真实会话（探查、试跑）只在 `_private/eval` 的一次性测试仓库里起，用的是用户级现在的套件。起真实 claude 会话的脚本从 PowerShell 启动，不从 Git Bash 启动。
@@ -29,11 +29,11 @@
 
 ## 其他约定
 - `_private/` 不进 git（`.git/info/exclude`）。只改 `_private` 的任务，在账本写"未提交（_private 不进 git）"和改动文件的 sha256。
-- main 是已部署的状态。开发在分支上做，worktree 放在 `.autoskills/dev/<分支名>`，做完合回 main。收尾用过的分支 `finish`、`finish-a`、`finish-b`、`finish-t` 和一句话起长跑用过的 `run-from-session` 都已合进 main，分支和 worktree 在 2026-11-20 按负责人的话删了。
+- main 是已部署的状态。开发在分支上做，worktree 放在 `.autoskills/dev/<分支名>`，做完合回 main。收尾用过的分支 `finish`、`finish-a`、`finish-b`、`finish-t` 和一句话起长跑用过的 `run-from-session` 都已合进 main，分支和 worktree 在 2026-11-20 按负责人的话删了；推送两个小项用过的 `push-consent`、`push-all-modes` 在 2026-11-21 同样合并后删了。
 - 手动并行的做法在 `docs/manual-parallel.md`；收尾这一批的窗口说明和实测在 `docs/windows/finish/`。
 - 只有主控写账本，同一时间只有一个会话当主控。长跑驱动在本仓库上跑着的时候，别的会话不记账。
 - 部署只由负责人在普通终端、在主检出里执行。会话不跑 deploy-kit 的 --apply、--rollback、--neutral，不改用户级。
 - worktree 里不放 junction 或 symlink，尤其不要把 `_private` 链进 worktree（`git worktree remove` 会顺着 junction 清空目标）。
 - 账本用 1.5.1，不迁移。
-- 仓库已有 git 标签 v1.5.1、v2.0（旧套件）和 v3.0，新标签不得重名。标签只打本地，不推送。
+- 仓库已有 git 标签 v1.5.1、v2.0（旧套件）、v3.0 和 v3.1.0，新标签不得重名。标签只打本地，不推送。
 - 文档和面向负责人的文字用中文；代码和注释沿用仓库现有的英文。
