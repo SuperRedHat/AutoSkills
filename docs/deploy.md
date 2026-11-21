@@ -150,10 +150,10 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
    | Codex | `git -C <冒烟仓库> push` | 照实记录 |
    | Codex | apply_patch 写进只读金丝雀 | 照实记录 |
 
-3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。Claude 上推送的心跳是 `decision=ask`，这个报告不列它，要自己到心跳文件里看。
+3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。Claude 上推送和 `npm publish` 的心跳是 `decision=ask`，这个报告不列它们，要自己到心跳文件里看。
 4. `node _private/eval/harness/smoke-kit.mjs cleanup` 删掉冒烟仓库和裸库，并删掉 Codex 为它写进 `~/.codex/config.toml` 的信任段（删了什么记在 `_private/eval/smoke/smoke-kit.log`）。金丝雀目录保留。
 
-不做真实的外发调用（发邮件、gh 写操作）：这些由检查脚本静态核对 deny 列表，守卫用 `--selftest` 覆盖。
+不做真实的外发调用（发邮件、gh 写操作）：发邮件这类 MCP 工具由检查脚本静态核对 deny 列表；gh 的写操作已经没有 deny 规则，由守卫的 `--selftest` 和检查脚本的现场探查覆盖。
 
 ---
 

@@ -30,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK, ASK_MODES, UNATTENDED_ENV } from '../../hooks/guard.mjs';
 import { shellForms } from '../../scripts/check-kit.mjs';
+import { RETIRED_PUSH_DENY, RETIRED_PUBLISH_DENY } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'hooks', 'guard.mjs');
@@ -873,6 +874,29 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     }
     const withClean = { ...claudeInput('Bash', 'git clean -fd && git push origin main'), cwd: kit };
     assert.equal(decide(withClean, 'claude', { kitRepos: [kit] }).decision, 'ask', 'a clean without -x is no reason to refuse');
+  });
+
+  test('every deny rule deploy takes out of the settings covered commands the guard still sees (AS3-385)', () => {
+    // Each retired rule body with its wildcards filled in: the guard must ask where the dialog can appear
+    // and deny where it cannot. A body the guard did not see would be let through once its rule is gone.
+    const fill = (body) => body.replace(/ \*$/, ' demo').replace(/^gh api \*/, 'gh api repos/acme/demo ').replace(/\*$/, '').replace(/\*/g, 'x');
+    assert.equal(RETIRED_PUSH_DENY.length + RETIRED_PUBLISH_DENY.length, 50);
+    for (const body of [...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY]) {
+      const command = fill(body);
+      assert.ok(!command.includes('*'), command);
+      for (const tool of ['Bash', 'PowerShell']) {
+        assert.equal(pushDecision(tool, command), PUSH, `${tool}: ${command} (rule body: ${body})`);
+        assert.equal(decide(claudeInput(tool, command), 'codex').decision, 'deny', `codex, ${tool}: ${command}`);
+        assert.equal(decide(claudeInput(tool, command), 'claude', { unattended: true }).decision, 'deny', `unattended, ${tool}: ${command}`);
+      }
+    }
+  });
+
+  test('gh groups the guard does not know are neither asked nor denied, as before AS3-385 (a known gap)', () => {
+    for (const command of ['gh issue create --title x', 'gh secret set TOKEN', 'gh gist create notes.md --public', 'gh run cancel 12', 'gh label delete bug']) {
+      assert.equal(inMode('default', command).decision, 'allow', command);
+      assert.equal(decide(claudeInput('Bash', command), 'codex').decision, 'allow', `codex: ${command}`);
+    }
   });
 
   test('publishing and gh writes are asked where a push is, and denied where a push is (AS3-385)', () => {
