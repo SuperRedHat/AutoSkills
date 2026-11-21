@@ -98,12 +98,13 @@
 //     the fields as query parameters.
 //   - npm publish.
 //   A git push is asked, not denied, when all of this holds (owner decisions 2026-11-20 and 2026-11-21):
-//   the platform is claude, the input's permission_mode is one of ASK_MODES, every rule-1 hit of the
+//   the platform is claude, the session is not marked unattended (UNATTENDED_ENV), the input's
+//   permission_mode is one of ASK_MODES (all six modes Claude Code names), every rule-1 hit of the
 //   command is a git push (no gh write, no npm publish beside it) and rule 4 does not hit. Everything else
 //   is denied as before: Codex (its hooks do not support ask and would run the call), an unknown platform,
-//   auto (not watched yet, see ASK_MODES), dontAsk, a missing or unknown permission_mode. In a headless session nobody can answer the dialog and
-//   Claude refuses the asked call (measured in all six modes, docs/push-consent-probe.md), so an unattended
-//   run still cannot push.
+//   a missing or unknown permission_mode. The long-run driver marks its sessions unattended, so a push
+//   there is a plain deny in every mode. In any other headless session nobody can answer the dialog and
+//   Claude refuses the asked call (measured in all six modes, docs/push-consent-probe.md).
 //
 // Rule 2, read-only folders: Edit, Write, MultiEdit, NotebookEdit and apply_patch (every Add, Update,
 //   Delete and Move to path of the patch; an Edit-like call without its path field is read as a patch)
@@ -901,7 +902,7 @@ export function checkCommand(command, dialects) {
 export function denyReason(hits) {
   const push = hits.some(isPushHit);
   return `AutoSkills 守卫拒绝了这条命令：${hits.join('、')} 会推送或发布到远端。`
-    + (push ? '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（无人值守的会话、Codex、自动模式等不支持的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。' : '发布和 GitHub 的写操作代理不做。')
+    + (push ? '推送要用户本人在确认窗里点同意；这次调用弹不了确认窗（长跑驱动起的无人值守会话、Codex、读不出的权限模式），或者同一条命令里还有发布或 GitHub 的写操作，所以直接拒绝。' : '发布和 GitHub 的写操作代理不做。')
     + '用户本人可以在普通终端推送，例如 git push <完整地址> <分支>；GitHub 和 npm 的写操作由用户本人做。'
     + '代理不要换写法重试：把要推送或发布的分支、提交写进汇报，接着做不受影响的工作。';
 }
@@ -959,10 +960,17 @@ const ask = (reason) => ({ decision: 'ask', reason });
  * Measured: in a headless session an asked call does not run in any of the six modes; in an interactive
  * bypassPermissions session the dialog appears and the call runs after a yes (docs/push-consent-probe.md).
  * default, acceptEdits and plan are the modes in which a person answers every prompt; nobody has watched
- * them yet. auto is left out until someone has: there a classifier answers prompts, and the docs only say
- * a hook's ask "normally" reaches the dialog. auto, dontAsk, a missing field and any other value are a deny.
+ * them yet. auto and dontAsk were added on the owner's word of 2026-11-21 ("all modes"); nobody has watched
+ * them either: in auto a classifier answers prompts, and the docs only say a hook's ask "normally" reaches
+ * the dialog. A missing field and any other value are a deny.
  */
-export const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions']);
+export const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto', 'dontAsk']);
+
+/**
+ * Set to 1 by the long-run driver for the sessions it starts (scripts/lib/run/session.mjs). Nobody is there
+ * to answer a dialog, so main() passes it on as policy.unattended and a push is a deny in every mode.
+ */
+export const UNATTENDED_ENV = 'AUTOSKILLS_UNATTENDED';
 
 /** True for a rule-1 hit that is a git push (checkGit names them "git ..."); gh and npm hits are not. */
 const isPushHit = (hit) => hit.startsWith('git ');
@@ -971,10 +979,11 @@ const isPushHit = (hit) => hit.startsWith('git ');
  * Decide one PreToolUse input.
  * @param {object} input the hook input JSON
  * @param {string} platform claude, codex or unknown
- * @param {{readonlyDirs?: string[], kitRepos?: string[]}} [policy] registered read-only folders (rule 2)
- *   and AutoSkills checkouts (rule 4), from the local config
+ * @param {{readonlyDirs?: string[], kitRepos?: string[], unattended?: boolean}} [policy] registered
+ *   read-only folders (rule 2) and AutoSkills checkouts (rule 4), from the local config; unattended: the
+ *   session is marked as one nobody watches (UNATTENDED_ENV), a push is then never asked
  * @returns {{decision: 'allow'|'deny'|'ask', reason?: string}} ask only for a push on platform claude in
- *   one of ASK_MODES
+ *   one of ASK_MODES, in a session that is not marked unattended
  * @throws {ParseError} when the input, the command or a write target cannot be read
  */
 export function decide(input, platform, policy = {}) {
@@ -1013,7 +1022,7 @@ export function decide(input, platform, policy = {}) {
   const found = checkCommand(command, dialects);
   const clean = found.cleans.length > 0 && cleanInKit(found, cwd, policy.kitRepos ?? []);
   // A push and nothing else that is refused: the owner decides in the confirmation dialog (see Rule 1).
-  if (found.hits.length && !clean && found.hits.every(isPushHit) && platform === 'claude' && ASK_MODES.has(input.permission_mode)) {
+  if (found.hits.length && !clean && found.hits.every(isPushHit) && platform === 'claude' && policy.unattended !== true && ASK_MODES.has(input.permission_mode)) {
     return ask(askReason(found.hits));
   }
   const reasons = [];
@@ -1118,8 +1127,11 @@ export const SELFTEST = [
   ['Bash', 'git push https://example.com/acme/demo.git main', 'ask', 'claude', { permission_mode: 'default' }],
   ['PowerShell', "& 'C:\\Program Files\\Git\\cmd\\git.exe' -C ../demo push", 'ask', 'claude', { permission_mode: 'bypassPermissions' }],
   ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'plan' }],
-  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'auto' }],
-  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'dontAsk' }],
+  ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'auto' }],
+  ['Bash', 'git push origin main', 'ask', 'claude', { permission_mode: 'dontAsk' }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'default' }, { unattended: true }],
+  ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'auto' }, { unattended: true }],
+  ['Bash', 'git status', 'allow', 'claude', { permission_mode: 'auto' }, { unattended: true }],
   ['Bash', 'git push origin main', 'deny', 'claude', { permission_mode: 'somethingNew' }],
   ['Bash', 'git push origin main', 'deny', 'codex', { permission_mode: 'default' }],
   ['Bash', 'git push origin main', 'deny', 'unknown', { permission_mode: 'default' }],
@@ -1163,11 +1175,11 @@ export const SELFTEST = [
 
 function selftest() {
   let failed = 0;
-  for (const [tool, ti, expected, platform, extra] of SELFTEST) {
+  for (const [tool, ti, expected, platform, extra, policy] of SELFTEST) {
     const input = { hook_event_name: 'PreToolUse', tool_name: tool, tool_input: typeof ti === 'string' ? { command: ti } : ti, ...extra };
     let got;
     try {
-      got = decide(input, platform, SELFTEST_POLICY).decision;
+      got = decide(input, platform, { ...SELFTEST_POLICY, ...policy }).decision;
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
       got = 'error';
@@ -1242,7 +1254,7 @@ function main(argv) {
     // The event name is recorded only when it looks like one; the heartbeat never carries free text.
     const ev = input?.hook_event_name;
     event = typeof ev === 'string' && /^[A-Za-z]{1,40}$/.test(ev) ? ev : ev === undefined ? 'PreToolUse' : 'unknown';
-    const r = decide(input, platform, policyFrom(config));
+    const r = decide(input, platform, { ...policyFrom(config), unattended: process.env[UNATTENDED_ENV] === '1' });
     decision = r.decision;
     code = 0;
     if (r.decision === 'deny') out = denyLine(r.reason);

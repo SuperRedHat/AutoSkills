@@ -80,7 +80,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 同一个 Windows 账户下，护栏只防误操作，不承诺隔离（见[残余风险](#残余风险)）。
 
 - **守卫钩子** `hooks/guard.mjs`（PreToolUse，两个平台共用）：
-  1. git push 的各种写法：Claude 上权限模式是 default、acceptEdits、plan 或跳过权限（bypassPermissions）时弹出确认窗，你点同意才执行；自动模式（auto，还没有人看过它弹不弹窗）、dontAsk、读不出模式时，以及无人值守的会话、Codex 上，照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
+  1. git push 的各种写法：Claude 上六种权限模式（default、acceptEdits、plan、跳过权限 bypassPermissions、自动模式 auto、dontAsk）都弹出确认窗，你点同意才执行；读不出模式时、长跑驱动起的会话里、Codex 上，照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较；
   3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
   4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
@@ -134,7 +134,7 @@ node scripts/check-kit.mjs                           # 重开两个平台、在 
 
 ## 怎么推送
 
-**让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。弹窗的权限模式是 default、acceptEdits、plan 和跳过权限；自动模式（auto）和 dontAsk 下守卫直接拒绝，要推就换一种模式的会话（量过什么、哪些没人看过，见 [docs/push-consent-probe.md](docs/push-consent-probe.md)）。无人值守的会话（长跑、`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
+**让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。六种权限模式下守卫回的都是询问。开着窗口时只有跳过权限的模式有人看过弹窗；自动模式（auto）里是分类器替人回答提示，钩子的询问会不会每次都送到确认窗还没有人看过，头一次在这个模式下推送时请留意是不是你自己点的（量过什么、哪些没人看过，见 [docs/push-consent-probe.md](docs/push-consent-probe.md)）。长跑驱动起的会话带着无人值守的标记（环境变量 `AUTOSKILLS_UNATTENDED=1`），守卫见到就直接拒绝推送；别的无头会话（`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
 
 **你自己推**：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。在**普通终端**（不是代理的会话）里写完整地址：
 
@@ -152,7 +152,7 @@ git push (git remote get-url origin) <分支>
 
 如实写明，不承诺隔离（详见 ADR-006 §4；长跑驱动和验收包带来的见 ADR-009 §4）：
 
-- **长跑时没有人看着**：无头会话在自动模式下跑，守卫钩子和拒绝规则照常生效，但原生 Windows 上没有沙箱。头几次跑完请看报告。
+- **长跑时没有人看着**：无头会话在自动模式下跑，守卫钩子和拒绝规则照常生效（推送在这些会话里直接被拒，不弹窗），但原生 Windows 上没有沙箱。头几次跑完请看报告。
 - **驱动跑着的时候，同一个项目里别的会话不能记账**：账本没有锁，只靠技能里的一句话和验收包页首的提示。
 - **驱动的几条路只在替身测试里走过**：复验没过以后的返工、接着做断在半路的任务、额度用完以后的等待、会话挂死。
 

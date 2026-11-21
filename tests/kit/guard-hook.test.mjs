@@ -28,7 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK, ASK_MODES } from '../../hooks/guard.mjs';
+import { decide, SELFTEST, patchPaths, ERROR_DENY_MARK, ASK_MODES, UNATTENDED_ENV } from '../../hooks/guard.mjs';
 import { shellForms } from '../../scripts/check-kit.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -89,25 +89,27 @@ const codexInput = (command, tool = 'shell', field = 'command') => ({
 });
 
 const decision = (tool, command) => decide(claudeInput(tool, command), 'claude').decision;
-/** A Claude input in a mode that cannot show the confirmation dialog, where a push is still a plain deny. */
-const claudeNoDialog = (tool, command) => claudeInput(tool, command, 'dontAsk');
+/** A Claude input in a permission mode the guard does not know, where a push is still a plain deny. */
+const claudeNoDialog = (tool, command) => claudeInput(tool, command, 'modeNobodyKnows');
 /**
  * A push on Claude, both ways: asked where the dialog can appear (mode default) and denied where it cannot
- * (mode dontAsk). PUSH is the one good answer; anything else shows both decisions.
+ * (a mode the guard does not know). PUSH is the one good answer; anything else shows both decisions.
  */
 const PUSH = 'ask, and deny without a dialog';
 const pushDecision = (tool, command) => {
   const asked = decide(claudeInput(tool, command), 'claude').decision;
   const refused = decide(claudeNoDialog(tool, command), 'claude').decision;
-  return asked === 'ask' && refused === 'deny' ? PUSH : `${asked} in mode default, ${refused} in mode dontAsk`;
+  return asked === 'ask' && refused === 'deny' ? PUSH : `${asked} in mode default, ${refused} in an unknown mode`;
 };
 const codexDecision = (command, tool, field) => decide(codexInput(command, tool, field), 'codex').decision;
 
 /** Run the guard on one input; returns exit code, stdout, stderr and the elapsed milliseconds. */
-function runGuard(input, args = []) {
+/** The environment without the unattended mark: this file may itself run inside a session the long-run driver started. */
+const ATTENDED_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== UNATTENDED_ENV));
+function runGuard(input, args = [], env = ATTENDED_ENV) {
   const t0 = process.hrtime.bigint();
   const r = spawnSync(process.execPath, [GUARD, ...args], {
-    input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8',
+    input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env,
   });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   return { code: r.status, out: r.stdout, err: r.stderr, ms };
@@ -833,10 +835,10 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
   const push = 'git push https://example.com/acme/demo.git main';
   const inMode = (mode, command = push, tool = 'Bash') => decide(claudeInput(tool, command, mode), 'claude');
 
-  test('the modes: ask in default, acceptEdits, plan and bypassPermissions; deny in auto, dontAsk, with no mode and with an unknown one', () => {
-    assert.deepEqual([...ASK_MODES].sort(), ['acceptEdits', 'bypassPermissions', 'default', 'plan']);
+  test('the modes: ask in all six modes Claude Code names; deny with no mode and with an unknown one', () => {
+    assert.deepEqual([...ASK_MODES].sort(), ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan']);
     for (const mode of ASK_MODES) assert.equal(inMode(mode).decision, 'ask', mode);
-    for (const mode of ['auto', 'dontAsk', 'somethingNew', '', 'DEFAULT', null, 7, ['default']]) assert.equal(inMode(mode).decision, 'deny', JSON.stringify(mode));
+    for (const mode of ['somethingNew', 'manual', '', 'DEFAULT', 'Auto', null, 7, ['default']]) assert.equal(inMode(mode).decision, 'deny', JSON.stringify(mode));
     const { permission_mode, ...noMode } = claudeInput('Bash', push);
     assert.equal(permission_mode, 'default');
     assert.equal(decide(noMode, 'claude').decision, 'deny', 'no permission_mode field');
@@ -867,7 +869,7 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
   });
 
   test('publishing and gh writes are never asked', () => {
-    for (const mode of [...ASK_MODES, 'auto', 'dontAsk']) {
+    for (const mode of [...ASK_MODES, 'somethingNew']) {
       for (const command of ['npm publish', 'npm publish --access public', 'gh pr create --fill', 'gh release create v1.0.0', 'gh repo create acme/demo --public', 'gh api -X POST repos/acme/demo/issues', 'gh workflow run ci.yml']) {
         assert.equal(inMode(mode, command).decision, 'deny', `${mode}: ${command}`);
         assert.equal(inMode(mode, command, 'PowerShell').decision, 'deny', `${mode}, PowerShell: ${command}`);
@@ -880,7 +882,7 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     assert.match(asked.reason, /git push/);
     assert.match(asked.reason, /点同意才推送/);
     assert.doesNotMatch(asked.reason, /拒绝了这条命令/);
-    const refused = inMode('dontAsk');
+    const refused = decide(claudeInput('Bash', push, 'auto'), 'claude', { unattended: true });
     assert.match(refused.reason, /拒绝了这条命令/);
     assert.match(refused.reason, /确认窗/);
     assert.match(refused.reason, new RegExp(REASON_HINT));
@@ -907,6 +909,35 @@ describe('rule 1: a push is asked only where the owner can answer (AS3-379)', ()
     assert.deepEqual(entries.map((e) => e.decision), ['ask', 'ask']);
     assert.deepEqual(entries.map((e) => e.platform), ['claude', 'claude']);
     assert.doesNotMatch(fs.readFileSync(rt.heartbeat, 'utf8'), /git|example\.com/);
+  });
+
+  test('a session marked unattended: a push is a deny in every mode, everything else decides as before', () => {
+    for (const mode of ASK_MODES) {
+      for (const tool of ['Bash', 'PowerShell']) assert.equal(decide(claudeInput(tool, push, mode), 'claude', { unattended: true }).decision, 'deny', `${tool}, ${mode}`);
+      assert.equal(decide(claudeInput('Bash', 'git status', mode), 'claude', { unattended: true }).decision, 'allow', mode);
+      assert.equal(decide(claudeInput('Bash', 'npm publish', mode), 'claude', { unattended: true }).decision, 'deny', mode);
+    }
+    // Only true marks the session: a policy without the field, or with false, asks as before.
+    for (const unattended of [undefined, false]) assert.equal(decide(claudeInput('Bash', push, 'auto'), 'claude', { unattended }).decision, 'ask', String(unattended));
+  });
+
+  test('spawned: the mark is the environment variable set to 1; the guard then denies the push and the heartbeat says deny', () => {
+    const rt = tempRuntime();
+    assert.equal(UNATTENDED_ENV, 'AUTOSKILLS_UNATTENDED');
+    const marked = { ...ATTENDED_ENV, [UNATTENDED_ENV]: '1' };
+    for (const mode of ASK_MODES) {
+      const r = runGuard(claudeInput('Bash', push, mode), ['--config', rt.config, '--platform', 'claude'], marked);
+      assert.equal(r.code, 0, r.err);
+      assert.equal(JSON.parse(r.out).hookSpecificOutput.permissionDecision, 'deny', mode);
+    }
+    // Any other value is not the mark.
+    for (const value of ['0', '', 'true']) {
+      const r = runGuard(claudeInput('Bash', push, 'auto'), ['--config', rt.config], { ...ATTENDED_ENV, [UNATTENDED_ENV]: value });
+      assert.equal(JSON.parse(r.out).hookSpecificOutput.permissionDecision, 'ask', JSON.stringify(value));
+    }
+    assert.equal(runGuard(claudeInput('Bash', 'git status', 'auto'), ['--config', rt.config], marked).out, '');
+    const decisions = fs.readFileSync(rt.heartbeat, 'utf8').trim().split('\n').map((l) => JSON.parse(l).decision);
+    assert.deepEqual(decisions, [...[...ASK_MODES].map(() => 'deny'), 'ask', 'ask', 'ask', 'allow']);
   });
 
   test('spawned with --platform codex: the same Claude-looking input is a deny, never an ask', () => {

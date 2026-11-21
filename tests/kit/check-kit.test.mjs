@@ -198,7 +198,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   assert.match(row(json.rows, 'hooks.config').detail, /^<runtime>\/hooks\/hook-config\.json: loads, absolute paths, keys runtime, readonly_dirs \(1\), kit_repo$/);
   // Claude's command + args once (its two guard groups share the line), Codex's string in every shell.
   const live = row(json.rows, 'hooks.live.guard').detail;
-  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex, and denied on both in mode dontAsk \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
+  assert.match(live, /run\(s\): git status allowed without output, npm publish denied, git push origin main asked on Claude and denied on Codex, and denied on both in a session marked unattended \(claude: command \+ args; codex: cmd \/d \/s \/c, cmd \/c, powershell -Command/);
   assert.match(row(json.rows, 'pushurl.repos').detail, /^1 repo\(s\) with remotes, 1 remote\(s\), all no_push/);
   assert.match(row(json.rows, 'pushurl.readonly').detail, /skipped \(跳过\): <projects>\/demo\/frozen/);
   const text = cli(sb.args);
@@ -682,7 +682,7 @@ test('the live run: a guard that denies everything, or nothing, decided wrong; t
     /, deny \(npm publish\): exit 0 without output \(the command was not denied\)$/,
     /^codex, .*, deny \(git push origin main\): exit 0 without output \(the command was not denied\)$/,
     /^claude, .*, ask \(git push origin main\): exit 0 without output \(the push was neither asked nor denied\)$/,
-    /, deny \(git push origin main, mode dontAsk\): exit 0 without output \(the command was not denied\)$/,
+    /, deny \(git push origin main, marked unattended\): exit 0 without output \(the command was not denied\)$/,
   ];
   for (const re of kinds) assert.ok(live.lines.some((l) => re.test(l)), `${re}\n${live.lines.join('\n')}`);
   assert.ok(live.lines.every((l) => kinds.some((re) => re.test(l))), live.lines.join('\n'));
@@ -847,7 +847,7 @@ test('judgeProbe and shellForms: exit codes, output and the shells a Codex line 
 test('the live run passes no input to a shell that is missing: it is listed as skipped, not as a FAIL', () => {
   const sb = sandbox('home-ok');
   const ctx = makeContext({ home: sb.home, runtime: sb.runtime, projectsRoot: sb.projects, localConfig: sb.local });
-  const probe = (form, input, timeoutMs) => (form.via === 'powershell -Command' ? { status: null, stdout: '', stderr: '', error: 'ENOENT' } : runProbe(form, input, timeoutMs));
+  const probe = (form, input, timeoutMs, unattended) => (form.via === 'powershell -Command' ? { status: null, stdout: '', stderr: '', error: 'ENOENT' } : runProbe(form, input, timeoutMs, unattended));
   const live = row(runChecks(ctx, { env: cleanEnv(), facts: NO_FACTS, managed: [], run: noVersions, probe }), 'hooks.live.guard');
   assert.equal(live.status, 'PASS', live.detail);
   if (WIN) assert.match(live.detail, /skipped \(not on this machine\): powershell -Command$/);

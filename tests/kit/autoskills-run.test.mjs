@@ -772,6 +772,9 @@ describe('pieces', () => {
     const { env, stripped } = childEnv('X:/p', { CLAUDECODE: '1', CLAUDE_EFFORT: 'max', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 's', PROJECT_DIR: 'Y:/q', KEEP: 'k', CLAUDE_CODE_SUBAGENT_MODEL: 'm' });
     assert.equal(env.PROJECT_DIR, 'X:/p');
     assert.equal(env.KEEP, 'k');
+    // The guard hook reads this mark and denies a git push in every permission mode (hooks/guard.mjs).
+    assert.equal(env.AUTOSKILLS_UNATTENDED, '1');
+    assert.equal(childEnv('X:/p', { AUTOSKILLS_UNATTENDED: '0' }).env.AUTOSKILLS_UNATTENDED, '1', 'a value from outside does not take the mark away');
     assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, 'm', 'the owner\'s own settings stay');
     for (const k of ['CLAUDECODE', 'CLAUDE_EFFORT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID']) assert.equal(env[k], undefined, k);
     assert.deepEqual(stripped.sort(), ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_EFFORT']);
