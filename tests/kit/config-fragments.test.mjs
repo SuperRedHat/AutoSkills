@@ -165,6 +165,8 @@ describe('Claude settings fragment', () => {
     assert.deepEqual(deny.filter((r) => /\bpush\b/i.test(r)), [], 'no deny rule names push');
     for (const tool of ['Bash', 'PowerShell']) {
       for (const cmd of PUSH_SAMPLES) assert.ok(!denied(deny, tool, cmd), `${tool} must not deny by rule: ${cmd}`);
+      // The everyday git commands the old git push category listed as allowed are still not denied.
+      for (const cmd of ['git status', 'git pull', 'git commit -m "fix"', 'git log --oneline', 'git -C . status']) assert.ok(!denied(deny, tool, cmd), `${tool} should not deny: ${cmd}`);
     }
   });
 

@@ -427,7 +427,7 @@ function claudeChecks(ctx, sec, { managed }) {
   const pushItem = 'Claude rules that name git push';
   if (denyPush.length) sec.warn('claude.rules.push', pushItem, `${denyPush.length} deny rule(s): ${listSome(denyPush)}: a deny rule wins over the guard's ask, so the confirmation dialog for a push never appears (弹不了确认窗，推送直接被拒)`, `${deployFix(ctx)} (it takes out the kit's old git push deny rules); delete others by hand if the dialog is wanted`);
   else if (allowPush.length) sec.warn('claude.rules.push', pushItem, `${allowPush.length} allow rule(s): ${listSome(allowPush)}: whether an allow rule skips the guard's confirmation dialog has not been measured (没有量过 allow 规则会不会跳过确认窗)`, 'delete the allow rule(s), or try a push and see that the dialog still appears');
-  else sec.pass('claude.rules.push', pushItem, 'none: the guard decides a push (asks the owner on Claude)');
+  else sec.pass('claude.rules.push', pushItem, 'none: the guard decides a push (asks the owner on Claude); only rules that name git and push are looked for, a wide rule such as Bash(git *) is not');
   const folders = [
     ['readonly', 'Claude deny: read-only folders', 'Edit', 'readonly_dirs'],
     ['customer', 'Claude deny: customer-data folders', 'Read', 'customer_data_dirs'],

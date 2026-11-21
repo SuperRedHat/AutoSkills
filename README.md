@@ -80,7 +80,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 同一个 Windows 账户下，护栏只防误操作，不承诺隔离（见[残余风险](#残余风险)）。
 
 - **守卫钩子** `hooks/guard.mjs`（PreToolUse，两个平台共用）：
-  1. git push 的各种写法：Claude 上弹出确认窗，你点同意才执行；无人值守的会话、Codex、弹不了窗的权限模式（dontAsk）下照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
+  1. git push 的各种写法：Claude 上权限模式是 default、acceptEdits、plan 或跳过权限（bypassPermissions）时弹出确认窗，你点同意才执行；自动模式（auto，还没有人看过它弹不弹窗）、dontAsk、读不出模式时，以及无人值守的会话、Codex 上，照旧拒绝。gh 的写操作、带写方法的 gh api、npm publish 一律拒绝；
   2. 拦写进登记只读目录的 Edit、Write、NotebookEdit（Codex 是 apply_patch），按真实路径比较；
   3. 拦子代理（带 agent_id 的调用）调账本写工具和 `set_project_dir`；
   4. 在本仓库拦带 `-x` 或 `-X` 的 git clean（保护 `_private/` 里的运行区和部署备份；这一条是新增的，可以删）。
@@ -134,7 +134,7 @@ node scripts/check-kit.mjs                           # 重开两个平台、在 
 
 ## 怎么推送
 
-**让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。无人值守的会话（长跑、`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
+**让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。弹窗的权限模式是 default、acceptEdits、plan 和跳过权限；自动模式（auto）和 dontAsk 下守卫直接拒绝，要推就换一种模式的会话（量过什么、哪些没人看过，见 [docs/push-consent-probe.md](docs/push-consent-probe.md)）。无人值守的会话（长跑、`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
 
 **你自己推**：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。在**普通终端**（不是代理的会话）里写完整地址：
 

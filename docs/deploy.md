@@ -274,7 +274,7 @@ node scripts/deploy-kit.mjs --drill _private/eval/restore-drill [--claude-contra
 
 ## 怎么推送
 
-让代理推（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”，代理从 origin 取地址、写完整地址推送，守卫弹出确认窗，你点同意才推。无人值守的会话和 Codex 上推不了。守卫在哪些权限模式下弹窗、量过什么，见 [push-consent-probe.md](push-consent-probe.md)。
+让代理推（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”，代理从 origin 取地址、写完整地址推送，守卫弹出确认窗，你点同意才推。弹窗的权限模式是 default、acceptEdits、plan 和跳过权限；自动模式（auto）和 dontAsk 下守卫直接拒绝。无人值守的会话和 Codex 上推不了。量过什么、哪些模式没人看过，见 [push-consent-probe.md](push-consent-probe.md)。
 
 你自己推：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，按远端名推送会失败。在普通终端（不是代理的会话）里写完整地址：
 
