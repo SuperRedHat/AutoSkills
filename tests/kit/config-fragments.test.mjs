@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_CLAUDE_DENY, RETIRED_PUSH_DENY, RETIRED_PUBLISH_DENY, mergeClaudeSettings } from '../../scripts/lib/kit-targets.mjs';
+import { RETIRED_CLAUDE_DENY, RETIRED_PUSH_DENY, RETIRED_PUBLISH_DENY, RETIRED_OUTBOUND_DENY, mergeClaudeSettings } from '../../scripts/lib/kit-targets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CONFIG = path.join(REPO, 'config');
@@ -69,7 +69,11 @@ const DENY_SAMPLES = {
   },
 };
 
-/** The outbound MCP tools that must be denied (claude.ai connector tools are mcp__claude_ai_<server>__<tool>). */
+/**
+ * The outbound MCP tools the fragment denied until AS3-389 (claude.ai connector tools are
+ * mcp__claude_ai_<server>__<tool>). Since the owner let agents send outward (2026-11-23) the fragment holds
+ * none of them and deploy takes them out of the user's settings.
+ */
 const OUTBOUND_MCP = [
   'mcp__claude_ai_Gmail__send_message', 'mcp__claude_ai_Gmail__reply', 'mcp__claude_ai_Gmail__forward',
   'mcp__claude_ai_Google_Drive__share_file',
@@ -143,24 +147,26 @@ describe('Claude settings fragment', () => {
   });
 
   test('deny rules are strings, none twice, and none is a Bash or PowerShell rule (AS3-385)', () => {
-    assert.ok(deny.length > 0);
     for (const r of deny) assert.equal(typeof r, 'string');
     assert.equal(new Set(deny).size, deny.length, 'duplicate deny rules');
     // A shell deny rule decides before the guard can ask; a bare Bash or PowerShell deny would remove the whole tool.
     assert.deepEqual(deny.filter((r) => /^(?:Bash|PowerShell)\b/.test(r)), [], 'no shell deny rule in the fragment');
   });
 
-  test('the retired rules: ten for git push and ninety for publishing, each body once for Bash and once for PowerShell', () => {
+  test('the retired rules: ten for git push, ninety for publishing (each body once for Bash and once for PowerShell) and the seven outbound MCP tools', () => {
     assert.equal(RETIRED_PUSH_DENY.length, 5);
     assert.equal(RETIRED_PUBLISH_DENY.length, 45);
-    assert.equal(RETIRED_CLAUDE_DENY.length, 100);
-    assert.equal(new Set(RETIRED_CLAUDE_DENY).size, 100, 'no rule twice');
+    assert.deepEqual([...RETIRED_OUTBOUND_DENY], OUTBOUND_MCP);
+    assert.equal(RETIRED_CLAUDE_DENY.length, 107);
+    assert.equal(new Set(RETIRED_CLAUDE_DENY).size, 107, 'no rule twice');
+    for (const t of OUTBOUND_MCP) assert.ok(RETIRED_CLAUDE_DENY.includes(t), t);
     for (const body of [...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY]) {
       for (const tool of ['Bash', 'PowerShell']) assert.ok(RETIRED_CLAUDE_DENY.includes(`${tool}(${body})`), `${tool}(${body})`);
     }
     for (const body of RETIRED_PUBLISH_DENY) assert.match(body, /^(?:gh (?:repo|release|pr|workflow|api) |npm publish )/, body);
-    // Nothing the kit still wants is in the retired list.
-    assert.deepEqual(RETIRED_CLAUDE_DENY.filter((r) => r.startsWith('mcp__') || /^(?:Read|Edit|Write|NotebookEdit)\(/.test(r)), []);
+    // Nothing the kit still wants is in the retired list: no folder rule, no MCP tool but the seven outbound ones.
+    assert.deepEqual(RETIRED_CLAUDE_DENY.filter((r) => /^(?:Read|Edit|Write|NotebookEdit)\(/.test(r)), []);
+    assert.deepEqual(RETIRED_CLAUDE_DENY.filter((r) => r.startsWith('mcp__')), OUTBOUND_MCP);
   });
 
   for (const [category, { denied: bad, allowed: good }] of Object.entries(DENY_SAMPLES)) {
@@ -183,19 +189,21 @@ describe('Claude settings fragment', () => {
     }
   });
 
-  test('the settings merge takes the retired push and publish deny rules out and leaves every other rule', () => {
-    const own = ['Bash(rm -rf *)', 'Read(//d/secret/**)', 'Bash(git push --mirror *)'];
+  test('the settings merge takes the retired push, publish and outbound deny rules out and leaves every other rule', () => {
+    // The owner's own rules stay, also an MCP rule the kit never wrote.
+    const own = ['Bash(rm -rf *)', 'Read(//d/secret/**)', 'Bash(git push --mirror *)', 'mcp__claude_ai_Gmail__create_draft'];
     // The owner's own rules stay, also one that names gh or npm in a spelling the kit never wrote.
     const mine = 'Bash(npm publish --tag danger *)';
-    const current = { model: 'x', permissions: { allow: ['Bash(git push *)'], deny: [own[0], ...RETIRED_CLAUDE_DENY, own[1], mine, own[2]] } };
+    const current = { model: 'x', permissions: { allow: ['Bash(git push *)'], deny: [own[0], ...RETIRED_CLAUDE_DENY, own[1], mine, own[2], own[3]] } };
     const merged = mergeClaudeSettings(current, { permissions: { deny: deny.slice() } });
     assert.deepEqual(merged.permissions.deny.filter((r) => RETIRED_CLAUDE_DENY.includes(r)), []);
     for (const r of [...own, ...deny]) assert.ok(merged.permissions.deny.includes(r), `kept or added: ${r}`);
-    assert.deepEqual(merged.permissions.deny.slice(0, 4), [own[0], own[1], mine, own[2]], 'the order of what stays is kept');
-    assert.equal(merged.permissions.deny.length, 4 + deny.length, 'nothing but the retired rules is gone');
+    assert.deepEqual(merged.permissions.deny.slice(0, 5), [own[0], own[1], mine, own[2], own[3]], 'the order of what stays is kept');
+    assert.equal(merged.permissions.deny.length, 5 + deny.length, 'nothing but the retired rules is gone');
+    for (const t of OUTBOUND_MCP) assert.ok(!merged.permissions.deny.includes(t), `taken out: ${t}`);
     assert.deepEqual(merged.permissions.allow, ['Bash(git push *)'], 'allow rules are not the kit\'s to touch');
     assert.equal(merged.model, 'x');
-    assert.deepEqual(current.permissions.deny.length, 104, 'the input is not changed');
+    assert.deepEqual(current.permissions.deny.length, 112, 'the input is not changed');
     assert.deepEqual(mergeClaudeSettings(merged, { permissions: { deny: deny.slice() } }), merged, 'a second merge changes nothing');
     assert.deepEqual(mergeClaudeSettings(null, { permissions: { deny: deny.slice() } }).permissions.deny, deny);
     assert.deepEqual(mergeClaudeSettings({ permissions: {} }, {}), { permissions: {} });
@@ -207,10 +215,9 @@ describe('Claude settings fragment', () => {
     assert.ok(!denied(RETIRED_CLAUDE_DENY, 'Bash', 'GH PR create --fill'));
   });
 
-  test('outbound MCP tools are denied by their exact names', () => {
-    for (const t of OUTBOUND_MCP) assert.ok(deny.includes(t), `missing deny: ${t}`);
-    const mcp = deny.filter((r) => r.startsWith('mcp__'));
-    for (const r of mcp) assert.ok(!r.includes('('), `an mcp__ rule with parentheses is skipped by Claude Code: ${r}`);
+  test('outbound MCP tools have no deny rule (AS3-389: agents may send outward)', () => {
+    for (const t of OUTBOUND_MCP) assert.ok(!deny.includes(t), `still denied: ${t}`);
+    assert.deepEqual(deny.filter((r) => r.startsWith('mcp__')), [], 'no MCP deny rule in the fragment');
   });
 
   test('no path rules in the fragment: read-only and customer folders are generated at deploy time', () => {

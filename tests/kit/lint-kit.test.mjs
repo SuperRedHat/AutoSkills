@@ -376,7 +376,10 @@ describe('contract', () => {
     const cases = [
       ['stop-points', without(CONTRACT, /停点只有五种/)],
       ['zero-exception', CONTRACT.replace('不访问客户数据', '')],
-      ['zero-exception', CONTRACT.replace('不对外发送', '')],
+      ['zero-exception', CONTRACT.replace('不改只读目录', '')],
+      ['outbound', CONTRACT.replace('无人值守的会话只发用户说过要发的', '无人值守的会话也发')],
+      ['outbound', CONTRACT.replace('登录和付钱（下单购买、付款、转账）由用户自己操作', '登录由用户自己操作')],
+      ['outbound', CONTRACT.replace('不输入密码，', '')],
       ['push-consent', CONTRACT.replace('无人值守的会话不推送、不发布', '无人值守的会话不推送')],
       ['push-consent', CONTRACT.replace('用户本人在确认窗里点同意', '用户同意')],
       ['push-consent', CONTRACT.replace('推送（git push）和发布（gh 对仓库、版本、PR、workflow 的写操作，带写方法的 gh api，npm publish）默认不做', '推送（git push）默认不做')],

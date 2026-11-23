@@ -18,8 +18,8 @@
 //   1. Effective config (v2 §3.5/§3.6, ADR-006 §2.5/§2.6):
 //      Claude  every kit key of config/claude/settings.fragment.json (worktree.baseRef, subagentPromptCacheTtl,
 //              env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS) as Claude sees it: managed settings win over
-//              ~/.claude/settings.json. The fragment's deny rules by kind (Bash, PowerShell, outbound MCP tools)
-//              plus Edit and Read rules for the folders of the local config. Every kit hook group of the
+//              ~/.claude/settings.json. The fragment's deny rules (none since AS3-389), the Edit and Read
+//              rules for the folders of the local config, and the old outbound MCP rules (a WARN while there). Every kit hook group of the
 //              fragment registered with its matcher, the guard with onFailure: block, and for every kit hook
 //              entry the executable and the script exist (a guard whose script is gone blocks every call).
 //      Effort  CLAUDE_CODE_EFFORT_LEVEL (any value overrides the effort a subagent asks for) must be absent from
@@ -102,7 +102,7 @@ import { parseArgs } from 'node:util';
 import {
   KIT_REPO, DEFAULT_LOCAL_CONFIG, KIT_HOOK_SCRIPTS, HOOK_CONFIG_NAME, KIT_SKILLS, RETIRED_SKILLS, KIT_AGENTS, LEGACY_AGENTS, LEGACY_SKILL_DIRS,
   DEFAULT_OPTIONS, UsageError, targetMap, readLocalConfig, recordedOptions, desiredFiles, listFiles, claudePathRule, isKitHook,
-  slash, pathKey, within,
+  slash, pathKey, within, RETIRED_OUTBOUND_DENY,
 } from './lib/kit-targets.mjs';
 import { keyValues, getValue, TomlEditError } from './lib/toml-edit.mjs';
 import { PROBE_ENV, UNATTENDED_ENV, ERROR_DENY_MARK } from '../hooks/guard.mjs';
@@ -407,18 +407,21 @@ function claudeChecks(ctx, sec, { managed }) {
     else sec.fail(`claude.${key}`, `Claude ${key}`, got === undefined ? `not set in ${where}; the kit sets ${JSON.stringify(want)}` : `${where} sets ${value(got)}; the kit sets ${JSON.stringify(want)}`, deployFix(ctx));
   }
 
-  // Deny rules by kind: the fragment's, plus the folder rules deploy-kit generates from the local config.
+  // Deny rules: the fragment holds none since AS3-389 (no Bash or PowerShell rule since AS3-385, the guard
+  // asks the owner instead; no outbound MCP rule since the owner let agents send outward, 2026-11-23). What
+  // is checked are the folder rules deploy-kit generates from the local config.
   const have = new Set(Array.isArray(settings.permissions?.deny) ? settings.permissions.deny : []);
   const kitDeny = fragment.permissions?.deny ?? [];
-  // The fragment holds no Bash or PowerShell deny rule since AS3-385 (the guard asks the owner instead).
-  const kinds = [
-    ['mcp', 'Claude deny: outbound MCP tools', kitDeny.filter((r) => r.startsWith('mcp__'))],
-  ];
-  for (const [kind, item, want] of kinds) {
-    const missing = want.filter((r) => !have.has(r));
-    if (!missing.length) sec.pass(`claude.deny.${kind}`, item, `${want.length} rule(s) present`);
-    else sec.fail(`claude.deny.${kind}`, item, `${missing.length} of ${want.length} missing: ${listSome(missing)}`, deployFix(ctx));
+  if (kitDeny.length) {
+    const missing = kitDeny.filter((r) => !have.has(r));
+    if (!missing.length) sec.pass('claude.deny.kit', 'Claude deny: rules of the kit fragment', `${kitDeny.length} rule(s) present`);
+    else sec.fail('claude.deny.kit', 'Claude deny: rules of the kit fragment', `${missing.length} of ${kitDeny.length} missing: ${listSome(missing)}`, deployFix(ctx));
   }
+  // The outbound MCP rules the kit wrote before AS3-389 still stop those tools until a deploy takes them out.
+  const oldOutbound = RETIRED_OUTBOUND_DENY.filter((r) => have.has(r));
+  const outboundItem = 'Claude deny rules for outbound MCP tools the kit used to write';
+  if (oldOutbound.length) sec.warn('claude.rules.outbound', outboundItem, `${oldOutbound.length} still there: ${listSome(oldOutbound)}: these tools stay blocked although the contract lets agents send outward (这些工具照旧被拦)`, `${deployFix(ctx)} (it takes them out); delete them by hand otherwise`);
+  else sec.pass('claude.rules.outbound', outboundItem, 'none: agents may send outward (Gmail, Drive sharing, calendar invites)');
   // Rules that name git push (AS3-379), gh or npm publish (AS3-385) decide before the guard can ask: a deny
   // rule means the dialog never appears (the call is refused, which is safe but not what the owner asked
   // for); what an allow rule does to the guard's ask has not been measured, so it is reported too.
