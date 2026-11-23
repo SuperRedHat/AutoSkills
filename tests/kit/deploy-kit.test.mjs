@@ -351,9 +351,9 @@ test('settings.json: the merge keeps permissions, hooks, plugins and other keys,
   assert.equal(after.env.SYNTHETIC_FLAG, '1');
   assert.deepEqual(after.hooks.Stop, before.hooks.Stop);
   assert.deepEqual(Object.keys(after).slice(0, Object.keys(before).length), Object.keys(before), 'existing keys keep their order');
-  // Deny: the user's rule first, then every fragment rule, then the generated folder rules.
+  // Deny: the user's rule first, then every fragment rule (none since AS3-389), then the generated folder rules.
   assert.equal(after.permissions.deny[0], 'Bash(rm -rf *)');
-  for (const rule of fragment.permissions.deny) assert.ok(after.permissions.deny.includes(rule), rule);
+  for (const rule of fragment.permissions?.deny ?? []) assert.ok(after.permissions.deny.includes(rule), rule);
   const ro = local.readonly_dirs.map((d) => claudePathRule('Edit', d));
   const cu = local.customer_data_dirs.map((d) => claudePathRule('Read', d));
   assert.deepEqual(after.permissions.deny.slice(-(ro.length + cu.length)), [...ro, ...cu]);

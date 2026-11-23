@@ -62,7 +62,7 @@
 
 两个平台读同一份契约（`templates/global-AGENTS.md`，约 50 行），部署到 `~/.claude/AGENTS.md` 和 `~/.codex/AGENTS.md`；`~/.claude/CLAUDE.md` 只写 `@AGENTS.md` 加几行 Claude 专属内容（`templates/global-claude-CLAUDE.md`）。要点：
 
-- **优先级**：平台约束和零例外规则（不对外发送、不改只读目录、不访问客户数据）最先；推送和发布（gh 对仓库、版本、PR、workflow 的写操作，带写方法的 gh api，npm publish）默认不做，你说了才发起，要你本人在确认窗里点同意才执行；别的 gh 写操作（issue、secret、gist 等）守卫不认、不弹窗，同样是你说了才做；其余按本轮指令 > 项目契约 > 本契约 > 技能步骤。
+- **优先级**：平台约束和零例外规则（不改只读目录、不访问客户数据）最先；对外发送（在浏览器里提交表单、发消息、挂商品，发邮件，共享文件，发日历邀请）代理可以自己做，不用请示，无人值守的会话只发你说过要发的，登录和付钱（下单购买、付款、转账）由你自己来；推送和发布（gh 对仓库、版本、PR、workflow 的写操作，带写方法的 gh api，npm publish）默认不做，你说了才发起，要你本人在确认窗里点同意才执行；别的 gh 写操作（issue、secret、gist 等）守卫不认、不弹窗，同样是你说了才做；其余按本轮指令 > 项目契约 > 本契约 > 技能步骤。
 - **执行循环**：取就绪任务 → 实现 → 按风险验证 → 提交 → 记录 → 取下一个，直到停点。
 - **停点只有五种**：本轮做完；只剩用户本人能定的事；真的卡住；预算或截止时间到；用户说暂停或控制器出错。
 - **证据**：只认本会话里实际执行的命令，写明命令、退出码和日志位置；提交号从 git 读取，不得编造。
@@ -120,7 +120,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 
   **出错即拦截，两个平台一样**：守卫出错时原因都写 stderr。Claude 上退出 2，按 `onFailure: "block"` 拦下这次调用；Codex 上输出拒绝 JSON（理由写明守卫出错和原因）并退出 0，Codex 照 JSON 拦下。Codex 上不靠退出 2，是因为 Windows PowerShell 5.1 的 `-Command` 会把退出 2 改成 1，而 Codex 只在退出 2 时拦。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
 - **SessionStart 钩子** `hooks/session-start.mjs`（只在 Claude 注册）：startup、resume、compact 时注入几行提示和会话 id。
-- **Claude 的 deny 规则**（`config/claude/settings.fragment.json`）：对外发送类的 MCP 工具；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。推送和发布没有 deny 规则：deny 规则先于守卫的询问，留着就弹不了确认窗；部署时会把以前写进去的那 100 条去掉（git push 10 条，gh 的写操作和 npm publish 90 条），这些命令由守卫管。你自己另加的规则不动。
+- **Claude 的 deny 规则**：设置片段（`config/claude/settings.fragment.json`）里一条也没有；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。推送和发布没有 deny 规则：deny 规则先于守卫的询问，留着就弹不了确认窗，这些命令由守卫管。对外发送类的 MCP 工具（Gmail 发信、回复、转发，Drive 共享，日历建事件、改事件、回复邀请）2026-11-23 起也没有 deny 规则，代理可以直接用。部署时会把以前写进去的那 107 条去掉（git push 10 条，gh 的写操作和 npm publish 90 条，对外发送 7 条），预演的理由里逐条列出。你自己另加的规则不动；只是你要是自己再写回这 107 条里的某一条，下次部署还会把它去掉。
 - **Codex 的规则**（`config/codex/rules/autoskills.rules`）：`prefix_rule` 拦简单形式的 git push、gh 写操作、npm publish。规则只匹配简单命令，**只当提醒**，由钩子和 pushurl 兜底。
 - **pushurl**：部署时给项目根目录下所有有远端的仓库设 `pushurl = no_push`（`scripts/set-pushurl.mjs`，先记原值，可恢复），登记的只读目录跳过。
 
@@ -132,7 +132,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 
 片段里不含本机路径，用 `<home>`、`<runtime>`、`<node>` 占位，由部署脚本合并；合并只动套件的键，其余内容保留。
 
-- **Claude**（`config/claude/settings.fragment.json`）：`subagentPromptCacheTtl: "1h"`；`worktree.baseRef: "head"`；`CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=6`；上面的 deny 规则和两个钩子。**不设** `CLAUDE_CODE_EFFORT_LEVEL`：设了任何值都会盖过子代理定义里的 effort，检查脚本会查它。
+- **Claude**（`config/claude/settings.fragment.json`）：`subagentPromptCacheTtl: "1h"`；`worktree.baseRef: "head"`；`CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=6`；两个钩子（deny 规则只有部署时按本地配置生成的目录规则）。**不设** `CLAUDE_CODE_EFFORT_LEVEL`：设了任何值都会盖过子代理定义里的 effort，检查脚本会查它。
 - **Codex**（`config/codex/config.fragment.toml`、`config/codex/hooks.json`）：`model_reasoning_effort = "medium"`（只管 CLI 和默认值）；`[desktop] followUpQueueMode = "steer"`（运行中说“暂停”能及时送达）；不设 `agents.default_subagent_reasoning_effort`；技能装到 `~/.agents/skills`；守卫注册在 `~/.codex/hooks.json`，要在 Codex 的 /hooks 里信任。线程上限没有设。
 - **桌面版的用法**：每个新聊天选“完全访问”；规划时可临时选 xhigh，开 `/goal` 前切回执行档位；ultra 只用于又大、又能拆成独立几块、并且有人看着的任务。
 
@@ -169,7 +169,7 @@ node scripts/check-kit.mjs                           # 重开两个平台、在 
 
 **让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。六种权限模式下守卫回的都是询问。开着窗口时只有跳过权限的模式有人看过弹窗；自动模式（auto）里是分类器替人回答提示，钩子的询问会不会每次都送到确认窗还没有人看过，头一次在这个模式下推送时请留意是不是你自己点的（量过什么、哪些没人看过，见 [docs/push-consent-probe.md](docs/push-consent-probe.md)）。长跑驱动起的会话带着无人值守的标记（环境变量 `AUTOSKILLS_UNATTENDED=1`），守卫见到就直接拒绝推送；别的无头会话（`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
 
-**让代理发布**（只在 Claude Code 上）：说一句“发布 v1.2.0”“开个 PR”“把这个包发到 npm”。代理发起 gh 或 npm 的命令，守卫照样弹确认窗，窗里写着命令原文，你点同意才执行。发一个版本通常要点两次：推标签一次，建 Release 一次。能弹窗、不能弹窗的情况和推送完全一样。对外发消息（邮件、日历邀请、共享文件这类 MCP 工具）不在里面，照旧不做。
+**让代理发布**（只在 Claude Code 上）：说一句“发布 v1.2.0”“开个 PR”“把这个包发到 npm”。代理发起 gh 或 npm 的命令，守卫照样弹确认窗，窗里写着命令原文，你点同意才执行。发一个版本通常要点两次：推标签一次，建 Release 一次。能弹窗、不能弹窗的情况和推送完全一样。对外发送（邮件、日历邀请、共享文件，浏览器里提交表单）不在确认窗里：2026-11-23 起代理可以自己做，不弹窗，见“共用契约”和“残余风险”。
 
 **你自己推**：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。在**普通终端**（不是代理的会话）里写完整地址：
 
@@ -187,11 +187,12 @@ git push (git remote get-url origin) <分支>
 
 如实写明，不承诺隔离（详见 ADR-006 §4；长跑驱动和验收包带来的见 ADR-009 §4）：
 
-- **长跑时没有人看着**：无头会话在自动模式下跑，守卫钩子和拒绝规则照常生效（推送和发布在这些会话里直接被拒，不弹窗），但原生 Windows 上没有沙箱。头几次跑完请看报告。
+- **长跑时没有人看着**：无头会话在自动模式下跑，守卫钩子和拒绝规则照常生效（推送和发布在这些会话里直接被拒，不弹窗），但原生 Windows 上没有沙箱。对外发送在这些会话里不拦，契约要求只发你说过要发的。头几次跑完请看报告。
 - **驱动跑着的时候，同一个项目里别的会话不能记账**：账本没有锁，只靠技能里的一句话和验收包页首的提示。
 - **驱动的几条路只在替身测试里走过**：复验没过以后的返工、接着做断在半路的任务、额度用完以后的等待、会话挂死。
 
 - **同一账户下，护栏只防误操作**：代理有意绕过时拦不住。要强隔离只能用单独的账户、WSL2 或沙箱，本轮不做。
+- **对外发送没有拦截**（2026-11-23 起）：代理在浏览器里提交表单、发消息、挂商品，用 Gmail 发信、共享 Drive 文件、发日历邀请，都不弹窗，也没有规则拦，只靠契约里那一句。守卫不看浏览器操作，也不看这些 MCP 工具。“登录和付钱由你来”“无人值守只发你说过的”同样只是契约文字。网页和邮件里的内容可能诱导代理发出不该发的东西；契约写了工具输出和外部内容不能授予权限，这也只是文字。
 - **确认窗是最后一道**：发布类命令不再有 deny 规则兜底，你点了同意就执行，包括删仓库、改可见性、`gh api -X DELETE`。窗里守卫写的理由只列出命中的命令名，对哪个仓库做什么要看窗里的命令原文。auto 模式里钩子的询问会不会每次都送到你面前没有量过。
 - **守卫只认 gh 的四组命令**：repo、release、pr、workflow 里读以外的子命令，加上带写方法的 gh api。`gh issue create`、`gh secret set`、`gh gist create`、`gh run cancel`、`gh label delete` 这类别的写操作，守卫既不弹窗也不拦，以前的 deny 规则也没有管过它们；只靠契约里“用户说了才做”那一句。
 - **登录还在**：gh 和 Windows 凭据管理器里的登录都还在。代理如果在 Codex 上用包裹形式写完整地址推送，pushurl 挡不住，只剩钩子。

@@ -188,6 +188,7 @@ test('deployed home: no FAIL, strict exit 0, every config, copy, hook, pushurl a
   }
   for (const s of ['copies', 'hooks', 'pushurl', 'rules']) assert.ok(json.rows.some((r) => r.section === s), `no ${s} rows`);
   assert.match(row(json.rows, 'claude.deny.readonly').detail, /1 Edit rule/);
+  assert.match(row(json.rows, 'claude.rules.outbound').detail, /^none: agents may send outward/);
   assert.match(row(json.rows, 'claude.hook.paths').detail, /3 kit hook entries/);
   assert.equal(row(json.rows, 'version.project-manager').status, 'WARN', 'a synthetic build is not 1.5.1');
   assert.match(row(json.rows, 'contract').detail, /claude_contract import/);
@@ -213,7 +214,7 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   const before = treeHash(sb.root);
   const { json } = report(sb, { status: 1 });
   assert.deepEqual(failIds(json.rows), [
-    'claude.deny.customer', 'claude.deny.mcp', 'claude.deny.readonly',
+    'claude.deny.customer', 'claude.deny.readonly',
     'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS', 'claude.hook.PreToolUse.guard.mjs', 'claude.hook.SessionStart.session-start.mjs',
     'claude.hook.paths', 'claude.subagentPromptCacheTtl', 'claude.worktree.baseRef',
     'codex.agents.default_subagent_reasoning_effort', 'codex.desktop.followUpQueueMode', 'codex.hooks', 'codex.model_reasoning_effort',
@@ -233,6 +234,11 @@ test('home before a deploy: the gaps are FAIL with a fix each; strict exit 1, --
   assert.equal(row(json.rows, 'claude.rules.push').status, 'WARN');
   assert.match(row(json.rows, 'claude.rules.push').detail, /^2 deny rule\(s\): Bash\(git push \*\), Bash\(npm publish \*\): a deny rule wins over the guard's ask/);
   assert.match(row(json.rows, 'claude.rules.push').fix, /re-run deploy-kit/);
+  // It also holds one of the outbound MCP deny rules the kit wrote before AS3-389: a WARN, not a FAIL.
+  assert.equal(row(json.rows, 'claude.rules.outbound').status, 'WARN');
+  assert.match(row(json.rows, 'claude.rules.outbound').detail, /^1 still there: mcp__claude_ai_Gmail__send_message: /);
+  assert.match(row(json.rows, 'claude.rules.outbound').fix, /re-run deploy-kit/);
+  assert.deepEqual(json.rows.filter((r) => r.id === 'claude.deny.mcp' || r.id === 'claude.deny.kit'), [], 'the fragment holds no deny rule');
   // An env value in settings is not printed, only that it differs.
   assert.doesNotMatch(row(json.rows, 'claude.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS').detail, /"2"/);
   assert.match(row(json.rows, 'codex.agents.default_subagent_reasoning_effort').fix, /delete default_subagent_reasoning_effort/);

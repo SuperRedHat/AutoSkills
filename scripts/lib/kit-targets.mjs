@@ -27,8 +27,8 @@
 //
 // Targets of AS3-112b (desiredFiles with the local config; ADR-006 §2.5/§2.6):
 //   ~/.claude/settings.json   merged with config/claude/settings.fragment.json (mergeClaudeSettings): kit
-//                             keys are set, kit deny rules added, the retired kit deny rules for git push
-//                             taken out (RETIRED_CLAUDE_DENY, named in the plan's reason), kit hook entries
+//                             keys are set, kit deny rules added, the retired kit deny rules (push, publish,
+//                             outbound MCP tools) taken out (RETIRED_CLAUDE_DENY, named in the plan's reason), kit hook entries
 //                             replaced; every other key, rule, hook and plugin stays. Generated from the local config: Edit(//<dir>/**)
 //                             for each read-only folder (an Edit rule covers every built-in file-writing tool,
 //                             Write included) and Read(//<dir>/**) for each customer-data folder.
@@ -435,7 +435,9 @@ function mergeHooks(cur, kitHooks) {
  * owner would never get the confirmation dialog. First the ten git push rules (AS3-379), then the rules
  * for gh writes, gh api write methods and npm publish (AS3-385, owner decision 2026-11-21). The guard
  * still sees every one of these commands. Each list holds the rule bodies; every body was written once for
- * Bash and once for PowerShell.
+ * Bash and once for PowerShell. Then the seven outbound MCP tool rules (AS3-389, owner decision 2026-11-23:
+ * agents may send outward without asking); they are tool names, written as they are, and no hook asks
+ * about them instead.
  */
 export const RETIRED_PUSH_DENY = Object.freeze(['git push *', 'git -C * push', 'git -C * push *', 'git -c * push', 'git -c * push *']);
 export const RETIRED_PUBLISH_DENY = Object.freeze([
@@ -452,9 +454,16 @@ export const RETIRED_PUBLISH_DENY = Object.freeze([
   'gh api *--method=PATCH*', 'gh api *-X DELETE*', 'gh api *--method DELETE*', 'gh api *--method=DELETE*',
   'npm publish *',
 ]);
-export const RETIRED_CLAUDE_DENY = Object.freeze(['Bash', 'PowerShell'].flatMap((tool) => [
-  ...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY,
-].map((rule) => `${tool}(${rule})`)));
+export const RETIRED_OUTBOUND_DENY = Object.freeze([
+  'mcp__claude_ai_Gmail__send_message', 'mcp__claude_ai_Gmail__reply', 'mcp__claude_ai_Gmail__forward',
+  'mcp__claude_ai_Google_Drive__share_file',
+  'mcp__claude_ai_Google_Calendar__create_event', 'mcp__claude_ai_Google_Calendar__update_event',
+  'mcp__claude_ai_Google_Calendar__respond_to_event',
+]);
+export const RETIRED_CLAUDE_DENY = Object.freeze([
+  ...['Bash', 'PowerShell'].flatMap((tool) => [...RETIRED_PUSH_DENY, ...RETIRED_PUBLISH_DENY].map((rule) => `${tool}(${rule})`)),
+  ...RETIRED_OUTBOUND_DENY,
+]);
 
 /**
  * ~/.claude/settings.json after the merge: the kit keys of the filled fragment are set (env and worktree
@@ -626,10 +635,13 @@ export function desiredFiles(roots, { claudeContract = DEFAULT_OPTIONS.claude_co
       // The plan names the deny rules the merge takes out, so a dry run shows them before anything is written.
       const curDeny = curSettings.value?.permissions?.deny;
       const retired = Array.isArray(curDeny) ? curDeny.filter((rule) => RETIRED_CLAUDE_DENY.includes(rule)) : [];
+      const outbound = retired.filter((rule) => RETIRED_OUTBOUND_DENY.includes(rule));
+      const shell = retired.filter((rule) => !RETIRED_OUTBOUND_DENY.includes(rule));
       mergedJson(t.claudeSettings, curSettings, mergeClaudeSettings(curSettings.value, settings), {
         group: 'settings', mode: 'merge', source: settingsSrc,
         reason: 'kit settings, deny rules (read-only and customer-data folders from the local config) and hooks; other keys and rules stay'
-          + (retired.length ? `; takes out ${retired.length} retired push and publish deny rule(s), the guard asks the owner instead: ${retired.join(', ')}` : ''),
+          + (shell.length ? `; takes out ${shell.length} retired push and publish deny rule(s), the guard asks the owner instead: ${shell.join(', ')}` : '')
+          + (outbound.length ? `; takes out ${outbound.length} retired outbound MCP deny rule(s), agents may send outward: ${outbound.join(', ')}` : ''),
       });
     } catch (e) {
       if (!(e instanceof MergeError)) throw e;
