@@ -153,7 +153,7 @@ node scripts/deploy-kit.mjs --apply [--retire-legacy-agents] [--claude-contract 
 3. `node _private/eval/harness/smoke-kit.mjs report` 列出开始时间之后 `decision=deny` 的心跳，用来分清拒绝来源。Claude 上推送和 `npm publish` 的心跳是 `decision=ask`，这个报告不列它们，要自己到心跳文件里看。
 4. `node _private/eval/harness/smoke-kit.mjs cleanup` 删掉冒烟仓库和裸库，并删掉 Codex 为它写进 `~/.codex/config.toml` 的信任段（删了什么记在 `_private/eval/smoke/smoke-kit.log`）。金丝雀目录保留。
 
-不做真实的外发调用（发邮件、gh 写操作）：发邮件这类 MCP 工具由检查脚本静态核对 deny 列表；gh 的写操作已经没有 deny 规则，由守卫的 `--selftest` 和 `tests/kit/guard-hook.test.mjs` 覆盖（检查脚本的现场探查只跑 `git status`、`npm publish` 和 `git push`）。
+不做真实的外发调用（发邮件、gh 写操作）：发邮件这类 MCP 工具 2026-11-23 起不再有 deny 规则，检查脚本只在用户级设置里还留着旧的那 7 条时报 WARN；gh 的写操作已经没有 deny 规则，由守卫的 `--selftest` 和 `tests/kit/guard-hook.test.mjs` 覆盖（检查脚本的现场探查只跑 `git status`、`npm publish` 和 `git push`）。
 
 ---
 

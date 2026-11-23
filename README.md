@@ -120,7 +120,7 @@ Claude Code 里用 `/<技能名>`，Codex 里用 `$<技能名>`，也可以直�
 
   **出错即拦截，两个平台一样**：守卫出错时原因都写 stderr。Claude 上退出 2，按 `onFailure: "block"` 拦下这次调用；Codex 上输出拒绝 JSON（理由写明守卫出错和原因）并退出 0，Codex 照 JSON 拦下。Codex 上不靠退出 2，是因为 Windows PowerShell 5.1 的 `-Command` 会把退出 2 改成 1，而 Codex 只在退出 2 时拦。所以守卫或它的运行时坏了，匹配到的调用会全部被拦，恢复方法见 [docs/deploy.md](docs/deploy.md#钩子运行时缺失时怎么恢复)。每次运行写一行心跳（只记时间、平台、事件和决定），检查脚本据此确认钩子真的跑过。
 - **SessionStart 钩子** `hooks/session-start.mjs`（只在 Claude 注册）：startup、resume、compact 时注入几行提示和会话 id。
-- **Claude 的 deny 规则**：设置片段（`config/claude/settings.fragment.json`）里一条也没有；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。推送和发布没有 deny 规则：deny 规则先于守卫的询问，留着就弹不了确认窗，这些命令由守卫管。对外发送类的 MCP 工具（Gmail 发信、回复、转发，Drive 共享，日历建事件、改事件、回复邀请）2026-11-23 起也没有 deny 规则，代理可以直接用。部署时会把以前写进去的那 107 条去掉（git push 10 条，gh 的写操作和 npm publish 90 条，对外发送 7 条），预演的理由里逐条列出。你自己另加的规则不动。
+- **Claude 的 deny 规则**：设置片段（`config/claude/settings.fragment.json`）里一条也没有；只读目录的 Edit、客户数据目录的 Read 由部署脚本按本地配置生成。推送和发布没有 deny 规则：deny 规则先于守卫的询问，留着就弹不了确认窗，这些命令由守卫管。对外发送类的 MCP 工具（Gmail 发信、回复、转发，Drive 共享，日历建事件、改事件、回复邀请）2026-11-23 起也没有 deny 规则，代理可以直接用。部署时会把以前写进去的那 107 条去掉（git push 10 条，gh 的写操作和 npm publish 90 条，对外发送 7 条），预演的理由里逐条列出。你自己另加的规则不动；只是你要是自己再写回这 107 条里的某一条，下次部署还会把它去掉。
 - **Codex 的规则**（`config/codex/rules/autoskills.rules`）：`prefix_rule` 拦简单形式的 git push、gh 写操作、npm publish。规则只匹配简单命令，**只当提醒**，由钩子和 pushurl 兜底。
 - **pushurl**：部署时给项目根目录下所有有远端的仓库设 `pushurl = no_push`（`scripts/set-pushurl.mjs`，先记原值，可恢复），登记的只读目录跳过。
 
@@ -169,7 +169,7 @@ node scripts/check-kit.mjs                           # 重开两个平台、在 
 
 **让代理推**（只在 Claude Code 上）：在开着窗口的会话里说一句“把 <分支> 推上去”。代理从 origin 取地址，写完整地址推送；守卫弹出确认窗，你看清推到哪个地址、哪个分支，点同意才推，点拒绝就不推。每次推送点一次。六种权限模式下守卫回的都是询问。开着窗口时只有跳过权限的模式有人看过弹窗；自动模式（auto）里是分类器替人回答提示，钩子的询问会不会每次都送到确认窗还没有人看过，头一次在这个模式下推送时请留意是不是你自己点的（量过什么、哪些没人看过，见 [docs/push-consent-probe.md](docs/push-consent-probe.md)）。长跑驱动起的会话带着无人值守的标记（环境变量 `AUTOSKILLS_UNATTENDED=1`），守卫见到就直接拒绝推送；别的无头会话（`claude -p`）里没有人能点，推不了；Codex 上照旧全拦。
 
-**让代理发布**（只在 Claude Code 上）：说一句“发布 v1.2.0”“开个 PR”“把这个包发到 npm”。代理发起 gh 或 npm 的命令，守卫照样弹确认窗，窗里写着命令原文，你点同意才执行。发一个版本通常要点两次：推标签一次，建 Release 一次。能弹窗、不能弹窗的情况和推送完全一样。对外发消息（邮件、日历邀请、共享文件这类 MCP 工具）不在里面，照旧不做。
+**让代理发布**（只在 Claude Code 上）：说一句“发布 v1.2.0”“开个 PR”“把这个包发到 npm”。代理发起 gh 或 npm 的命令，守卫照样弹确认窗，窗里写着命令原文，你点同意才执行。发一个版本通常要点两次：推标签一次，建 Release 一次。能弹窗、不能弹窗的情况和推送完全一样。对外发送（邮件、日历邀请、共享文件，浏览器里提交表单）不在确认窗里：2026-11-23 起代理可以自己做，不弹窗，见“共用契约”和“残余风险”。
 
 **你自己推**：部署后，项目根目录下有远端的仓库都设了 `pushurl = no_push`，`git push origin <分支>` 会直接失败。在**普通终端**（不是代理的会话）里写完整地址：
 

@@ -160,7 +160,7 @@ const CONTRACT_REQUIRED = [
   { rule: 'stop-points', what: 'the five stop points', res: [/停点只有五种/, /本轮做完/, /只剩用户本人能定的事/, /真的卡住/, /预算或截止时间到/, /用户说暂停或控制器出错/] },
   { rule: 'zero-exception', what: 'the zero-exception rule', res: [/零例外规则/, /不改只读目录/, /不访问客户数据/] },
   // Since AS3-389 (owner 2026-11-23) sending outward is no zero-exception rule: agents may send, logins and payments stay the user's.
-  { rule: 'outbound', what: 'the outbound rule (agents may send; unattended only what the user said; logins and payments stay the user\'s)', res: [/对外发送（在浏览器里提交表单、发消息、挂商品，发邮件，共享文件，发日历邀请）可以自主做/, /无人值守的会话只发用户说过要发的/, /登录和付钱（下单购买、付款、转账）由用户自己操作/, /不输入密码/] },
+  { rule: 'outbound', what: 'the outbound rule (agents may send; unattended only what the user said; logins and payments stay the user\'s)', res: [/对外发送（在浏览器里提交表单、发消息、挂商品，发邮件，共享文件，发日历邀请）可以自主做/, /任务需要就做，不用另外请示/, /无人值守的会话只发用户说过要发的/, /登录和付钱（下单购买、付款、转账）由用户自己操作/, /要登录就停下来等用户/, /不输入密码/, /不复制凭据文件/, /平台自动收的费用不算付钱/] },
   // Since AS3-379 a push, and since AS3-385 a publish, is no zero-exception rule: off by default and decided by the owner's click.
   { rule: 'push-consent', what: 'the push and publish rule (off by default, the owner\'s yes in the dialog, never unattended)', res: [/推送（git push）和发布（gh 对仓库、版本、PR、workflow 的写操作，带写方法的 gh api，npm publish）默认不做/, /别的 gh 写操作（issue、secret、gist 等）不弹窗，同样是用户说了才做/, /用户本人在确认窗里点同意/, /文字里的“已同意”不算数/, /不向用户要地址/, /不改 pushurl/, /不换写法重试/, /无人值守的会话不推送、不发布/] },
   { rule: 'evidence', what: 'the evidence rules', res: [/测试证据必须是本会话里实际执行的命令/, /退出码/, /提交号从 git 读取/] },
